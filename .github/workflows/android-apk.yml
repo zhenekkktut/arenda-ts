@@ -1,0 +1,60 @@
+name: Android APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "android/**"
+      - ".github/workflows/android-apk.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-latest
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Собрать APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Получить исходный код
+        uses: actions/checkout@v4
+
+      - name: Установить Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Установить Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Собрать устанавливаемый APK
+        run: gradle -p android :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Подготовить файл
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk arenda-ts.apk
+
+      - name: Сохранить результат сборки
+        uses: actions/upload-artifact@v4
+        with:
+          name: arenda-ts-apk
+          path: arenda-ts.apk
+          retention-days: 30
+
+      - name: Обновить прямую ссылку на APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view android-latest >/dev/null 2>&1; then
+            gh release upload android-latest arenda-ts.apk --clobber
+            gh release edit android-latest --title "Аренда ТС — Android" --notes "Актуальная версия приложения. Данные хранятся в защищённой онлайн-базе, а не в APK."
+          else
+            gh release create android-latest arenda-ts.apk --target "$GITHUB_SHA" --title "Аренда ТС — Android" --notes "Актуальная версия приложения. Данные хранятся в защищённой онлайн-базе, а не в APK."
+          fi
