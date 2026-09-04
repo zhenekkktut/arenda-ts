@@ -9,7 +9,7 @@ val buildNumber = providers.environmentVariable("GITHUB_RUN_NUMBER")
 
 android {
     namespace = "ru.zhenekkktut.arendats"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "ru.zhenekkktut.arendats"
