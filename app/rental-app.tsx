@@ -120,6 +120,26 @@ type DashboardData = {
   };
 };
 
+type OfflineStore = {
+  version: 1;
+  entries: Entry[];
+  invoices: Invoice[];
+  payments: Payment[];
+  expenses: Expense[];
+  closures: Closure[];
+};
+
+type AndroidAppBridge = {
+  copyText: (text: string) => void;
+  saveBase64File: (base64: string, fileName: string, mimeType: string) => void;
+};
+
+declare global {
+  interface Window {
+    AndroidApp?: AndroidAppBridge;
+  }
+}
+
 type ConfirmState = {
   title: string;
   description: string;
@@ -144,6 +164,276 @@ const DEFAULT_RULES = {
   includedUnits: 2_000,
   rateKopecks: 4_000,
 };
+
+const OFFLINE_STORAGE_KEY = "arenda-ts-offline-v1";
+
+function emptyOfflineStore(): OfflineStore {
+  return {
+    version: 1,
+    entries: [],
+    invoices: [],
+    payments: [],
+    expenses: [],
+    closures: [],
+  };
+}
+
+function isOfflineRuntime() {
+  return typeof window !== "undefined" &&
+    (window.location.protocol === "file:" || Boolean(window.AndroidApp));
+}
+
+function normalizeOfflineStore(value: unknown): OfflineStore {
+  if (!value || typeof value !== "object") throw new Error("Неверный формат резервной копии");
+  const store = value as Partial<OfflineStore>;
+  if (
+    !Array.isArray(store.entries) ||
+    !Array.isArray(store.invoices) ||
+    !Array.isArray(store.payments) ||
+    !Array.isArray(store.expenses) ||
+    !Array.isArray(store.closures)
+  ) {
+    throw new Error("В резервной копии не хватает данных");
+  }
+  return {
+    version: 1,
+    entries: store.entries,
+    invoices: store.invoices,
+    payments: store.payments,
+    expenses: store.expenses,
+    closures: store.closures,
+  };
+}
+
+function readOfflineStore() {
+  const saved = window.localStorage.getItem(OFFLINE_STORAGE_KEY);
+  if (!saved) return emptyOfflineStore();
+  try {
+    return normalizeOfflineStore(JSON.parse(saved));
+  } catch {
+    throw new Error("Не удалось прочитать данные на телефоне");
+  }
+}
+
+function writeOfflineStore(store: OfflineStore) {
+  window.localStorage.setItem(OFFLINE_STORAGE_KEY, JSON.stringify(store));
+}
+
+function nextId(rows: { id: number }[]) {
+  return rows.reduce((maximum, row) => Math.max(maximum, row.id), 0) + 1;
+}
+
+function validIsoDate(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T12:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function offlineDashboard(period: string): DashboardData {
+  const store = readOfflineStore();
+  const from = `${period}-01`;
+  const to = `${period}-31`;
+  const entries = store.entries
+    .filter((entry) => entry.entryDate >= from && entry.entryDate <= to)
+    .sort((a, b) => b.entryDate.localeCompare(a.entryDate) || b.id - a.id);
+  const invoices = store.invoices
+    .filter((invoice) => invoice.period === period)
+    .sort((a, b) => b.invoiceDate.localeCompare(a.invoiceDate) || b.id - a.id);
+  const invoiceIds = new Set(invoices.map((invoice) => invoice.id));
+  const payments = store.payments
+    .filter((payment) => invoiceIds.has(payment.invoiceId))
+    .sort((a, b) => b.paymentDate.localeCompare(a.paymentDate) || b.id - a.id);
+  const expenses = store.expenses
+    .filter((expense) => expense.expenseDate >= from && expense.expenseDate <= to)
+    .sort((a, b) => b.expenseDate.localeCompare(a.expenseDate) || b.id - a.id);
+
+  return {
+    entries,
+    invoices,
+    payments,
+    expenses,
+    closure: store.closures.find((closure) => closure.period === period) ?? null,
+    rules: DEFAULT_RULES,
+  };
+}
+
+function saveOfflineAction(payload: Record<string, unknown>) {
+  const store = readOfflineStore();
+  const action = payload.action;
+
+  if (action === "save_entry") {
+    const entryDate = payload.entryDate;
+    const units = Number(payload.units);
+    if (!validIsoDate(entryDate) || !Number.isSafeInteger(units) || units < 0) {
+      throw new Error("Проверьте дату и количество");
+    }
+    if (store.closures.some((closure) => closure.period === entryDate.slice(0, 7))) {
+      throw new Error("Месяц закрыт. Сначала откройте его заново.");
+    }
+    const note = typeof payload.note === "string" ? payload.note.trim().slice(0, 300) : "";
+    const existing = store.entries.find((entry) => entry.entryDate === entryDate);
+    if (existing) {
+      existing.units = units;
+      existing.note = note;
+    } else {
+      store.entries.push({ id: nextId(store.entries), entryDate, units, note });
+    }
+  } else if (action === "import_entries") {
+    if (!Array.isArray(payload.entries) || payload.entries.length === 0) {
+      throw new Error("В файле нет записей для загрузки");
+    }
+    for (const item of payload.entries) {
+      if (!item || typeof item !== "object") throw new Error("Проверьте строки файла");
+      const row = item as Record<string, unknown>;
+      const entryDate = row.entryDate;
+      const units = Number(row.units);
+      if (!validIsoDate(entryDate) || !Number.isSafeInteger(units) || units < 0) {
+        throw new Error("В файле есть неверная дата или количество");
+      }
+      if (store.closures.some((closure) => closure.period === entryDate.slice(0, 7))) {
+        throw new Error(`Нельзя изменить закрытый месяц ${entryDate.slice(0, 7)}`);
+      }
+      const note = typeof row.note === "string" ? row.note.trim().slice(0, 300) : "";
+      const existing = store.entries.find((entry) => entry.entryDate === entryDate);
+      if (existing) {
+        existing.units = units;
+        existing.note = note;
+      } else {
+        store.entries.push({ id: nextId(store.entries), entryDate, units, note });
+      }
+    }
+  } else if (action === "delete_entry") {
+    const id = Number(payload.id);
+    const entry = store.entries.find((row) => row.id === id);
+    if (!entry) throw new Error("Запись не найдена");
+    if (store.closures.some((closure) => closure.period === entry.entryDate.slice(0, 7))) {
+      throw new Error("Месяц закрыт");
+    }
+    store.entries = store.entries.filter((row) => row.id !== id);
+  } else if (action === "create_invoice") {
+    const amountKopecks = Number(payload.amountKopecks);
+    if (
+      typeof payload.period !== "string" ||
+      typeof payload.invoiceNumber !== "string" ||
+      !payload.invoiceNumber.trim() ||
+      !validIsoDate(payload.invoiceDate) ||
+      !["fixed", "variable", "other"].includes(String(payload.kind)) ||
+      !Number.isSafeInteger(amountKopecks) ||
+      amountKopecks <= 0
+    ) {
+      throw new Error("Проверьте данные счёта");
+    }
+    const dueDate = payload.dueDate === "" || payload.dueDate == null ? null : String(payload.dueDate);
+    if (dueDate !== null && !validIsoDate(dueDate)) throw new Error("Проверьте срок оплаты");
+    store.invoices.push({
+      id: nextId(store.invoices),
+      period: payload.period,
+      invoiceNumber: payload.invoiceNumber.trim().slice(0, 60),
+      invoiceDate: payload.invoiceDate,
+      kind: payload.kind as Invoice["kind"],
+      amountKopecks,
+      dueDate,
+      note: typeof payload.note === "string" ? payload.note.trim().slice(0, 300) : "",
+    });
+  } else if (action === "delete_invoice") {
+    const id = Number(payload.id);
+    store.invoices = store.invoices.filter((invoice) => invoice.id !== id);
+    store.payments = store.payments.filter((payment) => payment.invoiceId !== id);
+  } else if (action === "create_payment") {
+    const invoiceId = Number(payload.invoiceId);
+    const amountKopecks = Number(payload.amountKopecks);
+    if (
+      !store.invoices.some((invoice) => invoice.id === invoiceId) ||
+      !validIsoDate(payload.paymentDate) ||
+      !Number.isSafeInteger(amountKopecks) ||
+      amountKopecks <= 0 ||
+      !["bank", "cash"].includes(String(payload.method))
+    ) {
+      throw new Error("Проверьте данные оплаты");
+    }
+    store.payments.push({
+      id: nextId(store.payments),
+      invoiceId,
+      paymentDate: payload.paymentDate,
+      amountKopecks,
+      method: payload.method as Payment["method"],
+      documentNumber: typeof payload.documentNumber === "string" ? payload.documentNumber.trim().slice(0, 80) : "",
+      note: typeof payload.note === "string" ? payload.note.trim().slice(0, 300) : "",
+    });
+  } else if (action === "delete_payment") {
+    const id = Number(payload.id);
+    store.payments = store.payments.filter((payment) => payment.id !== id);
+  } else if (action === "create_expense") {
+    const amountKopecks = Number(payload.amountKopecks);
+    if (
+      !validIsoDate(payload.expenseDate) ||
+      !["base_lease", "repair", "fuel", "insurance", "tax", "other"].includes(String(payload.category)) ||
+      !Number.isSafeInteger(amountKopecks) ||
+      amountKopecks <= 0 ||
+      !["bank", "cash"].includes(String(payload.method))
+    ) {
+      throw new Error("Проверьте данные расхода");
+    }
+    store.expenses.push({
+      id: nextId(store.expenses),
+      expenseDate: payload.expenseDate,
+      category: payload.category as Expense["category"],
+      amountKopecks,
+      method: payload.method as Expense["method"],
+      documentNumber: typeof payload.documentNumber === "string" ? payload.documentNumber.trim().slice(0, 80) : "",
+      note: typeof payload.note === "string" ? payload.note.trim().slice(0, 300) : "",
+    });
+  } else if (action === "delete_expense") {
+    const id = Number(payload.id);
+    store.expenses = store.expenses.filter((expense) => expense.id !== id);
+  } else if (action === "close_month") {
+    const period = String(payload.period ?? "");
+    if (!/^\d{4}-\d{2}$/.test(period)) throw new Error("Неверно указан месяц");
+    const actualUnits = store.entries
+      .filter((entry) => entry.entryDate.startsWith(`${period}-`))
+      .reduce((sum, entry) => sum + entry.units, 0);
+    const excessUnits = Math.max(0, actualUnits - DEFAULT_RULES.includedUnits);
+    const closure: Closure = {
+      period,
+      actualUnits,
+      includedUnits: DEFAULT_RULES.includedUnits,
+      excessUnits,
+      baseKopecks: DEFAULT_RULES.baseKopecks,
+      rateKopecks: DEFAULT_RULES.rateKopecks,
+      variableKopecks: excessUnits * DEFAULT_RULES.rateKopecks,
+      totalKopecks: DEFAULT_RULES.baseKopecks + excessUnits * DEFAULT_RULES.rateKopecks,
+      closedAt: new Date().toISOString(),
+    };
+    store.closures = [...store.closures.filter((row) => row.period !== period), closure];
+  } else if (action === "reopen_month") {
+    const period = String(payload.period ?? "");
+    store.closures = store.closures.filter((closure) => closure.period !== period);
+  } else {
+    throw new Error("Неизвестное действие");
+  }
+
+  writeOfflineStore(store);
+}
+
+function utf8Base64(value: string) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  }
+  return window.btoa(binary);
+}
+
+function saveBrowserFile(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+}
 
 const invoiceLabels: Record<Invoice["kind"], string> = {
   fixed: "Постоянная часть",
@@ -347,6 +637,7 @@ export default function RentalApp() {
   const [today] = useState(() => localIsoDate());
   const [month, setMonth] = useState(today.slice(0, 7));
   const [tab, setTab] = useState("summary");
+  const [offlineMode, setOfflineMode] = useState(false);
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -360,6 +651,7 @@ export default function RentalApp() {
   const [entryNote, setEntryNote] = useState("");
   const [entryOptionsOpen, setEntryOptionsOpen] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
+  const backupInputRef = useRef<HTMLInputElement>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importFileName, setImportFileName] = useState("");
   const [importRows, setImportRows] = useState<ImportRow[]>([]);
@@ -393,6 +685,10 @@ export default function RentalApp() {
     setLoading(true);
     setLoadError("");
     try {
+      if (isOfflineRuntime()) {
+        setData(offlineDashboard(month));
+        return;
+      }
       const response = await fetch(`/api/dashboard?month=${encodeURIComponent(month)}`, {
         cache: "no-store",
       });
@@ -416,6 +712,7 @@ export default function RentalApp() {
   }, [loadData]);
 
   useEffect(() => {
+    setOfflineMode(isOfflineRuntime());
     const offerInstall = (event: Event) => {
       event.preventDefault();
       setInstallPrompt(event as BeforeInstallPromptEvent);
@@ -434,6 +731,12 @@ export default function RentalApp() {
     async (payload: Record<string, unknown>, success: string) => {
       setBusy(true);
       try {
+        if (isOfflineRuntime()) {
+          saveOfflineAction(payload);
+          toast.success(success);
+          await loadData();
+          return true;
+        }
         const response = await fetch("/api/dashboard", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -614,7 +917,9 @@ export default function RentalApp() {
 
   async function copyText(text: string, key: string) {
     try {
-      if (navigator.clipboard && window.isSecureContext) {
+      if (window.AndroidApp) {
+        window.AndroidApp.copyText(text);
+      } else if (navigator.clipboard && window.isSecureContext) {
         await navigator.clipboard.writeText(text);
       } else {
         const textarea = document.createElement("textarea");
@@ -912,10 +1217,58 @@ export default function RentalApp() {
       expensesSheet["!cols"] = [{ wch: 15 }, { wch: 24 }, { wch: 15 }, { wch: 20 }, { wch: 22 }, { wch: 38 }];
       XLSX.utils.book_append_sheet(workbook, expensesSheet, "Расходы");
 
-      XLSX.writeFile(workbook, `arenda_ts_${month}.xlsx`, { compression: true });
+      const fileName = `arenda_ts_${month}.xlsx`;
+      if (window.AndroidApp) {
+        const base64 = XLSX.write(workbook, {
+          bookType: "xlsx",
+          type: "base64",
+          compression: true,
+        });
+        window.AndroidApp.saveBase64File(
+          base64,
+          fileName,
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        );
+      } else {
+        XLSX.writeFile(workbook, fileName, { compression: true });
+      }
       toast.success("Excel-файл сформирован");
     } catch {
       toast.error("Не удалось сформировать Excel");
+    }
+  }
+
+  function exportBackup() {
+    try {
+      const fileName = `arenda_ts_backup_${localIsoDate()}.json`;
+      const json = JSON.stringify(readOfflineStore(), null, 2);
+      if (window.AndroidApp) {
+        window.AndroidApp.saveBase64File(
+          utf8Base64(json),
+          fileName,
+          "application/json",
+        );
+      } else {
+        saveBrowserFile(new Blob([json], { type: "application/json;charset=utf-8" }), fileName);
+      }
+      toast.success("Резервная копия подготовлена");
+    } catch {
+      toast.error("Не удалось создать резервную копию");
+    }
+  }
+
+  async function restoreBackup(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      if (file.size > 10 * 1024 * 1024) throw new Error("Файл слишком большой");
+      const store = normalizeOfflineStore(JSON.parse(await file.text()));
+      writeOfflineStore(store);
+      await loadData();
+      toast.success("Данные восстановлены");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Не удалось восстановить данные");
     }
   }
 
@@ -941,11 +1294,13 @@ export default function RentalApp() {
             </div>
             <div className="min-w-0">
               <h1 className="truncate text-xl font-bold tracking-tight sm:text-2xl">Аренда ТС</h1>
-              <p className="text-sm text-white/70">Fiat Ducato · расчёты</p>
+              <p className="text-sm text-white/70">
+                {offlineMode ? "Fiat Ducato · данные на телефоне" : "Fiat Ducato · расчёты"}
+              </p>
             </div>
           </div>
           <div className="header-actions">
-            {installPrompt && (
+            {!offlineMode && installPrompt && (
               <Button
                 type="button"
                 onClick={() => void installApp()}
@@ -1376,6 +1731,31 @@ export default function RentalApp() {
             </>
           ) : null}
         </Tabs>
+
+        {offlineMode && (
+          <section className="panel offline-storage-panel mt-4">
+            <div>
+              <span className="eyebrow">Хранение данных</span>
+              <strong>Всё сохранено на этом телефоне</strong>
+              <p>Приложение работает без интернета. Иногда сохраняйте копию, чтобы не потерять записи при поломке или замене телефона.</p>
+            </div>
+            <div className="offline-storage-actions">
+              <Button type="button" variant="outline" onClick={exportBackup}>
+                <Download />Сохранить копию
+              </Button>
+              <Button type="button" variant="outline" onClick={() => backupInputRef.current?.click()}>
+                <Upload />Восстановить
+              </Button>
+              <input
+                ref={backupInputRef}
+                type="file"
+                accept=".json,application/json"
+                className="hidden"
+                onChange={(event) => void restoreBackup(event)}
+              />
+            </div>
+          </section>
+        )}
       </main>
 
       <Dialog open={importOpen} onOpenChange={setImportOpen}>

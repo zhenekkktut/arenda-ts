@@ -5,6 +5,15 @@ on:
     branches: [main]
     paths:
       - "android/**"
+      - "offline/**"
+      - "app/rental-app.tsx"
+      - "app/globals.css"
+      - "components/**"
+      - "lib/**"
+      - "package.json"
+      - "package-lock.json"
+      - "postcss.config.mjs"
+      - "vendor/**"
       - ".github/workflows/android-apk.yml"
   workflow_dispatch:
 
@@ -30,6 +39,17 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Установить Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Собрать автономный интерфейс
+        run: |
+          npm ci
+          ./node_modules/.bin/vite build --config offline/vite.config.ts
+
       - name: Установить Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -54,7 +74,7 @@ jobs:
         run: |
           if gh release view android-latest >/dev/null 2>&1; then
             gh release upload android-latest arenda-ts.apk --clobber
-            gh release edit android-latest --title "Аренда ТС — Android" --notes "Актуальная версия приложения. Данные хранятся в защищённой онлайн-базе, а не в APK."
+            gh release edit android-latest --title "Аренда ТС — Android" --notes "Автономная версия 2.0. Работает без ChatGPT, сайта, VPN и интернета. Данные хранятся на телефоне; предусмотрены Excel и резервная копия."
           else
-            gh release create android-latest arenda-ts.apk --target "$GITHUB_SHA" --title "Аренда ТС — Android" --notes "Актуальная версия приложения. Данные хранятся в защищённой онлайн-базе, а не в APK."
+            gh release create android-latest arenda-ts.apk --target "$GITHUB_SHA" --title "Аренда ТС — Android" --notes "Автономная версия 2.0. Работает без ChatGPT, сайта, VPN и интернета. Данные хранятся на телефоне; предусмотрены Excel и резервная копия."
           fi

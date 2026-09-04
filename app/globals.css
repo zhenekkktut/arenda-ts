@@ -339,6 +339,37 @@ textarea {
   box-shadow: 0 8px 28px rgba(20, 46, 64, 0.06);
 }
 
+.offline-storage-panel {
+  display: grid;
+  gap: 1rem;
+  border-color: #bcd8c9;
+  background: linear-gradient(135deg, #f2fbf6, #ffffff 72%);
+}
+
+.offline-storage-panel strong {
+  display: block;
+  margin-top: 0.2rem;
+  color: #174d36;
+  font-size: 1rem;
+}
+
+.offline-storage-panel p {
+  max-width: 44rem;
+  margin: 0.35rem 0 0;
+  color: #607568;
+  font-size: 0.875rem;
+}
+
+.offline-storage-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.offline-storage-actions button {
+  min-height: 2.75rem;
+}
+
 .summary-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
