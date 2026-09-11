@@ -312,7 +312,7 @@ function saveOfflineAction(payload: Record<string, unknown>) {
       throw new Error("Месяц закрыт");
     }
     store.entries = store.entries.filter((row) => row.id !== id);
-  } else if (action === "create_invoice") {
+  } else if (action === "create_invoice" || action === "update_invoice") {
     const amountKopecks = Number(payload.amountKopecks);
     if (
       typeof payload.period !== "string" ||
@@ -327,8 +327,12 @@ function saveOfflineAction(payload: Record<string, unknown>) {
     }
     const dueDate = payload.dueDate === "" || payload.dueDate == null ? null : String(payload.dueDate);
     if (dueDate !== null && !validIsoDate(dueDate)) throw new Error("Проверьте срок оплаты");
+    const editId = action === "update_invoice" ? Number(payload.id) : null;
+    if (editId !== null && !store.invoices.some((row) => row.id === editId)) throw new Error("Запись не найдена");
+    const recordId = editId ?? nextId(store.invoices);
+    if (editId !== null) store.invoices = store.invoices.filter((row) => row.id !== editId);
     store.invoices.push({
-      id: nextId(store.invoices),
+      id: recordId,
       period: payload.period,
       invoiceNumber: payload.invoiceNumber.trim().slice(0, 60),
       invoiceDate: payload.invoiceDate,
@@ -341,7 +345,7 @@ function saveOfflineAction(payload: Record<string, unknown>) {
     const id = Number(payload.id);
     store.invoices = store.invoices.filter((invoice) => invoice.id !== id);
     store.payments = store.payments.filter((payment) => payment.invoiceId !== id);
-  } else if (action === "create_payment") {
+  } else if (action === "create_payment" || action === "update_payment") {
     const invoiceId = Number(payload.invoiceId);
     const amountKopecks = Number(payload.amountKopecks);
     if (
@@ -353,8 +357,12 @@ function saveOfflineAction(payload: Record<string, unknown>) {
     ) {
       throw new Error("Проверьте данные оплаты");
     }
+    const editId = action === "update_payment" ? Number(payload.id) : null;
+    if (editId !== null && !store.payments.some((row) => row.id === editId)) throw new Error("Запись не найдена");
+    const recordId = editId ?? nextId(store.payments);
+    if (editId !== null) store.payments = store.payments.filter((row) => row.id !== editId);
     store.payments.push({
-      id: nextId(store.payments),
+      id: recordId,
       invoiceId,
       paymentDate: payload.paymentDate,
       amountKopecks,
@@ -365,7 +373,7 @@ function saveOfflineAction(payload: Record<string, unknown>) {
   } else if (action === "delete_payment") {
     const id = Number(payload.id);
     store.payments = store.payments.filter((payment) => payment.id !== id);
-  } else if (action === "create_expense") {
+  } else if (action === "create_expense" || action === "update_expense") {
     const amountKopecks = Number(payload.amountKopecks);
     if (
       !validIsoDate(payload.expenseDate) ||
@@ -376,8 +384,12 @@ function saveOfflineAction(payload: Record<string, unknown>) {
     ) {
       throw new Error("Проверьте данные расхода");
     }
+    const editId = action === "update_expense" ? Number(payload.id) : null;
+    if (editId !== null && !store.expenses.some((row) => row.id === editId)) throw new Error("Запись не найдена");
+    const recordId = editId ?? nextId(store.expenses);
+    if (editId !== null) store.expenses = store.expenses.filter((row) => row.id !== editId);
     store.expenses.push({
-      id: nextId(store.expenses),
+      id: recordId,
       expenseDate: payload.expenseDate,
       category: payload.category as Expense["category"],
       payer: payload.category === "fuel" && payload.payer === "customer" ? "customer" : "self",
@@ -652,6 +664,7 @@ export default function RentalApp() {
   const [entryDate, setEntryDate] = useState(today);
   const [editingEntry, setEditingEntry] = useState<Entry | null>(null);
   const [editUnits, setEditUnits] = useState("");
+  const [editNote, setEditNote] = useState("");
   const [expensePayer, setExpensePayer] = useState<"self" | "customer">("self");
   const [entryUnits, setEntryUnits] = useState("");
   const [entryNote, setEntryNote] = useState("");
@@ -663,6 +676,7 @@ export default function RentalApp() {
   const [importRows, setImportRows] = useState<ImportRow[]>([]);
   const [importWarnings, setImportWarnings] = useState<string[]>([]);
 
+  const [editingInvoiceId, setEditingInvoiceId] = useState<number | null>(null);
   const [invoiceOpen, setInvoiceOpen] = useState(false);
   const [invoiceKind, setInvoiceKind] = useState<Invoice["kind"]>("fixed");
   const [invoiceNumber, setInvoiceNumber] = useState("");
@@ -671,6 +685,7 @@ export default function RentalApp() {
   const [invoiceAmount, setInvoiceAmount] = useState("80000");
   const [invoiceNote, setInvoiceNote] = useState("");
 
+  const [editingPaymentId, setEditingPaymentId] = useState<number | null>(null);
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [paymentInvoiceId, setPaymentInvoiceId] = useState<number | null>(null);
   const [paymentDate, setPaymentDate] = useState(today);
@@ -679,6 +694,7 @@ export default function RentalApp() {
   const [paymentDocument, setPaymentDocument] = useState("");
   const [paymentNote, setPaymentNote] = useState("");
 
+  const [editingExpenseId, setEditingExpenseId] = useState<number | null>(null);
   const [expenseOpen, setExpenseOpen] = useState(false);
   const [expenseDate, setExpenseDate] = useState(today);
   const [expenseCategory, setExpenseCategory] = useState<Expense["category"]>("base_lease");
@@ -951,6 +967,7 @@ export default function RentalApp() {
   }
 
   function openInvoice(kind: Invoice["kind"] = "fixed") {
+    setEditingInvoiceId(null);
     const selectedDate = month === today.slice(0, 7) ? today : `${month}-01`;
     setInvoiceKind(kind);
     setInvoiceAmount(
@@ -976,7 +993,8 @@ export default function RentalApp() {
     }
     const ok = await request(
       {
-        action: "create_invoice",
+        action: editingInvoiceId === null ? "create_invoice" : "update_invoice",
+        id: editingInvoiceId,
         period: month,
         invoiceNumber,
         invoiceDate,
@@ -985,12 +1003,13 @@ export default function RentalApp() {
         dueDate: invoiceDueDate,
         note: invoiceNote,
       },
-      "Счёт добавлен в историю",
+      editingInvoiceId === null ? "Счёт добавлен в историю" : "Счёт изменён",
     );
     if (ok) setInvoiceOpen(false);
   }
 
   function openPayment(invoice: Invoice) {
+    setEditingPaymentId(null);
     const alreadyPaid = paidByInvoice.get(invoice.id) ?? 0;
     setPaymentInvoiceId(invoice.id);
     setPaymentDate(today);
@@ -1010,7 +1029,8 @@ export default function RentalApp() {
     }
     const ok = await request(
       {
-        action: "create_payment",
+        action: editingPaymentId === null ? "create_payment" : "update_payment",
+        id: editingPaymentId,
         invoiceId: paymentInvoiceId,
         paymentDate,
         amountKopecks,
@@ -1024,6 +1044,7 @@ export default function RentalApp() {
   }
 
   function openExpense() {
+    setEditingExpenseId(null);
     setExpenseDate(month === today.slice(0, 7) ? today : `${month}-01`);
     setExpensePayer("self");
     setExpenseCategory("base_lease");
@@ -1043,7 +1064,8 @@ export default function RentalApp() {
     }
     const ok = await request(
       {
-        action: "create_expense",
+        action: editingExpenseId === null ? "create_expense" : "update_expense",
+        id: editingExpenseId,
         expenseDate,
         category: expenseCategory,
         payer: expenseCategory === "fuel" ? expensePayer : "self",
@@ -1055,6 +1077,29 @@ export default function RentalApp() {
       "Расход сохранён",
     );
     if (ok) setExpenseOpen(false);
+  }
+
+  function editInvoice(invoice: Invoice) {
+    setEditingInvoiceId(invoice.id);
+    setInvoiceKind(invoice.kind); setInvoiceNumber(invoice.invoiceNumber);
+    setInvoiceDate(invoice.invoiceDate); setInvoiceDueDate(invoice.dueDate ?? "");
+    setInvoiceAmount(String(invoice.amountKopecks / 100)); setInvoiceNote(invoice.note);
+    setInvoiceOpen(true);
+  }
+
+  function editPayment(payment: Payment) {
+    setEditingPaymentId(payment.id); setPaymentInvoiceId(payment.invoiceId);
+    setPaymentDate(payment.paymentDate); setPaymentAmount(String(payment.amountKopecks / 100));
+    setPaymentMethod(payment.method); setPaymentDocument(payment.documentNumber);
+    setPaymentNote(payment.note); setPaymentOpen(true);
+  }
+
+  function editExpense(expense: Expense) {
+    setEditingExpenseId(expense.id); setExpenseDate(expense.expenseDate);
+    setExpenseCategory(expense.category); setExpenseAmount(String(expense.amountKopecks / 100));
+    setExpenseMethod(expense.method); setExpensePayer(expense.payer ?? "self");
+    setExpenseDocument(expense.documentNumber); setExpenseNote(expense.note);
+    setExpenseOpen(true);
   }
 
   function askDeleteEntry(entry: Entry) {
@@ -1602,7 +1647,7 @@ export default function RentalApp() {
                           </div>
                           {!data.closure && (
                             <div className="flex items-center gap-1">
-                              <Button type="button" variant="outline" size="sm" onClick={() => { setEditingEntry(entry); setEditUnits(String(entry.units)); }} aria-label={`Изменить запись за ${dateLabel(entry.entryDate)}`}>
+                              <Button type="button" variant="outline" size="sm" onClick={() => { setEditingEntry(entry); setEditUnits(String(entry.units)); setEditNote(entry.note); }} aria-label={`Изменить запись за ${dateLabel(entry.entryDate)}`}>
                                 <Pencil className="size-4" />Изменить
                               </Button>
                               <Button type="button" variant="ghost" size="icon" onClick={() => askDeleteEntry(entry)} aria-label="Удалить запись"><Trash2 /></Button>
@@ -1666,6 +1711,7 @@ export default function RentalApp() {
                                 {invoiceLabels[invoice.kind]} · {dateLabel(invoice.invoiceDate)}
                               </p>
                             </div>
+                            {offlineMode && <Button type="button" variant="ghost" size="icon" onClick={() => editInvoice(invoice)} aria-label="Редактировать счёт"><Pencil /></Button>}
                             <Button type="button" variant="ghost" size="icon" onClick={() => askDeleteInvoice(invoice)} aria-label="Удалить счёт">
                               <Trash2 />
                             </Button>
@@ -1717,7 +1763,8 @@ export default function RentalApp() {
                                 <div key={payment.id}>
                                   <span>{dateLabel(payment.paymentDate)} · {payment.method === "bank" ? "Безналичные" : "Наличные"}</span>
                                   <strong>{money(payment.amountKopecks)}</strong>
-                                  <Button type="button" variant="ghost" size="icon" onClick={() => askDeletePayment(payment)} aria-label="Удалить оплату"><Trash2 /></Button>
+                                  {offlineMode && <Button type="button" variant="ghost" size="icon" onClick={() => editPayment(payment)} aria-label="Редактировать оплату"><Pencil /></Button>}
+                            <Button type="button" variant="ghost" size="icon" onClick={() => askDeletePayment(payment)} aria-label="Удалить оплату"><Trash2 /></Button>
                                 </div>
                               ))}
                             </div>
@@ -1767,7 +1814,8 @@ export default function RentalApp() {
                             <p>{[expense.documentNumber && `Документ: ${expense.documentNumber}`, expense.note].filter(Boolean).join(" · ")}</p>
                           )}
                         </div>
-                        <Button type="button" variant="ghost" size="icon" onClick={() => askDeleteExpense(expense)} aria-label="Удалить расход"><Trash2 /></Button>
+                        {offlineMode && <Button type="button" variant="ghost" size="icon" onClick={() => editExpense(expense)} aria-label="Редактировать расход"><Pencil /></Button>}
+                            <Button type="button" variant="ghost" size="icon" onClick={() => askDeleteExpense(expense)} aria-label="Удалить расход"><Trash2 /></Button>
                       </article>
                     ))}
                   </div>
@@ -1812,10 +1860,11 @@ export default function RentalApp() {
           <form className="dialog-form" onSubmit={async (event) => {
             event.preventDefault();
             if (!editingEntry || editUnits.trim() === "") return;
-            const ok = await request({ action: "save_entry", entryDate: editingEntry.entryDate, units: Number(editUnits), note: editingEntry.note }, "Количество обновлено");
+            const ok = await request({ action: "save_entry", entryDate: editingEntry.entryDate, units: Number(editUnits), note: editNote }, "Количество обновлено");
             if (ok) setEditingEntry(null);
           }}>
             <label><FieldLabel>Бутылок за день</FieldLabel><Input autoFocus type="number" min="0" step="1" inputMode="numeric" value={editUnits} onChange={(event) => setEditUnits(event.target.value)} onFocus={(event) => event.currentTarget.select()} required /></label>
+            <label><FieldLabel>Примечание</FieldLabel><Textarea value={editNote} onChange={(event) => setEditNote(event.target.value)} /></label>
             <DialogFooter><Button type="button" variant="outline" onClick={() => setEditingEntry(null)}>Отмена</Button><Button type="submit" disabled={busy || editUnits.trim() === ""}>Сохранить</Button></DialogFooter>
           </form>
         </DialogContent>
@@ -1867,8 +1916,8 @@ export default function RentalApp() {
       <Dialog open={invoiceOpen} onOpenChange={setInvoiceOpen}>
         <DialogContent className="dialog-card max-h-[92vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Добавить выставленный счёт</DialogTitle>
-            <DialogDescription>Сохраняется история счёта. Сам документ приложение пока не отправляет.</DialogDescription>
+            <DialogTitle>{editingInvoiceId === null ? "Добавить выставленный счёт" : "Редактировать счёт"}</DialogTitle>
+            <DialogDescription>Период счёта — выбранный месяц. Изменения сохраняются только в приложении, документ в банке нужно исправить отдельно.</DialogDescription>
           </DialogHeader>
           <form onSubmit={createInvoice} className="dialog-form">
             <label>
@@ -1878,8 +1927,8 @@ export default function RentalApp() {
                 onValueChange={(value) => {
                   const kind = value as Invoice["kind"];
                   setInvoiceKind(kind);
-                  if (kind === "fixed") setInvoiceAmount(String(rules.baseKopecks / 100));
-                  if (kind === "variable") setInvoiceAmount(String(calculation.variableKopecks / 100));
+                  if (editingInvoiceId === null && kind === "fixed") setInvoiceAmount(String(rules.baseKopecks / 100));
+                  if (editingInvoiceId === null && kind === "variable") setInvoiceAmount(String(calculation.variableKopecks / 100));
                 }}
               >
                 <SelectTrigger className="h-11 w-full"><SelectValue /></SelectTrigger>
@@ -1910,7 +1959,7 @@ export default function RentalApp() {
       <Dialog open={paymentOpen} onOpenChange={setPaymentOpen}>
         <DialogContent className="dialog-card max-h-[92vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Добавить оплату</DialogTitle>
+            <DialogTitle>{editingPaymentId === null ? "Добавить оплату" : "Редактировать оплату"}</DialogTitle>
             <DialogDescription>Можно вносить оплату частями и отмечать наличные или безналичные.</DialogDescription>
           </DialogHeader>
           <form onSubmit={createPayment} className="dialog-form">
@@ -1938,7 +1987,7 @@ export default function RentalApp() {
       <Dialog open={expenseOpen} onOpenChange={setExpenseOpen}>
         <DialogContent className="dialog-card max-h-[92vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Добавить расход</DialogTitle>
+            <DialogTitle>{editingExpenseId === null ? "Добавить расход" : "Редактировать расход"}</DialogTitle>
             <DialogDescription>Расход попадёт во внутренний отчёт за выбранный месяц.</DialogDescription>
           </DialogHeader>
           <form onSubmit={createExpense} className="dialog-form">
@@ -1949,7 +1998,7 @@ export default function RentalApp() {
                 onValueChange={(value) => {
                   const category = value as Expense["category"];
                   setExpenseCategory(category);
-                  if (category === "base_lease") setExpenseAmount("20000");
+                  if (editingExpenseId === null && category === "base_lease") setExpenseAmount("20000");
                 }}
               >
                 <SelectTrigger className="h-11 w-full"><SelectValue /></SelectTrigger>
