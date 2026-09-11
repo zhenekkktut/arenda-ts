@@ -15,6 +15,7 @@ import {
   LoaderCircle,
   LockKeyhole,
   Plus,
+  Pencil,
   ReceiptText,
   Smartphone,
   Trash2,
@@ -86,6 +87,7 @@ type Payment = {
 };
 
 type Expense = {
+  payer?: "self" | "customer";
   id: number;
   expenseDate: string;
   category: "base_lease" | "repair" | "fuel" | "insurance" | "tax" | "other";
@@ -378,6 +380,7 @@ function saveOfflineAction(payload: Record<string, unknown>) {
       id: nextId(store.expenses),
       expenseDate: payload.expenseDate,
       category: payload.category as Expense["category"],
+      payer: payload.category === "fuel" && payload.payer === "customer" ? "customer" : "self",
       amountKopecks,
       method: payload.method as Expense["method"],
       documentNumber: typeof payload.documentNumber === "string" ? payload.documentNumber.trim().slice(0, 80) : "",
@@ -647,6 +650,9 @@ export default function RentalApp() {
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
 
   const [entryDate, setEntryDate] = useState(today);
+  const [editingEntry, setEditingEntry] = useState<Entry | null>(null);
+  const [editUnits, setEditUnits] = useState("");
+  const [expensePayer, setExpensePayer] = useState<"self" | "customer">("self");
   const [entryUnits, setEntryUnits] = useState("");
   const [entryNote, setEntryNote] = useState("");
   const [entryOptionsOpen, setEntryOptionsOpen] = useState(false);
@@ -785,8 +791,12 @@ export default function RentalApp() {
   const totalPaid = data?.payments.reduce((sum, payment) => sum + payment.amountKopecks, 0) ?? 0;
   const totalInvoiced = data?.invoices.reduce((sum, invoice) => sum + invoice.amountKopecks, 0) ?? 0;
   const totalExpenses = data?.expenses.reduce((sum, expense) => sum + expense.amountKopecks, 0) ?? 0;
-  const rentBalance = Math.max(0, calculation.totalKopecks - totalPaid);
-  const cashResult = totalPaid - totalExpenses;
+  const customerFuel = data?.expenses.filter((e) => e.category === "fuel" && e.payer === "customer").reduce((sum, e) => sum + e.amountKopecks, 0) ?? 0;
+  const selfExpenses = totalExpenses - customerFuel;
+  const netRent = Math.max(0, calculation.totalKopecks - customerFuel);
+  const remainingToInvoice = Math.max(0, netRent - totalInvoiced);
+  const rentBalance = Math.max(0, netRent - totalPaid);
+  const cashResult = totalPaid - selfExpenses;
   const progress = Math.min(100, (calculation.actualUnits / calculation.includedUnits) * 100);
   const importTotalUnits = importRows.reduce((sum, row) => sum + row.units, 0);
 
@@ -1015,6 +1025,7 @@ export default function RentalApp() {
 
   function openExpense() {
     setExpenseDate(month === today.slice(0, 7) ? today : `${month}-01`);
+    setExpensePayer("self");
     setExpenseCategory("base_lease");
     setExpenseAmount("20000");
     setExpenseMethod("bank");
@@ -1035,6 +1046,7 @@ export default function RentalApp() {
         action: "create_expense",
         expenseDate,
         category: expenseCategory,
+        payer: expenseCategory === "fuel" ? expensePayer : "self",
         amountKopecks,
         method: expenseMethod,
         documentNumber: expenseDocument,
@@ -1145,6 +1157,11 @@ export default function RentalApp() {
         ["Ставка сверх лимита, ₽/ед.", calculation.rateKopecks / 100],
         ["Переменная часть, ₽", calculation.variableKopecks / 100],
         ["ИТОГО АРЕНДА, ₽", calculation.totalKopecks / 100],
+        ["Топливо оплачено заказчиком, ₽", customerFuel / 100],
+        ["Аренда после вычета топлива, ₽", netRent / 100],
+        ["Уже выставлено, ₽", totalInvoiced / 100],
+        ["Осталось выставить, ₽", remainingToInvoice / 100],
+        ["Собственные расходы, ₽", selfExpenses / 100],
         ["Статус месяца", data.closure ? "Закрыт" : "Открыт"],
       ];
       const calculationSheet = XLSX.utils.aoa_to_sheet(calculationRows);
@@ -1202,7 +1219,7 @@ export default function RentalApp() {
       XLSX.utils.book_append_sheet(workbook, invoicesSheet, "Счета и оплаты");
 
       const expenseRows: (string | number)[][] = [
-        ["Дата", "Категория", "Сумма, ₽", "Способ оплаты", "Документ", "Примечание"],
+        ["Дата", "Категория", "Сумма, ₽", "Способ оплаты", "Документ", "Примечание", "Кто оплатил", "Вычет из аренды, ₽"],
         ...data.expenses.map((expense) => [
           dateLabel(expense.expenseDate),
           expenseLabels[expense.category],
@@ -1210,11 +1227,13 @@ export default function RentalApp() {
           expense.method === "bank" ? "Безналичные" : "Наличные",
           expense.documentNumber,
           expense.note,
+          expense.payer === "customer" ? "Заказчик" : "Я",
+          expense.category === "fuel" && expense.payer === "customer" ? expense.amountKopecks / 100 : 0,
         ]),
         ["ИТОГО", "", totalExpenses / 100, "", "", ""],
       ];
       const expensesSheet = XLSX.utils.aoa_to_sheet(expenseRows);
-      expensesSheet["!cols"] = [{ wch: 15 }, { wch: 24 }, { wch: 15 }, { wch: 20 }, { wch: 22 }, { wch: 38 }];
+      expensesSheet["!cols"] = [{ wch: 15 }, { wch: 24 }, { wch: 15 }, { wch: 20 }, { wch: 22 }, { wch: 38 }, { wch: 20 }, { wch: 24 }];
       XLSX.utils.book_append_sheet(workbook, expensesSheet, "Расходы");
 
       const fileName = `arenda_ts_${month}.xlsx`;
@@ -1270,6 +1289,27 @@ export default function RentalApp() {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Не удалось восстановить данные");
     }
+  }
+
+  function settlementPanel() {
+    return <section className="panel">
+      <h2 className="font-semibold">Расчёт с заказчиком</h2>
+      <div className="calculation-list mt-3">
+        <div><span>Начислено за месяц</span><strong>{money(calculation.totalKopecks)}</strong></div>
+        <div><span>Минус топливо заказчика</span><strong>{money(customerFuel)}</strong></div>
+        <div><span>После вычета топлива</span><strong>{money(netRent)}</strong></div>
+        <div><span>Уже выставлено</span><strong>{money(totalInvoiced)}</strong></div>
+        <div className="calculation-total"><span>Осталось выставить</span><strong>{money(remainingToInvoice)}</strong></div>
+      </div>
+      {customerFuel > calculation.totalKopecks && <p className="help-note">Топливо превышает начисление на {money(customerFuel - calculation.totalKopecks)}. Перенос на другой месяц не выполняется автоматически.</p>}
+      {totalInvoiced > netRent && <p className="help-note">Выставлено больше расчётной суммы на {money(totalInvoiced - netRent)}. Проверьте ранее выставленные счета.</p>}
+      <Button className="mt-4" type="button" disabled={remainingToInvoice <= 0} onClick={() => {
+        openInvoice("other");
+        setInvoiceAmount(String(remainingToInvoice / 100));
+        setInvoiceNote(`Начислено: ${money(calculation.totalKopecks)}. Топливо заказчика: ${money(customerFuel)}. Ранее выставлено: ${money(totalInvoiced)}.`);
+      }}>Счёт на остаток</Button>
+      <p className="help-note">Существующие счета сохраняют свою сумму. Оплаты по счетам учитываются отдельно от суммы к выставлению.</p>
+    </section>;
   }
 
   async function installApp() {
@@ -1451,6 +1491,7 @@ export default function RentalApp() {
           ) : data ? (
             <>
               <TabsContent value="summary" className="space-y-4">
+                {offlineMode && settlementPanel()}
                 <section className="summary-grid">
                   <article className="money-card money-card-main">
                     <span>Аренда за месяц</span>
@@ -1495,7 +1536,7 @@ export default function RentalApp() {
                   <div>
                     <span className="eyebrow">Денежный результат месяца</span>
                     <strong className={cashResult < 0 ? "text-rose-700" : "text-emerald-700"}>{money(cashResult)}</strong>
-                    <p>Оплаты минус внесённые расходы. Налоги здесь не рассчитываются.</p>
+                    <p>Полученные оплаты минус собственные расходы. Топливо заказчика повторно не вычитается.</p>
                   </div>
                   <Banknote className="size-8" />
                 </section>
@@ -1560,9 +1601,12 @@ export default function RentalApp() {
                             {entry.note && <p>{entry.note}</p>}
                           </div>
                           {!data.closure && (
-                            <Button type="button" variant="ghost" size="icon" onClick={() => askDeleteEntry(entry)} aria-label="Удалить запись">
-                              <Trash2 />
-                            </Button>
+                            <div className="flex items-center gap-1">
+                              <Button type="button" variant="outline" size="sm" onClick={() => { setEditingEntry(entry); setEditUnits(String(entry.units)); }} aria-label={`Изменить запись за ${dateLabel(entry.entryDate)}`}>
+                                <Pencil className="size-4" />Изменить
+                              </Button>
+                              <Button type="button" variant="ghost" size="icon" onClick={() => askDeleteEntry(entry)} aria-label="Удалить запись"><Trash2 /></Button>
+                            </div>
                           )}
                         </article>
                       ))}
@@ -1572,6 +1616,7 @@ export default function RentalApp() {
               </TabsContent>
 
               <TabsContent value="invoices" className="space-y-4">
+                {offlineMode && settlementPanel()}
                 <section className="finance-summary">
                   <div><span>Выставлено</span><strong>{money(totalInvoiced)}</strong></div>
                   <div><span>Получено</span><strong>{money(totalPaid)}</strong></div>
@@ -1698,7 +1743,7 @@ export default function RentalApp() {
                 <Button type="button" onClick={openExpense} className="h-12 w-full sm:w-auto">
                   <Plus />Добавить расход
                 </Button>
-                <p className="help-note">Топливо и ремонт учитываются здесь для внутреннего контроля и не добавляются к арендному счёту.</p>
+                <p className="help-note">Собственные расходы: {money(selfExpenses)}. Топливо заказчика: {money(customerFuel)} — вычитается из начисленной аренды.</p>
 
                 {data.expenses.length === 0 ? (
                   <section className="panel empty-state">
@@ -1717,7 +1762,7 @@ export default function RentalApp() {
                             <h2>{expenseLabels[expense.category]}</h2>
                             <strong>{money(expense.amountKopecks)}</strong>
                           </div>
-                          <p>{dateLabel(expense.expenseDate)} · {expense.method === "bank" ? "Безналичные" : "Наличные"}</p>
+                          <p>{expense.payer === "customer" ? "Заказчик · вычет из аренды" : "Оплатил я"} · {dateLabel(expense.expenseDate)} · {expense.method === "bank" ? "Безналичные" : "Наличные"}</p>
                           {(expense.documentNumber || expense.note) && (
                             <p>{[expense.documentNumber && `Документ: ${expense.documentNumber}`, expense.note].filter(Boolean).join(" · ")}</p>
                           )}
@@ -1757,6 +1802,24 @@ export default function RentalApp() {
           </section>
         )}
       </main>
+
+      <Dialog open={Boolean(editingEntry)} onOpenChange={(open) => { if (!open) setEditingEntry(null); }}>
+        <DialogContent className="dialog-card">
+          <DialogHeader>
+            <DialogTitle>Изменить количество</DialogTitle>
+            <DialogDescription>{editingEntry ? dateLabel(editingEntry.entryDate) : ""}. Сохранение заменит прежнее количество за этот день.</DialogDescription>
+          </DialogHeader>
+          <form className="dialog-form" onSubmit={async (event) => {
+            event.preventDefault();
+            if (!editingEntry || editUnits.trim() === "") return;
+            const ok = await request({ action: "save_entry", entryDate: editingEntry.entryDate, units: Number(editUnits), note: editingEntry.note }, "Количество обновлено");
+            if (ok) setEditingEntry(null);
+          }}>
+            <label><FieldLabel>Бутылок за день</FieldLabel><Input autoFocus type="number" min="0" step="1" inputMode="numeric" value={editUnits} onChange={(event) => setEditUnits(event.target.value)} onFocus={(event) => event.currentTarget.select()} required /></label>
+            <DialogFooter><Button type="button" variant="outline" onClick={() => setEditingEntry(null)}>Отмена</Button><Button type="submit" disabled={busy || editUnits.trim() === ""}>Сохранить</Button></DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={importOpen} onOpenChange={setImportOpen}>
         <DialogContent className="dialog-card import-dialog max-h-[92vh] overflow-y-auto sm:max-w-xl">
@@ -1911,6 +1974,15 @@ export default function RentalApp() {
                 <SelectContent><SelectItem value="bank">Безналичные</SelectItem><SelectItem value="cash">Наличные</SelectItem></SelectContent>
               </Select>
             </label>
+            {offlineMode && expenseCategory === "fuel" && (
+              <label><FieldLabel>Кто оплатил топливо</FieldLabel>
+                <Select value={expensePayer} onValueChange={(value) => setExpensePayer(value as "self" | "customer")}>
+                  <SelectTrigger className="h-11 w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectItem value="self">Я — собственный расход</SelectItem><SelectItem value="customer">Заказчик — вычесть из аренды</SelectItem></SelectContent>
+                </Select>
+                <p className="help-note">Выбирайте заказчика только для суммы, которую нужно зачесть в оплату аренды. Разделённую оплату внесите двумя записями.</p>
+              </label>
+            )}
             <label><FieldLabel>Документ</FieldLabel><Input value={expenseDocument} onChange={(event) => setExpenseDocument(event.target.value)} placeholder="Чек, заказ-наряд или платёжка" /></label>
             <label><FieldLabel>Примечание</FieldLabel><Textarea value={expenseNote} onChange={(event) => setExpenseNote(event.target.value)} placeholder="Необязательно" /></label>
             <DialogFooter>
