@@ -2,79 +2,59 @@ name: Android APK
 
 on:
   push:
-    branches: [main]
-    paths:
-      - "android/**"
-      - "offline/**"
-      - "app/rental-app.tsx"
-      - "app/globals.css"
-      - "components/**"
-      - "lib/**"
-      - "package.json"
-      - "package-lock.json"
-      - "postcss.config.mjs"
-      - "vendor/**"
-      - ".github/workflows/android-apk.yml"
+    branches: [documents-v3]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: android-latest
+  group: android-documents-v3
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Собрать APK
+    name: Собрать APK 3.0
     runs-on: ubuntu-latest
-
     steps:
       - name: Получить исходный код
         uses: actions/checkout@v4
-
       - name: Установить Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-
       - name: Установить Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
-
-      - name: Собрать автономный интерфейс
+      - name: Проверить расчёты документов
         run: |
           npm ci
-          ./node_modules/.bin/vite build --config offline/vite.config.ts
-
+          node --test tests/document-tools.test.mjs
+      - name: Собрать автономный интерфейс
+        run: ./node_modules/.bin/vite build --config offline/vite.config.ts
       - name: Установить Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.11.1"
-
-      - name: Собрать устанавливаемый APK
+      - name: Собрать APK
         run: gradle -p android :app:assembleDebug --no-daemon --stacktrace
-
-      - name: Подготовить файл
-        run: cp android/app/build/outputs/apk/debug/app-debug.apk arenda-ts.apk
-
-      - name: Сохранить результат сборки
+      - name: Подготовить APK и инструменты подписи
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk arenda-ts.apk
+          mkdir -p signer/lib
+          apksigner_path="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          zipalign_path="$(find "$ANDROID_HOME/build-tools" -type f -name zipalign | sort -V | tail -1)"
+          cp "$apksigner_path" signer/apksigner
+          cp "$(dirname "$apksigner_path")/lib/apksigner.jar" signer/lib/apksigner.jar
+          cp "$zipalign_path" signer/zipalign
+      - name: Сохранить результат
         uses: actions/upload-artifact@v4
         with:
-          name: arenda-ts-apk
-          path: arenda-ts.apk
+          name: arenda-ts-v3-build
+          path: |
+            arenda-ts.apk
+            signer
           retention-days: 30
-
-      - name: Обновить прямую ссылку на APK
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if gh release view android-latest >/dev/null 2>&1; then
-            gh release upload android-latest arenda-ts.apk --clobber
-            gh release edit android-latest --title "Аренда ТС — Android" --notes "Автономная версия 2.0. Работает без ChatGPT, сайта, VPN и интернета. Данные хранятся на телефоне; предусмотрены Excel и резервная копия."
-          else
-            gh release create android-latest arenda-ts.apk --target "$GITHUB_SHA" --title "Аренда ТС — Android" --notes "Автономная версия 2.0. Работает без ChatGPT, сайта, VPN и интернета. Данные хранятся на телефоне; предусмотрены Excel и резервная копия."
-          fi
