@@ -50,6 +50,7 @@ jobs:
           cp "$apksigner_path" signer/apksigner
           cp "$(dirname "$apksigner_path")/lib/apksigner.jar" signer/lib/apksigner.jar
           cp "$zipalign_path" signer/zipalign
+          cp "$(dirname "$zipalign_path")/lib64/libc++.so" signer/libc++.so
       - name: Сохранить результат
         uses: actions/upload-artifact@v4
         with:
