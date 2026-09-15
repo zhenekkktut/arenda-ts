@@ -1,20 +1,30 @@
-name: Android APK
+name: Проверка Android
 
 on:
   push:
-    branches: [documents-v3]
+    branches: [main]
+    paths:
+      - "android/**"
+      - "offline/**"
+      - "app/**"
+      - "components/**"
+      - "lib/**"
+      - "tests/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/android-apk.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: android-documents-v3
+  group: android-main-check
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Собрать APK 3.0
+    name: Проверить автономное приложение
     runs-on: ubuntu-latest
     steps:
       - name: Получить исходный код
@@ -39,23 +49,5 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.11.1"
-      - name: Собрать APK
+      - name: Проверить Android-сборку
         run: gradle -p android :app:assembleDebug --no-daemon --stacktrace
-      - name: Подготовить APK и инструменты подписи
-        run: |
-          cp android/app/build/outputs/apk/debug/app-debug.apk arenda-ts.apk
-          mkdir -p signer/lib
-          apksigner_path="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
-          zipalign_path="$(find "$ANDROID_HOME/build-tools" -type f -name zipalign | sort -V | tail -1)"
-          cp "$apksigner_path" signer/apksigner
-          cp "$(dirname "$apksigner_path")/lib/apksigner.jar" signer/lib/apksigner.jar
-          cp "$zipalign_path" signer/zipalign
-          cp "$(dirname "$zipalign_path")/lib64/libc++.so" signer/libc++.so
-      - name: Сохранить результат
-        uses: actions/upload-artifact@v4
-        with:
-          name: arenda-ts-v3-build
-          path: |
-            arenda-ts.apk
-            signer
-          retention-days: 30
