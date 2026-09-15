@@ -8,11 +8,9 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
-import android.os.CancellationSignal;
-import android.os.ParcelFileDescriptor;
-import android.print.PageRange;
 import android.print.PrintAttributes;
 import android.print.PrintDocumentAdapter;
+import android.print.PrintManager;
 import android.util.Base64;
 import android.view.View;
 import android.webkit.JavascriptInterface;
@@ -32,7 +30,6 @@ import androidx.webkit.WebViewAssetLoader;
 public class MainActivity extends Activity {
     private static final int REQUEST_OPEN_FILE = 1001;
     private static final int REQUEST_SAVE_FILE = 1002;
-    private static final int REQUEST_SAVE_PDF = 1003;
 
     private WebView webView;
     private WebViewAssetLoader assetLoader;
@@ -40,8 +37,6 @@ public class MainActivity extends Activity {
     private byte[] pendingFileBytes;
     private String pendingFileName;
     private String pendingMimeType;
-    private String pendingPdfHtml;
-    private String pendingPdfFileName;
     private WebView pdfWebView;
 
     @Override
@@ -170,14 +165,6 @@ public class MainActivity extends Activity {
             return;
         }
 
-        if (requestCode == REQUEST_SAVE_PDF) {
-            if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null && pendingPdfHtml != null) {
-                createPdf(data.getData());
-            } else {
-                pendingPdfHtml = null;
-                pendingPdfFileName = null;
-            }
-        }
     }
 
     @Override
@@ -241,49 +228,31 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> Toast.makeText(MainActivity.this, R.string.file_save_error, Toast.LENGTH_LONG).show());
                 return;
             }
-            pendingPdfHtml = html;
-            pendingPdfFileName = safeFileName(fileName == null ? "document.pdf" : fileName);
-            if (!pendingPdfFileName.toLowerCase().endsWith(".pdf")) pendingPdfFileName += ".pdf";
-            runOnUiThread(() -> {
-                Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
-                intent.addCategory(Intent.CATEGORY_OPENABLE);
-                intent.setType("application/pdf");
-                intent.putExtra(Intent.EXTRA_TITLE, pendingPdfFileName);
-                try {
-                    startActivityForResult(intent, REQUEST_SAVE_PDF);
-                } catch (Exception error) {
-                    pendingPdfHtml = null;
-                    pendingPdfFileName = null;
-                    Toast.makeText(MainActivity.this, R.string.file_save_error, Toast.LENGTH_LONG).show();
-                }
-            });
+            String pdfFileName = safeFileName(fileName == null ? "document.pdf" : fileName);
+            if (!pdfFileName.toLowerCase().endsWith(".pdf")) pdfFileName += ".pdf";
+            final String finalPdfFileName = pdfFileName;
+            runOnUiThread(() -> openPdfPrintDialog(html, finalPdfFileName));
         }
     }
 
-    private void createPdf(Uri destination) {
-        final String html = pendingPdfHtml;
-        pendingPdfHtml = null;
-        if (html == null) return;
-
-        final ParcelFileDescriptor descriptor;
-        try {
-            descriptor = getContentResolver().openFileDescriptor(destination, "w");
-            if (descriptor == null) throw new IllegalStateException("Файл недоступен");
-        } catch (Exception error) {
-            pendingPdfFileName = null;
-            Toast.makeText(this, R.string.file_save_error, Toast.LENGTH_LONG).show();
-            return;
+    private void openPdfPrintDialog(String html, String pdfFileName) {
+        if (pdfWebView != null) {
+            pdfWebView.destroy();
+            pdfWebView = null;
         }
-
         pdfWebView = new WebView(this);
         pdfWebView.setBackgroundColor(Color.WHITE);
         pdfWebView.getSettings().setJavaScriptEnabled(false);
         pdfWebView.getSettings().setBlockNetworkLoads(true);
         pdfWebView.getSettings().setDefaultTextEncodingName("UTF-8");
         pdfWebView.setWebViewClient(new WebViewClient() {
+            private boolean printStarted;
+
             @Override
             public void onPageFinished(WebView view, String url) {
-                view.postDelayed(() -> writePdf(view, descriptor), 250);
+                if (printStarted) return;
+                printStarted = true;
+                view.postDelayed(() -> startPdfPrint(view, pdfFileName), 250);
             }
         });
         pdfWebView.loadDataWithBaseURL(
@@ -295,65 +264,21 @@ public class MainActivity extends Activity {
         );
     }
 
-    private void writePdf(WebView source, ParcelFileDescriptor descriptor) {
-        PrintDocumentAdapter adapter = source.createPrintDocumentAdapter(pendingPdfFileName == null ? "Документ" : pendingPdfFileName);
-        PrintAttributes attributes = new PrintAttributes.Builder()
-            .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
-            .setResolution(new PrintAttributes.Resolution("pdf", "PDF", 600, 600))
-            .setMinMargins(PrintAttributes.Margins.NO_MARGINS)
-            .setColorMode(PrintAttributes.COLOR_MODE_MONOCHROME)
-            .build();
-        CancellationSignal cancellation = new CancellationSignal();
-
-        adapter.onLayout(null, attributes, cancellation, new PrintDocumentAdapter.LayoutResultCallback() {
-            @Override
-            public void onLayoutFinished(android.print.PrintDocumentInfo info, boolean changed) {
-                adapter.onWrite(
-                    new PageRange[] { PageRange.ALL_PAGES },
-                    descriptor,
-                    cancellation,
-                    new PrintDocumentAdapter.WriteResultCallback() {
-                        @Override
-                        public void onWriteFinished(PageRange[] pages) {
-                            finishPdf(descriptor, true);
-                        }
-
-                        @Override
-                        public void onWriteFailed(CharSequence error) {
-                            finishPdf(descriptor, false);
-                        }
-
-                        @Override
-                        public void onWriteCancelled() {
-                            finishPdf(descriptor, false);
-                        }
-                    }
-                );
-            }
-
-            @Override
-            public void onLayoutFailed(CharSequence error) {
-                finishPdf(descriptor, false);
-            }
-
-            @Override
-            public void onLayoutCancelled() {
-                finishPdf(descriptor, false);
-            }
-        }, null);
-    }
-
-    private void finishPdf(ParcelFileDescriptor descriptor, boolean success) {
+    private void startPdfPrint(WebView source, String pdfFileName) {
         try {
-            descriptor.close();
-        } catch (Exception ignored) {
+            PrintManager printManager = (PrintManager) getSystemService(Context.PRINT_SERVICE);
+            if (printManager == null) throw new IllegalStateException("Печать недоступна");
+            PrintDocumentAdapter adapter = source.createPrintDocumentAdapter(pdfFileName);
+            PrintAttributes attributes = new PrintAttributes.Builder()
+                .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
+                .setMinMargins(PrintAttributes.Margins.NO_MARGINS)
+                .setColorMode(PrintAttributes.COLOR_MODE_MONOCHROME)
+                .build();
+            printManager.print(pdfFileName, adapter, attributes);
+            Toast.makeText(this, R.string.pdf_ready, Toast.LENGTH_LONG).show();
+        } catch (Exception error) {
+            Toast.makeText(this, R.string.file_save_error, Toast.LENGTH_LONG).show();
         }
-        if (pdfWebView != null) {
-            pdfWebView.destroy();
-            pdfWebView = null;
-        }
-        pendingPdfFileName = null;
-        Toast.makeText(this, success ? R.string.pdf_saved : R.string.file_save_error, Toast.LENGTH_LONG).show();
     }
 
     private String safeFileName(String value) {
