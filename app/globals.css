@@ -370,6 +370,99 @@ textarea {
   min-height: 2.75rem;
 }
 
+.document-summary-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  overflow: hidden;
+  border: 1px solid #dfe6eb;
+  border-radius: 0.9rem;
+  background: #f8fafb;
+}
+
+.document-summary-grid > div {
+  min-width: 0;
+  padding: 0.8rem;
+  border-top: 1px solid #e5ebef;
+}
+
+.document-summary-grid > div:nth-child(-n + 2) {
+  border-top: 0;
+}
+
+.document-summary-grid > div:nth-child(even) {
+  border-left: 1px solid #e5ebef;
+}
+
+.document-summary-grid span,
+.document-summary-grid strong {
+  display: block;
+}
+
+.document-summary-grid span {
+  color: #6d7e8e;
+  font-size: 0.76rem;
+  font-weight: 650;
+}
+
+.document-summary-grid strong {
+  margin-top: 0.2rem;
+  color: #173f5f;
+  font-size: 0.98rem;
+  overflow-wrap: anywhere;
+}
+
+.document-empty {
+  margin: 1rem 0 0;
+  color: #718293;
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+.official-documents-panel {
+  border-color: #b6cddd;
+  background: linear-gradient(135deg, #eef6fb, #fff 70%);
+}
+
+.official-documents-panel h2 {
+  margin: 0.2rem 0 0;
+  font-size: 1.2rem;
+}
+
+.official-documents-panel > p:not(.help-note) {
+  margin: 0.45rem 0 0;
+  color: #5c7081;
+  font-size: 0.88rem;
+}
+
+.document-actions {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 1rem;
+}
+
+.document-actions button {
+  min-height: 3rem;
+}
+
+.document-actions .package-button {
+  color: #283616;
+  background: #ffd16d;
+}
+
+.settings-section {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.9rem;
+  border: 1px solid #dfe6eb;
+  border-radius: 0.9rem;
+  background: #f8fafb;
+}
+
+.settings-section > strong {
+  color: #173f5f;
+  font-size: 0.95rem;
+}
+
 .summary-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

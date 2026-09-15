@@ -18,6 +18,7 @@ import {
   Pencil,
   ReceiptText,
   Smartphone,
+  Settings,
   Trash2,
   UnlockKeyhole,
   Upload,
@@ -57,6 +58,19 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Toaster } from "@/components/ui/sonner";
+import {
+  buildDocumentPackageHtml,
+  buildReconciliationHtml,
+  buildRentActHtml,
+  calculateRental,
+  defaultDocumentMeta,
+  DEFAULT_DOCUMENT_SETTINGS,
+  periodBounds,
+  type DocumentCalculation,
+  type DocumentMeta,
+  type DocumentSettings,
+  type Downtime,
+} from "@/app/document-tools";
 
 type Entry = {
   id: number;
@@ -107,6 +121,11 @@ type Closure = {
   variableKopecks: number;
   totalKopecks: number;
   closedAt: string;
+  baseFullKopecks?: number;
+  baseReductionKopecks?: number;
+  calendarDays?: number;
+  downtimeDays?: number;
+  payableDays?: number;
 };
 
 type DashboardData = {
@@ -120,20 +139,27 @@ type DashboardData = {
     includedUnits: number;
     rateKopecks: number;
   };
+  settings?: DocumentSettings;
+  downtimes?: Downtime[];
+  documentMeta?: DocumentMeta;
 };
 
 type OfflineStore = {
-  version: 1;
+  version: 2;
   entries: Entry[];
   invoices: Invoice[];
   payments: Payment[];
   expenses: Expense[];
   closures: Closure[];
+  settings: DocumentSettings;
+  downtimes: Downtime[];
+  documents: DocumentMeta[];
 };
 
 type AndroidAppBridge = {
   copyText: (text: string) => void;
   saveBase64File: (base64: string, fileName: string, mimeType: string) => void;
+  saveHtmlAsPdf: (html: string, fileName: string) => void;
 };
 
 declare global {
@@ -162,21 +188,24 @@ type BeforeInstallPromptEvent = Event & {
 };
 
 const DEFAULT_RULES = {
-  baseKopecks: 8_000_000,
-  includedUnits: 2_000,
-  rateKopecks: 4_000,
+  baseKopecks: DEFAULT_DOCUMENT_SETTINGS.baseKopecks,
+  includedUnits: DEFAULT_DOCUMENT_SETTINGS.includedUnits,
+  rateKopecks: DEFAULT_DOCUMENT_SETTINGS.rateKopecks,
 };
 
 const OFFLINE_STORAGE_KEY = "arenda-ts-offline-v1";
 
 function emptyOfflineStore(): OfflineStore {
   return {
-    version: 1,
+    version: 2,
     entries: [],
     invoices: [],
     payments: [],
     expenses: [],
     closures: [],
+    settings: { ...DEFAULT_DOCUMENT_SETTINGS },
+    downtimes: [],
+    documents: [],
   };
 }
 
@@ -198,12 +227,18 @@ function normalizeOfflineStore(value: unknown): OfflineStore {
     throw new Error("В резервной копии не хватает данных");
   }
   return {
-    version: 1,
+    version: 2,
     entries: store.entries,
     invoices: store.invoices,
     payments: store.payments,
     expenses: store.expenses,
     closures: store.closures,
+    settings: {
+      ...DEFAULT_DOCUMENT_SETTINGS,
+      ...(store.settings && typeof store.settings === "object" ? store.settings : {}),
+    },
+    downtimes: Array.isArray(store.downtimes) ? store.downtimes : [],
+    documents: Array.isArray(store.documents) ? store.documents : [],
   };
 }
 
@@ -248,6 +283,11 @@ function offlineDashboard(period: string): DashboardData {
   const expenses = store.expenses
     .filter((expense) => expense.expenseDate >= from && expense.expenseDate <= to)
     .sort((a, b) => b.expenseDate.localeCompare(a.expenseDate) || b.id - a.id);
+  const downtimes = store.downtimes
+    .filter((downtime) => downtime.startDate <= to && downtime.endDate >= from)
+    .sort((a, b) => b.startDate.localeCompare(a.startDate) || b.id - a.id);
+  const documentMeta = store.documents.find((document) => document.period === period)
+    ?? defaultDocumentMeta(period, store.documents.length + 1, localIsoDate());
 
   return {
     entries,
@@ -255,7 +295,14 @@ function offlineDashboard(period: string): DashboardData {
     payments,
     expenses,
     closure: store.closures.find((closure) => closure.period === period) ?? null,
-    rules: DEFAULT_RULES,
+    rules: {
+      baseKopecks: store.settings.baseKopecks,
+      includedUnits: store.settings.includedUnits,
+      rateKopecks: store.settings.rateKopecks,
+    },
+    settings: store.settings,
+    downtimes,
+    documentMeta,
   };
 }
 
@@ -401,22 +448,104 @@ function saveOfflineAction(payload: Record<string, unknown>) {
   } else if (action === "delete_expense") {
     const id = Number(payload.id);
     store.expenses = store.expenses.filter((expense) => expense.id !== id);
+  } else if (action === "save_settings") {
+    const value = payload.settings;
+    if (!value || typeof value !== "object") throw new Error("Проверьте настройки договора");
+    const settings = value as Partial<DocumentSettings>;
+    const baseKopecks = Number(settings.baseKopecks);
+    const includedUnits = Number(settings.includedUnits);
+    const rateKopecks = Number(settings.rateKopecks);
+    if (
+      !validIsoDate(settings.contractDate) ||
+      !Number.isSafeInteger(baseKopecks) || baseKopecks <= 0 ||
+      !Number.isSafeInteger(includedUnits) || includedUnits < 0 ||
+      !Number.isSafeInteger(rateKopecks) || rateKopecks < 0
+    ) {
+      throw new Error("Проверьте дату договора и условия расчёта");
+    }
+    const textFields: (keyof DocumentSettings)[] = [
+      "city", "contractNumber", "lessorFull", "lessorShort", "lessorSignerShort", "lessorInn",
+      "lesseeFull", "lesseeShort", "lesseeInn", "lesseeKpp", "lesseeDirector",
+      "lesseeDirectorShort", "vehicleModel", "vehicleVin", "vehiclePlate",
+    ];
+    for (const field of textFields) {
+      if (typeof settings[field] !== "string" || !String(settings[field]).trim()) {
+        throw new Error("Заполните все реквизиты договора");
+      }
+    }
+    store.settings = {
+      ...(settings as DocumentSettings),
+      baseKopecks,
+      includedUnits,
+      rateKopecks,
+    };
+  } else if (action === "save_document_meta") {
+    const period = String(payload.period ?? "");
+    const openingBalanceKopecks = Number(payload.openingBalanceKopecks);
+    if (
+      !/^\d{4}-\d{2}$/.test(period) ||
+      !validIsoDate(payload.documentDate) ||
+      !String(payload.actNumber ?? "").trim() ||
+      !String(payload.reconciliationNumber ?? "").trim() ||
+      !Number.isSafeInteger(openingBalanceKopecks)
+    ) {
+      throw new Error("Проверьте номер, дату и начальное сальдо документов");
+    }
+    const document: DocumentMeta = {
+      period,
+      actNumber: String(payload.actNumber).trim().slice(0, 40),
+      reconciliationNumber: String(payload.reconciliationNumber).trim().slice(0, 40),
+      documentDate: String(payload.documentDate),
+      basis: String(payload.basis ?? "").trim().slice(0, 400),
+      openingBalanceKopecks,
+    };
+    store.documents = [...store.documents.filter((item) => item.period !== period), document];
+  } else if (action === "create_downtime" || action === "update_downtime") {
+    const startDate = String(payload.startDate ?? "");
+    const endDate = String(payload.endDate ?? "");
+    if (!validIsoDate(startDate) || !validIsoDate(endDate) || startDate > endDate) {
+      throw new Error("Проверьте даты простоя");
+    }
+    const start = new Date(`${startDate}T12:00:00Z`);
+    const end = new Date(`${endDate}T12:00:00Z`);
+    if ((end.getTime() - start.getTime()) / 86_400_000 > 366) {
+      throw new Error("Один период простоя не может быть длиннее года");
+    }
+    const locked = store.closures.some((closure) => {
+      const bounds = periodBounds(closure.period);
+      return startDate <= bounds.end && endDate >= bounds.start;
+    });
+    if (locked) throw new Error("Простой затрагивает закрытый месяц");
+    const editId = action === "update_downtime" ? Number(payload.id) : null;
+    if (editId !== null && !store.downtimes.some((row) => row.id === editId)) {
+      throw new Error("Период простоя не найден");
+    }
+    const recordId = editId ?? nextId(store.downtimes);
+    store.downtimes = store.downtimes.filter((row) => row.id !== editId);
+    store.downtimes.push({
+      id: recordId,
+      startDate,
+      endDate,
+      reason: String(payload.reason ?? "Простой автомобиля").trim().slice(0, 160),
+      note: String(payload.note ?? "").trim().slice(0, 300),
+    });
+  } else if (action === "delete_downtime") {
+    const id = Number(payload.id);
+    const downtime = store.downtimes.find((row) => row.id === id);
+    if (!downtime) throw new Error("Период простоя не найден");
+    const locked = store.closures.some((closure) => {
+      const bounds = periodBounds(closure.period);
+      return downtime.startDate <= bounds.end && downtime.endDate >= bounds.start;
+    });
+    if (locked) throw new Error("Простой относится к закрытому месяцу");
+    store.downtimes = store.downtimes.filter((row) => row.id !== id);
   } else if (action === "close_month") {
     const period = String(payload.period ?? "");
     if (!/^\d{4}-\d{2}$/.test(period)) throw new Error("Неверно указан месяц");
-    const actualUnits = store.entries
-      .filter((entry) => entry.entryDate.startsWith(`${period}-`))
-      .reduce((sum, entry) => sum + entry.units, 0);
-    const excessUnits = Math.max(0, actualUnits - DEFAULT_RULES.includedUnits);
+    const calculation = calculateRental(period, store.entries, store.downtimes, store.settings);
     const closure: Closure = {
       period,
-      actualUnits,
-      includedUnits: DEFAULT_RULES.includedUnits,
-      excessUnits,
-      baseKopecks: DEFAULT_RULES.baseKopecks,
-      rateKopecks: DEFAULT_RULES.rateKopecks,
-      variableKopecks: excessUnits * DEFAULT_RULES.rateKopecks,
-      totalKopecks: DEFAULT_RULES.baseKopecks + excessUnits * DEFAULT_RULES.rateKopecks,
+      ...calculation,
       closedAt: new Date().toISOString(),
     };
     store.closures = [...store.closures.filter((row) => row.period !== period), closure];
@@ -556,6 +685,32 @@ function toKopecks(value: string) {
   const normalized = value.replace(/\s/g, "").replace(",", ".");
   const rubles = Number(normalized);
   return Number.isFinite(rubles) && rubles > 0 ? Math.round(rubles * 100) : 0;
+}
+
+function toSignedKopecks(value: string) {
+  const normalized = value.replace(/\s/g, "").replace(",", ".");
+  const rubles = Number(normalized);
+  return Number.isFinite(rubles) ? Math.round(rubles * 100) : null;
+}
+
+function printHtmlInBrowser(html: string) {
+  const frame = document.createElement("iframe");
+  frame.style.position = "fixed";
+  frame.style.width = "1px";
+  frame.style.height = "1px";
+  frame.style.opacity = "0";
+  frame.style.pointerEvents = "none";
+  document.body.appendChild(frame);
+  const target = frame.contentWindow;
+  if (!target) throw new Error("Не удалось открыть документ");
+  target.document.open();
+  target.document.write(html);
+  target.document.close();
+  window.setTimeout(() => {
+    target.focus();
+    target.print();
+    window.setTimeout(() => frame.remove(), 2_000);
+  }, 300);
 }
 
 function statusFor(invoice: Invoice, paid: number) {
@@ -703,6 +858,21 @@ export default function RentalApp() {
   const [expenseDocument, setExpenseDocument] = useState("");
   const [expenseNote, setExpenseNote] = useState("");
 
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsDraft, setSettingsDraft] = useState<DocumentSettings>({ ...DEFAULT_DOCUMENT_SETTINGS });
+  const [actNumber, setActNumber] = useState("1");
+  const [reconciliationNumber, setReconciliationNumber] = useState("1");
+  const [documentDate, setDocumentDate] = useState(today);
+  const [documentBasis, setDocumentBasis] = useState("");
+  const [openingBalance, setOpeningBalance] = useState("0");
+
+  const [downtimeOpen, setDowntimeOpen] = useState(false);
+  const [editingDowntimeId, setEditingDowntimeId] = useState<number | null>(null);
+  const [downtimeStart, setDowntimeStart] = useState(today);
+  const [downtimeEnd, setDowntimeEnd] = useState(today);
+  const [downtimeReason, setDowntimeReason] = useState("Ремонт автомобиля");
+  const [downtimeNote, setDowntimeNote] = useState("");
+
   const loadData = useCallback(async () => {
     setLoading(true);
     setLoadError("");
@@ -749,6 +919,17 @@ export default function RentalApp() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!data) return;
+    const meta = data.documentMeta ?? defaultDocumentMeta(month, 1, today);
+    setSettingsDraft({ ...(data.settings ?? DEFAULT_DOCUMENT_SETTINGS) });
+    setActNumber(meta.actNumber);
+    setReconciliationNumber(meta.reconciliationNumber);
+    setDocumentDate(meta.documentDate);
+    setDocumentBasis(meta.basis);
+    setOpeningBalance(String(meta.openingBalanceKopecks / 100));
+  }, [data, month, today]);
+
   const request = useCallback(
     async (payload: Record<string, unknown>, success: string) => {
       setBusy(true);
@@ -780,21 +961,32 @@ export default function RentalApp() {
   );
 
   const rules = data?.rules ?? DEFAULT_RULES;
-  const liveActualUnits = data?.entries.reduce((sum, entry) => sum + entry.units, 0) ?? 0;
-  const liveExcessUnits = Math.max(0, liveActualUnits - rules.includedUnits);
-  const liveVariableKopecks = liveExcessUnits * rules.rateKopecks;
-  const liveTotalKopecks = rules.baseKopecks + liveVariableKopecks;
-  const calculation = data?.closure
-    ? data.closure
-    : {
-        actualUnits: liveActualUnits,
-        includedUnits: rules.includedUnits,
-        excessUnits: liveExcessUnits,
-        baseKopecks: rules.baseKopecks,
-        rateKopecks: rules.rateKopecks,
-        variableKopecks: liveVariableKopecks,
-        totalKopecks: liveTotalKopecks,
-      };
+  const documentSettings = data?.settings ?? {
+    ...DEFAULT_DOCUMENT_SETTINGS,
+    baseKopecks: rules.baseKopecks,
+    includedUnits: rules.includedUnits,
+    rateKopecks: rules.rateKopecks,
+  };
+  const documentSettingsReady = !Object.values(documentSettings).some(
+    (value) => typeof value === "string" && value.includes("["),
+  );
+  const liveCalculation = calculateRental(
+    month,
+    data?.entries ?? [],
+    data?.downtimes ?? [],
+    documentSettings,
+  );
+  const calculation: DocumentCalculation = data?.closure
+    ? {
+        ...liveCalculation,
+        ...data.closure,
+        baseFullKopecks: data.closure.baseFullKopecks ?? data.closure.baseKopecks,
+        baseReductionKopecks: data.closure.baseReductionKopecks ?? 0,
+        calendarDays: data.closure.calendarDays ?? liveCalculation.calendarDays,
+        downtimeDays: data.closure.downtimeDays ?? 0,
+        payableDays: data.closure.payableDays ?? liveCalculation.calendarDays,
+      }
+    : liveCalculation;
 
   const paidByInvoice = useMemo(() => {
     const map = new Map<number, number>();
@@ -972,7 +1164,7 @@ export default function RentalApp() {
     setInvoiceKind(kind);
     setInvoiceAmount(
       kind === "fixed"
-        ? String(rules.baseKopecks / 100)
+        ? String(calculation.baseKopecks / 100)
         : kind === "variable"
           ? String(calculation.variableKopecks / 100)
           : "",
@@ -1102,6 +1294,124 @@ export default function RentalApp() {
     setExpenseOpen(true);
   }
 
+  function openSettings() {
+    setSettingsDraft({ ...documentSettings });
+    setSettingsOpen(true);
+  }
+
+  async function saveSettings(event: FormEvent) {
+    event.preventDefault();
+    const ok = await request(
+      { action: "save_settings", settings: settingsDraft },
+      "Настройки договора сохранены",
+    );
+    if (ok) setSettingsOpen(false);
+  }
+
+  function openDowntime(downtime?: Downtime) {
+    const bounds = periodBounds(month);
+    const selectedDate = month === today.slice(0, 7) ? today : bounds.start;
+    setEditingDowntimeId(downtime?.id ?? null);
+    setDowntimeStart(downtime?.startDate ?? selectedDate);
+    setDowntimeEnd(downtime?.endDate ?? selectedDate);
+    setDowntimeReason(downtime?.reason ?? "Ремонт автомобиля");
+    setDowntimeNote(downtime?.note ?? "");
+    setDowntimeOpen(true);
+  }
+
+  async function saveDowntime(event: FormEvent) {
+    event.preventDefault();
+    const ok = await request(
+      {
+        action: editingDowntimeId === null ? "create_downtime" : "update_downtime",
+        id: editingDowntimeId,
+        startDate: downtimeStart,
+        endDate: downtimeEnd,
+        reason: downtimeReason,
+        note: downtimeNote,
+      },
+      editingDowntimeId === null ? "Простой добавлен" : "Простой изменён",
+    );
+    if (ok) setDowntimeOpen(false);
+  }
+
+  function askDeleteDowntime(downtime: Downtime) {
+    setConfirm({
+      title: "Удалить период простоя?",
+      description: `${dateLabel(downtime.startDate)} — ${dateLabel(downtime.endDate)} · ${downtime.reason}`,
+      actionLabel: "Удалить",
+      destructive: true,
+      run: async () => {
+        await request({ action: "delete_downtime", id: downtime.id }, "Простой удалён");
+      },
+    });
+  }
+
+  function currentDocumentMeta() {
+    const openingBalanceKopecks = toSignedKopecks(openingBalance);
+    if (openingBalanceKopecks === null) {
+      toast.error("Проверьте начальное сальдо");
+      return null;
+    }
+    if (!actNumber.trim() || !reconciliationNumber.trim() || !validIsoDate(documentDate)) {
+      toast.error("Заполните номера и дату документов");
+      return null;
+    }
+    return {
+      period: month,
+      actNumber: actNumber.trim(),
+      reconciliationNumber: reconciliationNumber.trim(),
+      documentDate,
+      basis: documentBasis.trim(),
+      openingBalanceKopecks,
+    } satisfies DocumentMeta;
+  }
+
+  async function saveDocumentParameters() {
+    const meta = currentDocumentMeta();
+    if (!meta) return false;
+    return request({ action: "save_document_meta", ...meta }, "Параметры документов сохранены");
+  }
+
+  async function saveOfficialPdf(kind: "act" | "reconciliation" | "package") {
+    if (!data) return;
+    const meta = currentDocumentMeta();
+    if (!meta) return;
+
+    try {
+      if (isOfflineRuntime()) saveOfflineAction({ action: "save_document_meta", ...meta });
+      const input = {
+        settings: documentSettings,
+        meta,
+        calculation,
+        downtimes: data.downtimes ?? [],
+        invoices: data.invoices,
+        payments: data.payments,
+        expenses: data.expenses,
+      };
+      const html = kind === "act"
+        ? buildRentActHtml(input)
+        : kind === "reconciliation"
+          ? buildReconciliationHtml(input)
+          : buildDocumentPackageHtml(input);
+      const fileName = kind === "act"
+        ? `akt_arendy_${month}.pdf`
+        : kind === "reconciliation"
+          ? `akt_sverki_${month}.pdf`
+          : `dokumenty_arendy_${month}.pdf`;
+
+      if (window.AndroidApp?.saveHtmlAsPdf) {
+        window.AndroidApp.saveHtmlAsPdf(html, fileName);
+      } else {
+        printHtmlInBrowser(html);
+      }
+      await loadData();
+      toast.success(kind === "package" ? "Пакет документов подготовлен" : "Документ подготовлен");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Не удалось сформировать PDF");
+    }
+  }
+
   function askDeleteEntry(entry: Entry) {
     setConfirm({
       title: "Удалить запись?",
@@ -1198,7 +1508,12 @@ export default function RentalApp() {
         ["Фактическая интенсивность, ед.", calculation.actualUnits],
         ["Включено в постоянную часть, ед.", calculation.includedUnits],
         ["Превышение, ед.", calculation.excessUnits],
-        ["Постоянная часть, ₽", calculation.baseKopecks / 100],
+        ["Календарных дней", calculation.calendarDays],
+        ["Дней простоя", calculation.downtimeDays],
+        ["Оплачиваемых дней", calculation.payableDays],
+        ["Постоянная часть за полный месяц, ₽", calculation.baseFullKopecks / 100],
+        ["Уменьшение за простой, ₽", calculation.baseReductionKopecks / 100],
+        ["Постоянная часть к начислению, ₽", calculation.baseKopecks / 100],
         ["Ставка сверх лимита, ₽/ед.", calculation.rateKopecks / 100],
         ["Переменная часть, ₽", calculation.variableKopecks / 100],
         ["ИТОГО АРЕНДА, ₽", calculation.totalKopecks / 100],
@@ -1280,6 +1595,41 @@ export default function RentalApp() {
       const expensesSheet = XLSX.utils.aoa_to_sheet(expenseRows);
       expensesSheet["!cols"] = [{ wch: 15 }, { wch: 24 }, { wch: 15 }, { wch: 20 }, { wch: 22 }, { wch: 38 }, { wch: 20 }, { wch: 24 }];
       XLSX.utils.book_append_sheet(workbook, expensesSheet, "Расходы");
+
+      const downtimeRows: (string | number)[][] = [
+        ["Начало", "Окончание", "Причина", "Примечание"],
+        ...(data.downtimes ?? []).map((downtime) => [
+          dateLabel(downtime.startDate),
+          dateLabel(downtime.endDate),
+          downtime.reason,
+          downtime.note,
+        ]),
+        ["ИТОГО ДНЕЙ ПРОСТОЯ", calculation.downtimeDays, "", ""],
+      ];
+      const downtimeSheet = XLSX.utils.aoa_to_sheet(downtimeRows);
+      downtimeSheet["!cols"] = [{ wch: 15 }, { wch: 15 }, { wch: 34 }, { wch: 42 }];
+      XLSX.utils.book_append_sheet(workbook, downtimeSheet, "Простой");
+
+      const meta = currentDocumentMeta();
+      if (meta) {
+        const documentRows: (string | number)[][] = [
+          ["Параметр", "Значение"],
+          ["Договор", `№ ${documentSettings.contractNumber} от ${dateLabel(documentSettings.contractDate)}`],
+          ["Акт аренды", `№ ${meta.actNumber} от ${dateLabel(meta.documentDate)}`],
+          ["Акт сверки", `№ ${meta.reconciliationNumber} от ${dateLabel(meta.documentDate)}`],
+          ["Арендодатель", `${documentSettings.lessorFull}, ИНН ${documentSettings.lessorInn}`],
+          ["Арендатор", `${documentSettings.lesseeFull}, ИНН ${documentSettings.lesseeInn}, КПП ${documentSettings.lesseeKpp}`],
+          ["Автомобиль", `${documentSettings.vehicleModel}, VIN ${documentSettings.vehicleVin}, ${documentSettings.vehiclePlate}`],
+          ["Долг на начало, ₽", meta.openingBalanceKopecks / 100],
+          ["Начислено, ₽", calculation.totalKopecks / 100],
+          ["Оплачено, ₽", totalPaid / 100],
+          ["Зачтено топлива, ₽", customerFuel / 100],
+          ["Сальдо на конец, ₽", (meta.openingBalanceKopecks + calculation.totalKopecks - totalPaid - customerFuel) / 100],
+        ];
+        const documentSheet = XLSX.utils.aoa_to_sheet(documentRows);
+        documentSheet["!cols"] = [{ wch: 28 }, { wch: 90 }];
+        XLSX.utils.book_append_sheet(workbook, documentSheet, "Документы");
+      }
 
       const fileName = `arenda_ts_${month}.xlsx`;
       if (window.AndroidApp) {
@@ -1505,7 +1855,7 @@ export default function RentalApp() {
         )}
 
         <Tabs value={tab} onValueChange={setTab} className="mt-4 gap-4">
-          <TabsList className="app-tabs grid h-auto w-full grid-cols-4 bg-transparent p-0">
+          <TabsList className={`app-tabs grid h-auto w-full ${offlineMode ? "grid-cols-5" : "grid-cols-4"} bg-transparent p-0`}>
             <TabsTrigger value="summary" className="app-tab">
               <Calculator />
               <span>Расчёт</span>
@@ -1522,6 +1872,12 @@ export default function RentalApp() {
               <WalletCards />
               <span>Расходы</span>
             </TabsTrigger>
+            {offlineMode && (
+              <TabsTrigger value="documents" className="app-tab">
+                <FileText />
+                <span>Акты</span>
+              </TabsTrigger>
+            )}
           </TabsList>
 
           {loading ? (
@@ -1570,7 +1926,12 @@ export default function RentalApp() {
                   </div>
                   <Progress value={progress} className="mt-4 h-3 bg-slate-100 [&_[data-slot=progress-indicator]]:bg-amber-500" />
                   <div className="calculation-list mt-5">
-                    <div><span>Постоянная часть</span><strong>{money(calculation.baseKopecks)}</strong></div>
+                    <div><span>Постоянная часть за полный месяц</span><strong>{money(calculation.baseFullKopecks)}</strong></div>
+                    {calculation.downtimeDays > 0 && <>
+                      <div><span>Простой автомобиля</span><strong>{calculation.downtimeDays} дн.</strong></div>
+                      <div><span>Уменьшение за простой</span><strong>-{money(calculation.baseReductionKopecks)}</strong></div>
+                    </>}
+                    <div><span>Постоянная часть к начислению</span><strong>{money(calculation.baseKopecks)}</strong></div>
                     <div><span>Превышение</span><strong>{number(calculation.excessUnits)} ед.</strong></div>
                     <div><span>Ставка сверх лимита</span><strong>{money(calculation.rateKopecks)} / ед.</strong></div>
                     <div className="calculation-total"><span>Переменная часть</span><strong>{money(calculation.variableKopecks)}</strong></div>
@@ -1671,12 +2032,12 @@ export default function RentalApp() {
                   <div className="section-heading">
                     <div>
                       <span className="eyebrow">График по договору</span>
-                      <h2>Постоянная часть — 80 000 ₽</h2>
+                      <h2>Постоянная часть — {money(calculation.baseKopecks)}</h2>
                     </div>
                   </div>
                   <div className="schedule-grid">
-                    <div><span>До 1-го числа</span><strong>40 000 ₽</strong></div>
-                    <div><span>До 15-го числа</span><strong>40 000 ₽</strong></div>
+                    <div><span>Первая часть</span><strong>{money(Math.round(calculation.baseKopecks / 2))}</strong></div>
+                    <div><span>Вторая часть</span><strong>{money(calculation.baseKopecks - Math.round(calculation.baseKopecks / 2))}</strong></div>
                     <div><span>После закрытия месяца</span><strong>{money(calculation.variableKopecks)}</strong><small>переменная часть</small></div>
                   </div>
                 </section>
@@ -1821,6 +2182,92 @@ export default function RentalApp() {
                   </div>
                 )}
               </TabsContent>
+
+              {offlineMode && (
+                <TabsContent value="documents" className="space-y-4">
+                  <section className="panel">
+                    <div className="section-heading">
+                      <div>
+                        <span className="eyebrow">Реквизиты и условия</span>
+                        <h2>Документы по аренде</h2>
+                      </div>
+                      <Button type="button" variant="outline" size="sm" onClick={openSettings}>
+                        <Settings />Настройки
+                      </Button>
+                    </div>
+                    <div className="document-summary-grid">
+                      <div><span>Договор</span><strong>№ {documentSettings.contractNumber}</strong></div>
+                      <div><span>Начислено</span><strong>{money(calculation.totalKopecks)}</strong></div>
+                      <div><span>Оплачено и зачтено</span><strong>{money(totalPaid + customerFuel)}</strong></div>
+                      <div><span>Простой</span><strong>{calculation.downtimeDays} дн.</strong></div>
+                    </div>
+                    {!documentSettingsReady && <p className="help-note mt-3">Открой «Настройки» и заполни реквизиты сторон, договора и автомобиля.</p>}
+                    {!data.closure && <p className="help-note mt-3">Месяц открыт. Документы сформируются по текущим данным; перед отправкой лучше закрыть месяц.</p>}
+                  </section>
+
+                  <section className="panel">
+                    <div className="section-heading">
+                      <div>
+                        <span className="eyebrow">Параметры</span>
+                        <h2>Номера и дата</h2>
+                      </div>
+                    </div>
+                    <div className="dialog-form">
+                      <div className="grid grid-cols-2 gap-3">
+                        <label><FieldLabel>Номер акта аренды</FieldLabel><Input value={actNumber} onChange={(event) => setActNumber(event.target.value)} /></label>
+                        <label><FieldLabel>Номер акта сверки</FieldLabel><Input value={reconciliationNumber} onChange={(event) => setReconciliationNumber(event.target.value)} /></label>
+                      </div>
+                      <label><FieldLabel>Дата документов</FieldLabel><Input type="date" value={documentDate} onChange={(event) => setDocumentDate(event.target.value)} /></label>
+                      <label><FieldLabel>Основание количества бутылей</FieldLabel><Textarea value={documentBasis} onChange={(event) => setDocumentBasis(event.target.value)} placeholder="Например: ежедневный реестр за месяц" /></label>
+                      <label>
+                        <FieldLabel>Долг на начало месяца, ₽</FieldLabel>
+                        <Input type="number" step="0.01" inputMode="decimal" value={openingBalance} onChange={(event) => setOpeningBalance(event.target.value)} />
+                        <p className="help-note">Положительное число — «Кристалл» должен тебе. Отрицательное — аванс в его пользу.</p>
+                      </label>
+                      <Button type="button" variant="outline" onClick={() => void saveDocumentParameters()} disabled={busy}>Сохранить параметры</Button>
+                    </div>
+                  </section>
+
+                  <section className="panel">
+                    <div className="section-heading">
+                      <div>
+                        <span className="eyebrow">Уменьшение аренды</span>
+                        <h2>Простой автомобиля</h2>
+                      </div>
+                      {!data.closure && <Button type="button" variant="outline" size="sm" onClick={() => openDowntime()}><Plus />Добавить</Button>}
+                    </div>
+                    <p className="help-note">Постоянная часть уменьшается пропорционально календарным дням простоя. Переменная часть считается по фактическим бутылкам.</p>
+                    {(data.downtimes ?? []).length === 0 ? (
+                      <p className="document-empty">Простоев за выбранный месяц нет.</p>
+                    ) : (
+                      <div className="record-list mt-3">
+                        {(data.downtimes ?? []).map((downtime) => (
+                          <article className="record-row" key={downtime.id}>
+                            <div className="record-date"><Wrench />{dateLabel(downtime.startDate)} — {dateLabel(downtime.endDate)}</div>
+                            <div className="min-w-0 flex-1"><strong>{downtime.reason}</strong>{downtime.note && <p>{downtime.note}</p>}</div>
+                            {!data.closure && <div className="flex items-center gap-1">
+                              <Button type="button" variant="ghost" size="icon" onClick={() => openDowntime(downtime)} aria-label="Редактировать простой"><Pencil /></Button>
+                              <Button type="button" variant="ghost" size="icon" onClick={() => askDeleteDowntime(downtime)} aria-label="Удалить простой"><Trash2 /></Button>
+                            </div>}
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+
+                  <section className="panel official-documents-panel">
+                    <span className="eyebrow">Готовые PDF</span>
+                    <h2>Сформировать документы</h2>
+                    <p>Акт аренды фиксирует начисление. Оплаты и топливо заказчика отражаются отдельно в акте сверки.</p>
+                    <div className="document-actions">
+                      <Button type="button" disabled={!documentSettingsReady} onClick={() => void saveOfficialPdf("act")}><FileText />Акт аренды</Button>
+                      <Button type="button" disabled={!documentSettingsReady} variant="outline" onClick={() => void saveOfficialPdf("reconciliation")}><ReceiptText />Акт сверки</Button>
+                      <Button type="button" disabled={!documentSettingsReady} className="package-button" onClick={() => void saveOfficialPdf("package")}><Download />Пакет из двух актов</Button>
+                    </div>
+                    <p className="help-note">Перед подписанием проверь номера, даты, сумму и реквизиты. PDF создаётся в официальном чёрно-белом стиле А4 с местами для подписей.</p>
+                  </section>
+                </TabsContent>
+              )}
             </>
           ) : null}
         </Tabs>
@@ -1927,7 +2374,7 @@ export default function RentalApp() {
                 onValueChange={(value) => {
                   const kind = value as Invoice["kind"];
                   setInvoiceKind(kind);
-                  if (editingInvoiceId === null && kind === "fixed") setInvoiceAmount(String(rules.baseKopecks / 100));
+                  if (editingInvoiceId === null && kind === "fixed") setInvoiceAmount(String(calculation.baseKopecks / 100));
                   if (editingInvoiceId === null && kind === "variable") setInvoiceAmount(String(calculation.variableKopecks / 100));
                 }}
               >
@@ -2037,6 +2484,94 @@ export default function RentalApp() {
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setExpenseOpen(false)}>Отмена</Button>
               <Button type="submit" disabled={busy}>{busy && <LoaderCircle className="animate-spin" />}Сохранить расход</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+        <DialogContent className="dialog-card max-h-[92vh] overflow-y-auto sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Настройки договора и документов</DialogTitle>
+            <DialogDescription>Заполняются один раз и автоматически подставляются в акты и расчёты.</DialogDescription>
+          </DialogHeader>
+          <form onSubmit={saveSettings} className="dialog-form">
+            <div className="settings-section">
+              <strong>Договор</strong>
+              <div className="grid grid-cols-2 gap-3">
+                <label><FieldLabel>Номер договора</FieldLabel><Input value={settingsDraft.contractNumber} onChange={(event) => setSettingsDraft((value) => ({ ...value, contractNumber: event.target.value }))} required /></label>
+                <label><FieldLabel>Дата договора</FieldLabel><Input type="date" value={settingsDraft.contractDate} onChange={(event) => setSettingsDraft((value) => ({ ...value, contractDate: event.target.value }))} required /></label>
+              </div>
+              <label><FieldLabel>Город</FieldLabel><Input value={settingsDraft.city} onChange={(event) => setSettingsDraft((value) => ({ ...value, city: event.target.value }))} required /></label>
+            </div>
+
+            <div className="settings-section">
+              <strong>Арендодатель</strong>
+              <label><FieldLabel>Полное наименование</FieldLabel><Input value={settingsDraft.lessorFull} onChange={(event) => setSettingsDraft((value) => ({ ...value, lessorFull: event.target.value }))} required /></label>
+              <div className="grid grid-cols-2 gap-3">
+                <label><FieldLabel>Краткое наименование</FieldLabel><Input value={settingsDraft.lessorShort} onChange={(event) => setSettingsDraft((value) => ({ ...value, lessorShort: event.target.value }))} required /></label>
+                <label><FieldLabel>ИНН</FieldLabel><Input inputMode="numeric" value={settingsDraft.lessorInn} onChange={(event) => setSettingsDraft((value) => ({ ...value, lessorInn: event.target.value }))} required /></label>
+              </div>
+              <label><FieldLabel>ФИО в строке подписи</FieldLabel><Input value={settingsDraft.lessorSignerShort} onChange={(event) => setSettingsDraft((value) => ({ ...value, lessorSignerShort: event.target.value }))} required /></label>
+            </div>
+
+            <div className="settings-section">
+              <strong>Арендатор</strong>
+              <div className="grid grid-cols-2 gap-3">
+                <label><FieldLabel>Наименование</FieldLabel><Input value={settingsDraft.lesseeFull} onChange={(event) => setSettingsDraft((value) => ({ ...value, lesseeFull: event.target.value }))} required /></label>
+                <label><FieldLabel>Краткое наименование</FieldLabel><Input value={settingsDraft.lesseeShort} onChange={(event) => setSettingsDraft((value) => ({ ...value, lesseeShort: event.target.value }))} required /></label>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <label><FieldLabel>ИНН</FieldLabel><Input inputMode="numeric" value={settingsDraft.lesseeInn} onChange={(event) => setSettingsDraft((value) => ({ ...value, lesseeInn: event.target.value }))} required /></label>
+                <label><FieldLabel>КПП</FieldLabel><Input inputMode="numeric" value={settingsDraft.lesseeKpp} onChange={(event) => setSettingsDraft((value) => ({ ...value, lesseeKpp: event.target.value }))} required /></label>
+              </div>
+              <label><FieldLabel>Генеральный директор</FieldLabel><Input value={settingsDraft.lesseeDirector} onChange={(event) => setSettingsDraft((value) => ({ ...value, lesseeDirector: event.target.value }))} required /></label>
+              <label><FieldLabel>ФИО директора в строке подписи</FieldLabel><Input value={settingsDraft.lesseeDirectorShort} onChange={(event) => setSettingsDraft((value) => ({ ...value, lesseeDirectorShort: event.target.value }))} required /></label>
+            </div>
+
+            <div className="settings-section">
+              <strong>Автомобиль</strong>
+              <label><FieldLabel>Марка и модель</FieldLabel><Input value={settingsDraft.vehicleModel} onChange={(event) => setSettingsDraft((value) => ({ ...value, vehicleModel: event.target.value }))} required /></label>
+              <div className="grid grid-cols-2 gap-3">
+                <label><FieldLabel>VIN</FieldLabel><Input value={settingsDraft.vehicleVin} onChange={(event) => setSettingsDraft((value) => ({ ...value, vehicleVin: event.target.value.toUpperCase() }))} required /></label>
+                <label><FieldLabel>Госномер</FieldLabel><Input value={settingsDraft.vehiclePlate} onChange={(event) => setSettingsDraft((value) => ({ ...value, vehiclePlate: event.target.value.toUpperCase() }))} required /></label>
+              </div>
+            </div>
+
+            <div className="settings-section">
+              <strong>Расчёт аренды</strong>
+              <label><FieldLabel>Постоянная часть за полный месяц, ₽</FieldLabel><Input type="number" min="0.01" step="0.01" inputMode="decimal" value={settingsDraft.baseKopecks / 100} onChange={(event) => setSettingsDraft((value) => ({ ...value, baseKopecks: Math.round(Number(event.target.value) * 100) }))} required /></label>
+              <div className="grid grid-cols-2 gap-3">
+                <label><FieldLabel>Включено бутылей</FieldLabel><Input type="number" min="0" step="1" inputMode="numeric" value={settingsDraft.includedUnits} onChange={(event) => setSettingsDraft((value) => ({ ...value, includedUnits: Number(event.target.value) }))} required /></label>
+                <label><FieldLabel>Ставка сверх лимита, ₽</FieldLabel><Input type="number" min="0" step="0.01" inputMode="decimal" value={settingsDraft.rateKopecks / 100} onChange={(event) => setSettingsDraft((value) => ({ ...value, rateKopecks: Math.round(Number(event.target.value) * 100) }))} required /></label>
+              </div>
+              <p className="help-note">При простое уменьшается только постоянная часть. Лимит бутылей и ставка сохраняются за месяц.</p>
+            </div>
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setSettingsOpen(false)}>Отмена</Button>
+              <Button type="submit" disabled={busy}>{busy && <LoaderCircle className="animate-spin" />}Сохранить настройки</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={downtimeOpen} onOpenChange={setDowntimeOpen}>
+        <DialogContent className="dialog-card">
+          <DialogHeader>
+            <DialogTitle>{editingDowntimeId === null ? "Добавить простой" : "Редактировать простой"}</DialogTitle>
+            <DialogDescription>Дни начала и окончания включаются в период простоя.</DialogDescription>
+          </DialogHeader>
+          <form onSubmit={saveDowntime} className="dialog-form">
+            <div className="grid grid-cols-2 gap-3">
+              <label><FieldLabel>Начало</FieldLabel><Input type="date" value={downtimeStart} onChange={(event) => setDowntimeStart(event.target.value)} required /></label>
+              <label><FieldLabel>Окончание</FieldLabel><Input type="date" value={downtimeEnd} onChange={(event) => setDowntimeEnd(event.target.value)} required /></label>
+            </div>
+            <label><FieldLabel>Причина</FieldLabel><Input value={downtimeReason} onChange={(event) => setDowntimeReason(event.target.value)} placeholder="Например: ремонт автомобиля" required /></label>
+            <label><FieldLabel>Примечание</FieldLabel><Textarea value={downtimeNote} onChange={(event) => setDowntimeNote(event.target.value)} placeholder="Заказ-наряд, подробности — необязательно" /></label>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setDowntimeOpen(false)}>Отмена</Button>
+              <Button type="submit" disabled={busy}>{busy && <LoaderCircle className="animate-spin" />}Сохранить</Button>
             </DialogFooter>
           </form>
         </DialogContent>

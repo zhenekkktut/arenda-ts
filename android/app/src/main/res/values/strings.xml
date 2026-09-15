@@ -3,4 +3,5 @@
     <string name="app_name">Аренда ТС</string>
     <string name="file_saved">Файл сохранён</string>
     <string name="file_save_error">Не удалось сохранить файл</string>
+    <string name="pdf_saved">PDF сохранён</string>
 </resources>
