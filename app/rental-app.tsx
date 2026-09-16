@@ -1400,13 +1400,16 @@ export default function RentalApp() {
           ? `akt_sverki_${month}.pdf`
           : `dokumenty_arendy_${month}.pdf`;
 
-      if (window.AndroidApp?.saveHtmlAsPdf) {
-        window.AndroidApp.saveHtmlAsPdf(html, fileName);
+      const androidSave = Boolean(window.AndroidApp?.saveHtmlAsPdf);
+      if (androidSave) {
+        window.AndroidApp?.saveHtmlAsPdf?.(html, fileName);
       } else {
         printHtmlInBrowser(html);
       }
       await loadData();
-      toast.success(kind === "package" ? "Пакет документов подготовлен" : "Документ подготовлен");
+      if (!androidSave) {
+        toast.success(kind === "package" ? "Пакет открыт для печати" : "Документ открыт для печати");
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Не удалось сформировать PDF");
     }
@@ -1717,20 +1720,30 @@ export default function RentalApp() {
     }
   }
 
+  const viewMeta: Record<string, { title: string; description: string }> = {
+    summary: { title: "Главная", description: "Суммы и состояние месяца" },
+    entries: { title: "Ежедневные записи", description: "Количество по дням и импорт" },
+    invoices: { title: "Счета и оплаты", description: "Долги, оплаты и тексты для банка" },
+    expenses: { title: "Расходы", description: "Топливо, ремонт и остальные затраты" },
+    documents: { title: "Акты", description: "Аренда, сверка и простои автомобиля" },
+  };
+  const activeView = viewMeta[tab] ?? viewMeta.summary;
+
   return (
-    <div className="min-h-screen pb-10">
+    <div className="app-root min-h-screen">
       <Toaster position="top-center" richColors />
 
       <header className="app-header">
-        <div className="app-shell flex items-center justify-between gap-3 py-4 sm:py-5">
+        <div className="app-shell flex items-center justify-between gap-3 py-3">
           <div className="flex min-w-0 items-center gap-3">
             <div className="brand-mark" aria-hidden="true">
               <CarFront className="size-6" />
             </div>
             <div className="min-w-0">
-              <h1 className="truncate text-xl font-bold tracking-tight sm:text-2xl">Аренда ТС</h1>
-              <p className="text-sm text-white/70">
-                {offlineMode ? "Fiat Ducato · данные на телефоне" : "Fiat Ducato · расчёты"}
+              <h1 className="truncate text-lg font-extrabold tracking-tight sm:text-xl">Аренда ТС</h1>
+              <p className="app-status-line">
+                <span className="status-dot" aria-hidden="true" />
+                {offlineMode ? "Данные сохранены на телефоне" : "Fiat Ducato · расчёты"}
               </p>
             </div>
           </div>
@@ -1760,11 +1773,14 @@ export default function RentalApp() {
         </div>
       </header>
 
-      <main className="app-shell -mt-1 py-4 sm:py-6">
+      <main className="app-shell app-main">
         <section className="month-bar" aria-label="Выбор расчётного месяца">
-          <div>
-            <span className="eyebrow">Расчётный период</span>
-            <strong className="mt-1 block text-lg">{monthLabel(month)}</strong>
+          <div className="month-copy">
+            <span className="month-icon" aria-hidden="true"><CalendarDays /></span>
+            <div>
+              <span className="eyebrow">Месяц</span>
+              <strong>{monthLabel(month)}</strong>
+            </div>
           </div>
           <Input
             type="month"
@@ -1854,15 +1870,15 @@ export default function RentalApp() {
           </section>
         )}
 
-        <Tabs value={tab} onValueChange={setTab} className="mt-4 gap-4">
+        <Tabs value={tab} onValueChange={setTab} className="modern-tabs mt-4 gap-4">
           <TabsList className={`app-tabs grid h-auto w-full ${offlineMode ? "grid-cols-5" : "grid-cols-4"} bg-transparent p-0`}>
             <TabsTrigger value="summary" className="app-tab">
               <Calculator />
-              <span>Расчёт</span>
+              <span>Главная</span>
             </TabsTrigger>
             <TabsTrigger value="entries" className="app-tab">
               <CalendarDays />
-              <span>Записи</span>
+              <span>Дни</span>
             </TabsTrigger>
             <TabsTrigger value="invoices" className="app-tab">
               <ReceiptText />
@@ -1879,6 +1895,14 @@ export default function RentalApp() {
               </TabsTrigger>
             )}
           </TabsList>
+
+          <section className="view-heading">
+            <div>
+              <h2>{activeView.title}</h2>
+              <p>{activeView.description}</p>
+            </div>
+            {offlineMode && <span className="saved-chip"><CheckCircle2 />Сохранено</span>}
+          </section>
 
           {loading ? (
             <div className="panel flex min-h-56 items-center justify-center">
@@ -1907,6 +1931,27 @@ export default function RentalApp() {
                     <span>Остаток</span>
                     <strong className={rentBalance > 0 ? "text-amber-700" : "text-emerald-700"}>{money(rentBalance)}</strong>
                   </article>
+                </section>
+
+                <section className="dashboard-actions" aria-label="Быстрые действия">
+                  <button type="button" onClick={() => openInvoice("fixed")}>
+                    <span><ReceiptText /></span>
+                    <strong>Новый счёт</strong>
+                  </button>
+                  <button type="button" onClick={openExpense}>
+                    <span><WalletCards /></span>
+                    <strong>Расход</strong>
+                  </button>
+                  {offlineMode && (
+                    <button type="button" onClick={() => setTab("documents")}>
+                      <span><FileText /></span>
+                      <strong>Акты</strong>
+                    </button>
+                  )}
+                  <button type="button" onClick={exportExcel}>
+                    <span><FileSpreadsheet /></span>
+                    <strong>Excel</strong>
+                  </button>
                 </section>
 
                 <section className="panel">
@@ -2222,7 +2267,9 @@ export default function RentalApp() {
                       <label>
                         <FieldLabel>Долг на начало месяца, ₽</FieldLabel>
                         <Input type="number" step="0.01" inputMode="decimal" value={openingBalance} onChange={(event) => setOpeningBalance(event.target.value)} />
-                        <p className="help-note">Положительное число — «Кристалл» должен тебе. Отрицательное — аванс в его пользу.</p>
+                        <p className="help-note">
+                          Положительное число — {documentSettings.lesseeShort || "заказчик"} должен тебе. Отрицательное — аванс в его пользу.
+                        </p>
                       </label>
                       <Button type="button" variant="outline" onClick={() => void saveDocumentParameters()} disabled={busy}>Сохранить параметры</Button>
                     </div>

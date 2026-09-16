@@ -3,5 +3,10 @@
     <string name="app_name">Аренда ТС</string>
     <string name="file_saved">Файл сохранён</string>
     <string name="file_save_error">Не удалось сохранить файл</string>
-    <string name="pdf_ready">Выберите «Сохранить как PDF»</string>
+    <string name="pdf_in_progress">PDF уже создаётся</string>
+    <string name="pdf_saved_title">PDF сохранён</string>
+    <string name="pdf_open">Открыть</string>
+    <string name="pdf_share">Поделиться</string>
+    <string name="pdf_open_error">Не найдено приложение для открытия PDF</string>
+    <string name="close">Закрыть</string>
 </resources>
