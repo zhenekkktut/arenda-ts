@@ -268,10 +268,14 @@ const officialCss = `
   .signature-date { margin-top: 5mm; }
   .muted { font-size: 9pt; }
   .nowrap { white-space: nowrap; }
+  @media screen {
+    html, body { width: 794px; min-width: 794px; }
+    .page { width: 794px; height: 1123px; padding: 57px 64px; overflow: hidden; }
+  }
 `;
 
 function wrapDocument(title: string, pages: string[]) {
-  return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>${officialCss}</style></head><body>${pages.map((page) => `<section class="page">${page}</section>`).join("")}</body></html>`;
+  return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=794, initial-scale=1"><title>${escapeHtml(title)}</title><style>${officialCss}</style></head><body>${pages.map((page) => `<section class="page">${page}</section>`).join("")}</body></html>`;
 }
 
 type OfficialDocumentInput = {

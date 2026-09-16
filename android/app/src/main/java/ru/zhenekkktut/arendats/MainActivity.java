@@ -1,16 +1,20 @@
 package ru.zhenekkktut.arendats;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.pdf.PdfDocument;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
-import android.print.PrintAttributes;
-import android.print.PrintDocumentAdapter;
-import android.print.PrintManager;
+import android.os.Environment;
+import android.provider.MediaStore;
 import android.util.Base64;
 import android.view.View;
 import android.webkit.JavascriptInterface;
@@ -30,6 +34,11 @@ import androidx.webkit.WebViewAssetLoader;
 public class MainActivity extends Activity {
     private static final int REQUEST_OPEN_FILE = 1001;
     private static final int REQUEST_SAVE_FILE = 1002;
+    private static final int REQUEST_SAVE_PDF = 1003;
+    private static final int PDF_PAGE_WIDTH = 794;
+    private static final int PDF_PAGE_HEIGHT = 1123;
+    private static final int PDF_OUTPUT_WIDTH = 595;
+    private static final int PDF_OUTPUT_HEIGHT = 842;
 
     private WebView webView;
     private WebViewAssetLoader assetLoader;
@@ -37,18 +46,23 @@ public class MainActivity extends Activity {
     private byte[] pendingFileBytes;
     private String pendingFileName;
     private String pendingMimeType;
+    private String pendingPdfHtml;
+    private String pendingPdfFileName;
     private WebView pdfWebView;
+    private boolean pdfInProgress;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        getWindow().setStatusBarColor(Color.rgb(8, 29, 49));
-        getWindow().setNavigationBarColor(Color.rgb(243, 246, 248));
-        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+        getWindow().setStatusBarColor(Color.WHITE);
+        getWindow().setNavigationBarColor(Color.rgb(244, 246, 249));
+        getWindow().getDecorView().setSystemUiVisibility(
+            View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        );
 
         webView = new WebView(this);
-        webView.setBackgroundColor(Color.rgb(243, 246, 248));
+        webView.setBackgroundColor(Color.rgb(244, 246, 249));
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
 
         WebSettings settings = webView.getSettings();
@@ -165,6 +179,20 @@ public class MainActivity extends Activity {
             return;
         }
 
+        if (requestCode == REQUEST_SAVE_PDF) {
+            if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null && pendingPdfHtml != null) {
+                String html = pendingPdfHtml;
+                String fileName = pendingPdfFileName == null ? "document.pdf" : pendingPdfFileName;
+                pendingPdfHtml = null;
+                pendingPdfFileName = null;
+                renderHtmlToPdf(html, fileName, data.getData(), false);
+            } else {
+                pendingPdfHtml = null;
+                pendingPdfFileName = null;
+                pdfInProgress = false;
+            }
+            return;
+        }
     }
 
     @Override
@@ -231,28 +259,79 @@ public class MainActivity extends Activity {
             String pdfFileName = safeFileName(fileName == null ? "document.pdf" : fileName);
             if (!pdfFileName.toLowerCase().endsWith(".pdf")) pdfFileName += ".pdf";
             final String finalPdfFileName = pdfFileName;
-            runOnUiThread(() -> openPdfPrintDialog(html, finalPdfFileName));
+            runOnUiThread(() -> beginPdfSave(html, finalPdfFileName));
         }
     }
 
-    private void openPdfPrintDialog(String html, String pdfFileName) {
+    private void beginPdfSave(String html, String pdfFileName) {
+        if (pdfInProgress) {
+            Toast.makeText(this, R.string.pdf_in_progress, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        pdfInProgress = true;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.MediaColumns.DISPLAY_NAME, pdfFileName);
+                values.put(MediaStore.MediaColumns.MIME_TYPE, "application/pdf");
+                values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Аренда ТС");
+                values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+                Uri destination = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                if (destination == null) throw new IllegalStateException("Не удалось создать PDF");
+                renderHtmlToPdf(html, pdfFileName, destination, true);
+            } catch (Exception error) {
+                pdfInProgress = false;
+                Toast.makeText(this, R.string.file_save_error, Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
+
+        pendingPdfHtml = html;
+        pendingPdfFileName = pdfFileName;
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/pdf");
+        intent.putExtra(Intent.EXTRA_TITLE, pdfFileName);
+        try {
+            startActivityForResult(intent, REQUEST_SAVE_PDF);
+        } catch (Exception error) {
+            pendingPdfHtml = null;
+            pendingPdfFileName = null;
+            pdfInProgress = false;
+            Toast.makeText(this, R.string.file_save_error, Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void renderHtmlToPdf(String html, String pdfFileName, Uri destination, boolean mediaStoreDestination) {
         if (pdfWebView != null) {
             pdfWebView.destroy();
             pdfWebView = null;
         }
         pdfWebView = new WebView(this);
         pdfWebView.setBackgroundColor(Color.WHITE);
+        pdfWebView.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
+        pdfWebView.setHorizontalScrollBarEnabled(false);
+        pdfWebView.setVerticalScrollBarEnabled(false);
         pdfWebView.getSettings().setJavaScriptEnabled(false);
         pdfWebView.getSettings().setBlockNetworkLoads(true);
         pdfWebView.getSettings().setDefaultTextEncodingName("UTF-8");
+        pdfWebView.getSettings().setUseWideViewPort(true);
+        pdfWebView.getSettings().setLoadWithOverviewMode(false);
+        pdfWebView.getSettings().setTextZoom(100);
+        pdfWebView.setInitialScale(100);
+        final int pageCount = countPdfPages(html);
         pdfWebView.setWebViewClient(new WebViewClient() {
-            private boolean printStarted;
+            private boolean renderStarted;
 
             @Override
             public void onPageFinished(WebView view, String url) {
-                if (printStarted) return;
-                printStarted = true;
-                view.postDelayed(() -> startPdfPrint(view, pdfFileName), 250);
+                if (renderStarted) return;
+                renderStarted = true;
+                view.postDelayed(
+                    () -> writeWebViewPdf(view, pageCount, pdfFileName, destination, mediaStoreDestination),
+                    350
+                );
             }
         });
         pdfWebView.loadDataWithBaseURL(
@@ -264,21 +343,128 @@ public class MainActivity extends Activity {
         );
     }
 
-    private void startPdfPrint(WebView source, String pdfFileName) {
+    private void writeWebViewPdf(
+        WebView source,
+        int pageCount,
+        String pdfFileName,
+        Uri destination,
+        boolean mediaStoreDestination
+    ) {
+        PdfDocument document = new PdfDocument();
+        boolean success = false;
         try {
-            PrintManager printManager = (PrintManager) getSystemService(Context.PRINT_SERVICE);
-            if (printManager == null) throw new IllegalStateException("Печать недоступна");
-            PrintDocumentAdapter adapter = source.createPrintDocumentAdapter(pdfFileName);
-            PrintAttributes attributes = new PrintAttributes.Builder()
-                .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
-                .setMinMargins(PrintAttributes.Margins.NO_MARGINS)
-                .setColorMode(PrintAttributes.COLOR_MODE_MONOCHROME)
-                .build();
-            printManager.print(pdfFileName, adapter, attributes);
-            Toast.makeText(this, R.string.pdf_ready, Toast.LENGTH_LONG).show();
+            int totalHeight = PDF_PAGE_HEIGHT * pageCount;
+            source.measure(
+                View.MeasureSpec.makeMeasureSpec(PDF_PAGE_WIDTH, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(totalHeight, View.MeasureSpec.EXACTLY)
+            );
+            source.layout(0, 0, PDF_PAGE_WIDTH, totalHeight);
+            source.scrollTo(0, 0);
+
+            float scale = Math.min(
+                PDF_OUTPUT_WIDTH / (float) PDF_PAGE_WIDTH,
+                PDF_OUTPUT_HEIGHT / (float) PDF_PAGE_HEIGHT
+            );
+            for (int index = 0; index < pageCount; index++) {
+                PdfDocument.PageInfo pageInfo = new PdfDocument.PageInfo.Builder(
+                    PDF_OUTPUT_WIDTH,
+                    PDF_OUTPUT_HEIGHT,
+                    index + 1
+                ).create();
+                PdfDocument.Page page = document.startPage(pageInfo);
+                Canvas canvas = page.getCanvas();
+                canvas.drawColor(Color.WHITE);
+                int checkpoint = canvas.save();
+                canvas.scale(scale, scale);
+                canvas.translate(0, -index * PDF_PAGE_HEIGHT);
+                source.draw(canvas);
+                canvas.restoreToCount(checkpoint);
+                document.finishPage(page);
+            }
+
+            try (OutputStream output = getContentResolver().openOutputStream(destination, "w")) {
+                if (output == null) throw new IllegalStateException("Файл недоступен");
+                document.writeTo(output);
+                output.flush();
+            }
+            success = true;
         } catch (Exception error) {
-            Toast.makeText(this, R.string.file_save_error, Toast.LENGTH_LONG).show();
+            success = false;
+        } finally {
+            document.close();
+            finishPdfSave(destination, pdfFileName, mediaStoreDestination, success);
         }
+    }
+
+    private void finishPdfSave(Uri destination, String pdfFileName, boolean mediaStoreDestination, boolean success) {
+        if (mediaStoreDestination && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                if (success) {
+                    ContentValues values = new ContentValues();
+                    values.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                    getContentResolver().update(destination, values, null, null);
+                } else {
+                    getContentResolver().delete(destination, null, null);
+                }
+            } catch (Exception ignored) {
+                success = false;
+            }
+        }
+
+        if (pdfWebView != null) {
+            pdfWebView.destroy();
+            pdfWebView = null;
+        }
+        pdfInProgress = false;
+
+        if (!success) {
+            Toast.makeText(this, R.string.file_save_error, Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        String folder = mediaStoreDestination ? "Загрузки/Аренда ТС" : "выбранная папка";
+        new AlertDialog.Builder(this)
+            .setTitle(R.string.pdf_saved_title)
+            .setMessage("Файл: " + pdfFileName + "\nПапка: " + folder)
+            .setPositiveButton(R.string.pdf_open, (dialog, which) -> openPdf(destination))
+            .setNeutralButton(R.string.pdf_share, (dialog, which) -> sharePdf(destination))
+            .setNegativeButton(R.string.close, null)
+            .show();
+    }
+
+    private void openPdf(Uri uri) {
+        Intent intent = new Intent(Intent.ACTION_VIEW);
+        intent.setDataAndType(uri, "application/pdf");
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try {
+            startActivity(Intent.createChooser(intent, getString(R.string.pdf_open)));
+        } catch (Exception error) {
+            Toast.makeText(this, R.string.pdf_open_error, Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void sharePdf(Uri uri) {
+        Intent intent = new Intent(Intent.ACTION_SEND);
+        intent.setType("application/pdf");
+        intent.putExtra(Intent.EXTRA_STREAM, uri);
+        intent.setClipData(ClipData.newRawUri("PDF", uri));
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try {
+            startActivity(Intent.createChooser(intent, getString(R.string.pdf_share)));
+        } catch (Exception error) {
+            Toast.makeText(this, R.string.pdf_open_error, Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private int countPdfPages(String html) {
+        String marker = "<section class=\"page\">";
+        int count = 0;
+        int cursor = 0;
+        while ((cursor = html.indexOf(marker, cursor)) >= 0) {
+            count += 1;
+            cursor += marker.length();
+        }
+        return Math.max(1, count);
     }
 
     private String safeFileName(String value) {
