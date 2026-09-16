@@ -1215,10 +1215,10 @@ body {
 
 .app-root {
   min-height: 100dvh;
-  padding-bottom: calc(6.6rem + env(safe-area-inset-bottom));
+  padding-bottom: calc(5.9rem + env(safe-area-inset-bottom));
   background:
-    radial-gradient(circle at 85% -10%, rgba(38, 136, 235, 0.09), transparent 18rem),
-    #f4f6f9;
+    radial-gradient(circle at 85% -10%, rgba(38, 136, 235, 0.08), transparent 18rem),
+    #f5f6f8;
 }
 
 .app-shell {
@@ -1228,12 +1228,12 @@ body {
 .app-header {
   position: sticky;
   top: 0;
-  z-index: 45;
+  z-index: 30;
   overflow: visible;
   color: #101828;
   border-bottom: 1px solid rgba(227, 232, 239, 0.84);
-  background: rgba(255, 255, 255, 0.88);
-  box-shadow: 0 4px 20px rgba(16, 24, 40, 0.045);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: none;
   backdrop-filter: saturate(180%) blur(18px);
 }
 
@@ -1242,13 +1242,24 @@ body {
 }
 
 .brand-mark {
-  width: 2.7rem;
-  height: 2.7rem;
+  width: 2.8rem;
+  height: 2.8rem;
   border: 0;
-  border-radius: 0.95rem;
+  border-radius: 999px;
   color: #fff;
   background: linear-gradient(145deg, #1c9bff, #5468f2);
-  box-shadow: 0 8px 18px rgba(38, 136, 235, 0.25);
+  box-shadow: 0 0 0 3px rgba(38, 136, 235, 0.1);
+}
+
+.app-name {
+  display: block;
+  margin-bottom: -0.05rem;
+  color: #8a94a4;
+  font-size: 0.65rem;
+  font-weight: 750;
+  letter-spacing: 0.075em;
+  line-height: 1.15;
+  text-transform: uppercase;
 }
 
 .app-status-line {
@@ -1278,7 +1289,8 @@ body {
 }
 
 .export-button,
-.install-button {
+.install-button,
+.settings-button {
   min-width: 2.75rem;
   height: 2.75rem;
   border: 0;
@@ -1289,13 +1301,14 @@ body {
 }
 
 .export-button:hover,
-.install-button:hover {
+.install-button:hover,
+.settings-button:hover {
   color: #1769bb;
   background: #eaf3ff;
 }
 
 .app-main {
-  padding-top: 0.85rem;
+  padding-top: 0.7rem;
   padding-bottom: 1.5rem;
 }
 
@@ -1305,7 +1318,7 @@ body {
   border: 0;
   border-radius: 1.25rem;
   background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 5px 20px rgba(16, 24, 40, 0.055);
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06), 0 8px 24px rgba(16, 24, 40, 0.035);
 }
 
 .month-copy {
@@ -1488,44 +1501,67 @@ body {
 .app-tabs {
   position: fixed;
   top: auto;
-  right: 0.65rem;
-  bottom: max(0.65rem, env(safe-area-inset-bottom));
-  left: 0.65rem;
-  z-index: 60;
-  width: auto !important;
-  gap: 0.2rem;
-  padding: 0.38rem !important;
-  border: 1px solid rgba(222, 228, 236, 0.88);
-  border-radius: 1.35rem;
-  background: rgba(255, 255, 255, 0.93) !important;
-  box-shadow: 0 12px 38px rgba(16, 24, 40, 0.17);
-  backdrop-filter: saturate(180%) blur(22px);
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 35;
+  width: 100% !important;
+  min-height: calc(4.65rem + env(safe-area-inset-bottom));
+  gap: 0;
+  padding: 0.42rem 0.45rem calc(0.34rem + env(safe-area-inset-bottom)) !important;
+  border: 0;
+  border-top: 1px solid rgba(222, 227, 234, 0.9);
+  border-radius: 0;
+  background: rgba(255, 255, 255, 0.96) !important;
+  box-shadow: 0 -8px 28px rgba(16, 24, 40, 0.07);
+  backdrop-filter: saturate(180%) blur(24px);
 }
 
 .app-tab {
-  height: 3.45rem !important;
-  gap: 0.12rem !important;
-  border-radius: 1rem !important;
+  position: relative;
+  height: 3.7rem !important;
+  gap: 0.16rem !important;
+  border-radius: 0.8rem !important;
   color: #8793a4 !important;
-  font-size: 0.66rem !important;
-  font-weight: 690 !important;
+  font-size: 0.68rem !important;
+  font-weight: 680 !important;
   transition: color 160ms ease, background 160ms ease, transform 160ms ease;
 }
 
 .app-tab svg {
-  width: 1.2rem !important;
-  height: 1.2rem !important;
+  width: 1.42rem !important;
+  height: 1.42rem !important;
   stroke-width: 2.15;
 }
 
 .app-tab[data-state="active"] {
   color: #2177cc !important;
-  background: #edf5ff !important;
+  background: transparent !important;
   box-shadow: none !important;
+  font-weight: 790 !important;
 }
 
 .app-tab[data-state="active"] svg {
-  transform: translateY(-1px);
+  stroke-width: 2.65;
+  transform: translateY(-1px) scale(1.04);
+}
+
+.app-tab::after {
+  content: "";
+  position: absolute;
+  top: -0.42rem;
+  left: 50%;
+  width: 1.8rem;
+  height: 0.18rem;
+  border-radius: 999px;
+  background: #2688eb;
+  opacity: 0;
+  transform: translateX(-50%);
+  transition: opacity 160ms ease;
+}
+
+.app-tab[data-state="active"]::after {
+  opacity: 1;
 }
 
 .panel,
@@ -1573,14 +1609,14 @@ body {
 
 .dashboard-actions {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.55rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
 }
 
 .dashboard-actions button {
   display: flex;
   min-width: 0;
-  min-height: 5.4rem;
+  min-height: 5.6rem;
   cursor: pointer;
   flex-direction: column;
   align-items: center;
@@ -1615,11 +1651,6 @@ body {
 }
 
 .dashboard-actions button:nth-child(3) > span {
-  color: #e18719;
-  background: #fff5e7;
-}
-
-.dashboard-actions button:nth-child(4) > span {
   color: #19865c;
   background: #eaf8f1;
 }
@@ -1742,7 +1773,16 @@ button[data-slot="button"] {
 
 .offline-storage-panel {
   border: 0;
-  background: #eef9f4;
+  background: #eef6ff;
+  box-shadow: none;
+}
+
+.offline-storage-panel strong {
+  color: #1c4f7c;
+}
+
+.offline-storage-panel p {
+  color: #64768a;
 }
 
 .dialog-card,
@@ -1813,7 +1853,7 @@ button[data-slot="button"] {
 
 @media (min-width: 640px) {
   .app-root {
-    padding-bottom: 2rem;
+    padding-bottom: 7rem;
   }
 
   .app-main {
@@ -1821,21 +1861,23 @@ button[data-slot="button"] {
   }
 
   .app-tabs {
-    position: sticky;
-    top: 5rem;
     right: auto;
-    bottom: auto;
-    left: auto;
-    width: 100% !important;
-    border-radius: 1.1rem;
-    box-shadow: 0 5px 20px rgba(16, 24, 40, 0.06);
+    bottom: 1rem;
+    left: 50%;
+    width: min(42rem, calc(100% - 2rem)) !important;
+    min-height: 4.7rem;
+    padding: 0.42rem 0.55rem !important;
+    border: 1px solid rgba(222, 227, 234, 0.9);
+    border-radius: 1.35rem;
+    box-shadow: 0 14px 40px rgba(16, 24, 40, 0.16);
+    transform: translateX(-50%);
   }
 
   .app-tab {
-    height: 3rem !important;
-    flex-direction: row;
-    gap: 0.4rem !important;
-    font-size: 0.82rem !important;
+    height: 3.65rem !important;
+    flex-direction: column;
+    gap: 0.15rem !important;
+    font-size: 0.72rem !important;
   }
 
   .dashboard-actions {
