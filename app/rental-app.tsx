@@ -1303,7 +1303,7 @@ export default function RentalApp() {
     event.preventDefault();
     const ok = await request(
       { action: "save_settings", settings: settingsDraft },
-      "Настройки договора сохранены",
+      "Настройки расчёта сохранены",
     );
     if (ok) setSettingsOpen(false);
   }
@@ -1725,7 +1725,6 @@ export default function RentalApp() {
     entries: { title: "Ежедневные записи", description: "Количество по дням и импорт" },
     invoices: { title: "Счета и оплаты", description: "Долги, оплаты и тексты для банка" },
     expenses: { title: "Расходы", description: "Топливо, ремонт и остальные затраты" },
-    documents: { title: "Акты", description: "Аренда, сверка и простои автомобиля" },
   };
   const activeView = viewMeta[tab] ?? viewMeta.summary;
 
@@ -1735,15 +1734,16 @@ export default function RentalApp() {
 
       <header className="app-header">
         <div className="app-shell flex items-center justify-between gap-3 py-3">
-          <div className="flex min-w-0 items-center gap-3">
+          <div className="app-identity flex min-w-0 items-center gap-3">
             <div className="brand-mark" aria-hidden="true">
               <CarFront className="size-6" />
             </div>
             <div className="min-w-0">
-              <h1 className="truncate text-lg font-extrabold tracking-tight sm:text-xl">Аренда ТС</h1>
+              <span className="app-name">Аренда ТС</span>
+              <h1 className="truncate text-lg font-extrabold tracking-tight sm:text-xl">{activeView.title}</h1>
               <p className="app-status-line">
                 <span className="status-dot" aria-hidden="true" />
-                {offlineMode ? "Данные сохранены на телефоне" : "Fiat Ducato · расчёты"}
+                {offlineMode ? "Сохранено на телефоне" : activeView.description}
               </p>
             </div>
           </div>
@@ -1766,9 +1766,20 @@ export default function RentalApp() {
               className="export-button"
               aria-label="Скачать отчёт в Excel"
             >
-              <Download className="size-4" />
+              <FileSpreadsheet className="size-5" />
               <span className="hidden sm:inline">Excel</span>
             </Button>
+            {offlineMode && (
+              <Button
+                type="button"
+                variant="ghost"
+                className="settings-button"
+                onClick={openSettings}
+                aria-label="Настройки расчёта"
+              >
+                <Settings className="size-5" />
+              </Button>
+            )}
           </div>
         </div>
       </header>
@@ -1870,8 +1881,15 @@ export default function RentalApp() {
           </section>
         )}
 
-        <Tabs value={tab} onValueChange={setTab} className="modern-tabs mt-4 gap-4">
-          <TabsList className={`app-tabs grid h-auto w-full ${offlineMode ? "grid-cols-5" : "grid-cols-4"} bg-transparent p-0`}>
+        <Tabs
+          value={tab}
+          onValueChange={(value) => {
+            setTab(value);
+            window.scrollTo({ top: 0, behavior: "smooth" });
+          }}
+          className="modern-tabs mt-4 gap-4"
+        >
+          <TabsList className="app-tabs grid h-auto w-full grid-cols-4 bg-transparent p-0" aria-label="Разделы приложения">
             <TabsTrigger value="summary" className="app-tab">
               <Calculator />
               <span>Главная</span>
@@ -1888,21 +1906,7 @@ export default function RentalApp() {
               <WalletCards />
               <span>Расходы</span>
             </TabsTrigger>
-            {offlineMode && (
-              <TabsTrigger value="documents" className="app-tab">
-                <FileText />
-                <span>Акты</span>
-              </TabsTrigger>
-            )}
           </TabsList>
-
-          <section className="view-heading">
-            <div>
-              <h2>{activeView.title}</h2>
-              <p>{activeView.description}</p>
-            </div>
-            {offlineMode && <span className="saved-chip"><CheckCircle2 />Сохранено</span>}
-          </section>
 
           {loading ? (
             <div className="panel flex min-h-56 items-center justify-center">
@@ -1942,15 +1946,9 @@ export default function RentalApp() {
                     <span><WalletCards /></span>
                     <strong>Расход</strong>
                   </button>
-                  {offlineMode && (
-                    <button type="button" onClick={() => setTab("documents")}>
-                      <span><FileText /></span>
-                      <strong>Акты</strong>
-                    </button>
-                  )}
                   <button type="button" onClick={exportExcel}>
                     <span><FileSpreadsheet /></span>
-                    <strong>Excel</strong>
+                    <strong>Выгрузить Excel</strong>
                   </button>
                 </section>
 
@@ -2228,98 +2226,11 @@ export default function RentalApp() {
                 )}
               </TabsContent>
 
-              {offlineMode && (
-                <TabsContent value="documents" className="space-y-4">
-                  <section className="panel">
-                    <div className="section-heading">
-                      <div>
-                        <span className="eyebrow">Реквизиты и условия</span>
-                        <h2>Документы по аренде</h2>
-                      </div>
-                      <Button type="button" variant="outline" size="sm" onClick={openSettings}>
-                        <Settings />Настройки
-                      </Button>
-                    </div>
-                    <div className="document-summary-grid">
-                      <div><span>Договор</span><strong>№ {documentSettings.contractNumber}</strong></div>
-                      <div><span>Начислено</span><strong>{money(calculation.totalKopecks)}</strong></div>
-                      <div><span>Оплачено и зачтено</span><strong>{money(totalPaid + customerFuel)}</strong></div>
-                      <div><span>Простой</span><strong>{calculation.downtimeDays} дн.</strong></div>
-                    </div>
-                    {!documentSettingsReady && <p className="help-note mt-3">Открой «Настройки» и заполни реквизиты сторон, договора и автомобиля.</p>}
-                    {!data.closure && <p className="help-note mt-3">Месяц открыт. Документы сформируются по текущим данным; перед отправкой лучше закрыть месяц.</p>}
-                  </section>
-
-                  <section className="panel">
-                    <div className="section-heading">
-                      <div>
-                        <span className="eyebrow">Параметры</span>
-                        <h2>Номера и дата</h2>
-                      </div>
-                    </div>
-                    <div className="dialog-form">
-                      <div className="grid grid-cols-2 gap-3">
-                        <label><FieldLabel>Номер акта аренды</FieldLabel><Input value={actNumber} onChange={(event) => setActNumber(event.target.value)} /></label>
-                        <label><FieldLabel>Номер акта сверки</FieldLabel><Input value={reconciliationNumber} onChange={(event) => setReconciliationNumber(event.target.value)} /></label>
-                      </div>
-                      <label><FieldLabel>Дата документов</FieldLabel><Input type="date" value={documentDate} onChange={(event) => setDocumentDate(event.target.value)} /></label>
-                      <label><FieldLabel>Основание количества бутылей</FieldLabel><Textarea value={documentBasis} onChange={(event) => setDocumentBasis(event.target.value)} placeholder="Например: ежедневный реестр за месяц" /></label>
-                      <label>
-                        <FieldLabel>Долг на начало месяца, ₽</FieldLabel>
-                        <Input type="number" step="0.01" inputMode="decimal" value={openingBalance} onChange={(event) => setOpeningBalance(event.target.value)} />
-                        <p className="help-note">
-                          Положительное число — {documentSettings.lesseeShort || "заказчик"} должен тебе. Отрицательное — аванс в его пользу.
-                        </p>
-                      </label>
-                      <Button type="button" variant="outline" onClick={() => void saveDocumentParameters()} disabled={busy}>Сохранить параметры</Button>
-                    </div>
-                  </section>
-
-                  <section className="panel">
-                    <div className="section-heading">
-                      <div>
-                        <span className="eyebrow">Уменьшение аренды</span>
-                        <h2>Простой автомобиля</h2>
-                      </div>
-                      {!data.closure && <Button type="button" variant="outline" size="sm" onClick={() => openDowntime()}><Plus />Добавить</Button>}
-                    </div>
-                    <p className="help-note">Постоянная часть уменьшается пропорционально календарным дням простоя. Переменная часть считается по фактическим бутылкам.</p>
-                    {(data.downtimes ?? []).length === 0 ? (
-                      <p className="document-empty">Простоев за выбранный месяц нет.</p>
-                    ) : (
-                      <div className="record-list mt-3">
-                        {(data.downtimes ?? []).map((downtime) => (
-                          <article className="record-row" key={downtime.id}>
-                            <div className="record-date"><Wrench />{dateLabel(downtime.startDate)} — {dateLabel(downtime.endDate)}</div>
-                            <div className="min-w-0 flex-1"><strong>{downtime.reason}</strong>{downtime.note && <p>{downtime.note}</p>}</div>
-                            {!data.closure && <div className="flex items-center gap-1">
-                              <Button type="button" variant="ghost" size="icon" onClick={() => openDowntime(downtime)} aria-label="Редактировать простой"><Pencil /></Button>
-                              <Button type="button" variant="ghost" size="icon" onClick={() => askDeleteDowntime(downtime)} aria-label="Удалить простой"><Trash2 /></Button>
-                            </div>}
-                          </article>
-                        ))}
-                      </div>
-                    )}
-                  </section>
-
-                  <section className="panel official-documents-panel">
-                    <span className="eyebrow">Готовые PDF</span>
-                    <h2>Сформировать документы</h2>
-                    <p>Акт аренды фиксирует начисление. Оплаты и топливо заказчика отражаются отдельно в акте сверки.</p>
-                    <div className="document-actions">
-                      <Button type="button" disabled={!documentSettingsReady} onClick={() => void saveOfficialPdf("act")}><FileText />Акт аренды</Button>
-                      <Button type="button" disabled={!documentSettingsReady} variant="outline" onClick={() => void saveOfficialPdf("reconciliation")}><ReceiptText />Акт сверки</Button>
-                      <Button type="button" disabled={!documentSettingsReady} className="package-button" onClick={() => void saveOfficialPdf("package")}><Download />Пакет из двух актов</Button>
-                    </div>
-                    <p className="help-note">Перед подписанием проверь номера, даты, сумму и реквизиты. PDF создаётся в официальном чёрно-белом стиле А4 с местами для подписей.</p>
-                  </section>
-                </TabsContent>
-              )}
             </>
           ) : null}
         </Tabs>
 
-        {offlineMode && (
+        {offlineMode && tab === "summary" && (
           <section className="panel offline-storage-panel mt-4">
             <div>
               <span className="eyebrow">Хранение данных</span>
@@ -2537,62 +2448,20 @@ export default function RentalApp() {
       </Dialog>
 
       <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <DialogContent className="dialog-card max-h-[92vh] overflow-y-auto sm:max-w-2xl">
+        <DialogContent className="dialog-card sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Настройки договора и документов</DialogTitle>
-            <DialogDescription>Заполняются один раз и автоматически подставляются в акты и расчёты.</DialogDescription>
+            <DialogTitle>Настройки расчёта</DialogTitle>
+            <DialogDescription>Здесь можно изменить базовую аренду, лимит и ставку сверх лимита.</DialogDescription>
           </DialogHeader>
           <form onSubmit={saveSettings} className="dialog-form">
             <div className="settings-section">
-              <strong>Договор</strong>
-              <div className="grid grid-cols-2 gap-3">
-                <label><FieldLabel>Номер договора</FieldLabel><Input value={settingsDraft.contractNumber} onChange={(event) => setSettingsDraft((value) => ({ ...value, contractNumber: event.target.value }))} required /></label>
-                <label><FieldLabel>Дата договора</FieldLabel><Input type="date" value={settingsDraft.contractDate} onChange={(event) => setSettingsDraft((value) => ({ ...value, contractDate: event.target.value }))} required /></label>
-              </div>
-              <label><FieldLabel>Город</FieldLabel><Input value={settingsDraft.city} onChange={(event) => setSettingsDraft((value) => ({ ...value, city: event.target.value }))} required /></label>
-            </div>
-
-            <div className="settings-section">
-              <strong>Арендодатель</strong>
-              <label><FieldLabel>Полное наименование</FieldLabel><Input value={settingsDraft.lessorFull} onChange={(event) => setSettingsDraft((value) => ({ ...value, lessorFull: event.target.value }))} required /></label>
-              <div className="grid grid-cols-2 gap-3">
-                <label><FieldLabel>Краткое наименование</FieldLabel><Input value={settingsDraft.lessorShort} onChange={(event) => setSettingsDraft((value) => ({ ...value, lessorShort: event.target.value }))} required /></label>
-                <label><FieldLabel>ИНН</FieldLabel><Input inputMode="numeric" value={settingsDraft.lessorInn} onChange={(event) => setSettingsDraft((value) => ({ ...value, lessorInn: event.target.value }))} required /></label>
-              </div>
-              <label><FieldLabel>ФИО в строке подписи</FieldLabel><Input value={settingsDraft.lessorSignerShort} onChange={(event) => setSettingsDraft((value) => ({ ...value, lessorSignerShort: event.target.value }))} required /></label>
-            </div>
-
-            <div className="settings-section">
-              <strong>Арендатор</strong>
-              <div className="grid grid-cols-2 gap-3">
-                <label><FieldLabel>Наименование</FieldLabel><Input value={settingsDraft.lesseeFull} onChange={(event) => setSettingsDraft((value) => ({ ...value, lesseeFull: event.target.value }))} required /></label>
-                <label><FieldLabel>Краткое наименование</FieldLabel><Input value={settingsDraft.lesseeShort} onChange={(event) => setSettingsDraft((value) => ({ ...value, lesseeShort: event.target.value }))} required /></label>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <label><FieldLabel>ИНН</FieldLabel><Input inputMode="numeric" value={settingsDraft.lesseeInn} onChange={(event) => setSettingsDraft((value) => ({ ...value, lesseeInn: event.target.value }))} required /></label>
-                <label><FieldLabel>КПП</FieldLabel><Input inputMode="numeric" value={settingsDraft.lesseeKpp} onChange={(event) => setSettingsDraft((value) => ({ ...value, lesseeKpp: event.target.value }))} required /></label>
-              </div>
-              <label><FieldLabel>Генеральный директор</FieldLabel><Input value={settingsDraft.lesseeDirector} onChange={(event) => setSettingsDraft((value) => ({ ...value, lesseeDirector: event.target.value }))} required /></label>
-              <label><FieldLabel>ФИО директора в строке подписи</FieldLabel><Input value={settingsDraft.lesseeDirectorShort} onChange={(event) => setSettingsDraft((value) => ({ ...value, lesseeDirectorShort: event.target.value }))} required /></label>
-            </div>
-
-            <div className="settings-section">
-              <strong>Автомобиль</strong>
-              <label><FieldLabel>Марка и модель</FieldLabel><Input value={settingsDraft.vehicleModel} onChange={(event) => setSettingsDraft((value) => ({ ...value, vehicleModel: event.target.value }))} required /></label>
-              <div className="grid grid-cols-2 gap-3">
-                <label><FieldLabel>VIN</FieldLabel><Input value={settingsDraft.vehicleVin} onChange={(event) => setSettingsDraft((value) => ({ ...value, vehicleVin: event.target.value.toUpperCase() }))} required /></label>
-                <label><FieldLabel>Госномер</FieldLabel><Input value={settingsDraft.vehiclePlate} onChange={(event) => setSettingsDraft((value) => ({ ...value, vehiclePlate: event.target.value.toUpperCase() }))} required /></label>
-              </div>
-            </div>
-
-            <div className="settings-section">
-              <strong>Расчёт аренды</strong>
+              <strong>Условия аренды</strong>
               <label><FieldLabel>Постоянная часть за полный месяц, ₽</FieldLabel><Input type="number" min="0.01" step="0.01" inputMode="decimal" value={settingsDraft.baseKopecks / 100} onChange={(event) => setSettingsDraft((value) => ({ ...value, baseKopecks: Math.round(Number(event.target.value) * 100) }))} required /></label>
               <div className="grid grid-cols-2 gap-3">
                 <label><FieldLabel>Включено бутылей</FieldLabel><Input type="number" min="0" step="1" inputMode="numeric" value={settingsDraft.includedUnits} onChange={(event) => setSettingsDraft((value) => ({ ...value, includedUnits: Number(event.target.value) }))} required /></label>
                 <label><FieldLabel>Ставка сверх лимита, ₽</FieldLabel><Input type="number" min="0" step="0.01" inputMode="decimal" value={settingsDraft.rateKopecks / 100} onChange={(event) => setSettingsDraft((value) => ({ ...value, rateKopecks: Math.round(Number(event.target.value) * 100) }))} required /></label>
               </div>
-              <p className="help-note">При простое уменьшается только постоянная часть. Лимит бутылей и ставка сохраняются за месяц.</p>
+              <p className="help-note">По умолчанию: 80 000 ₽ за 2 000 бутылок и 40 ₽ за каждую сверх лимита.</p>
             </div>
 
             <DialogFooter>
