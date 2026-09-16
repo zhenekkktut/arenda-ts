@@ -17,6 +17,7 @@ import android.os.Environment;
 import android.provider.MediaStore;
 import android.util.Base64;
 import android.view.View;
+import android.view.WindowInsets;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -25,6 +26,7 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
 import android.widget.Toast;
 
 import java.io.OutputStream;
@@ -135,7 +137,51 @@ public class MainActivity extends Activity {
             }
         });
 
-        setContentView(webView);
+        FrameLayout rootView = new FrameLayout(this);
+        rootView.setBackgroundColor(Color.WHITE);
+        rootView.addView(
+            webView,
+            new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        );
+        rootView.setOnApplyWindowInsetsListener((view, windowInsets) -> {
+            int insetLeft;
+            int insetTop;
+            int insetRight;
+            int insetBottom;
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                android.graphics.Insets safeInsets = windowInsets.getInsets(
+                    WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout()
+                );
+                insetLeft = safeInsets.left;
+                insetTop = safeInsets.top;
+                insetRight = safeInsets.right;
+                insetBottom = safeInsets.bottom;
+            } else {
+                insetLeft = windowInsets.getSystemWindowInsetLeft();
+                insetTop = windowInsets.getSystemWindowInsetTop();
+                insetRight = windowInsets.getSystemWindowInsetRight();
+                insetBottom = windowInsets.getSystemWindowInsetBottom();
+            }
+
+            FrameLayout.LayoutParams layoutParams = (FrameLayout.LayoutParams) webView.getLayoutParams();
+            if (
+                layoutParams.leftMargin != insetLeft
+                    || layoutParams.topMargin != insetTop
+                    || layoutParams.rightMargin != insetRight
+                    || layoutParams.bottomMargin != insetBottom
+            ) {
+                layoutParams.setMargins(insetLeft, insetTop, insetRight, insetBottom);
+                webView.setLayoutParams(layoutParams);
+            }
+            return windowInsets;
+        });
+
+        setContentView(rootView);
+        rootView.requestApplyInsets();
         webView.loadUrl("https://" + WebViewAssetLoader.DEFAULT_DOMAIN + "/assets/index.html");
     }
 
