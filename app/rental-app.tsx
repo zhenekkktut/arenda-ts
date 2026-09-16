@@ -1613,27 +1613,6 @@ export default function RentalApp() {
       downtimeSheet["!cols"] = [{ wch: 15 }, { wch: 15 }, { wch: 34 }, { wch: 42 }];
       XLSX.utils.book_append_sheet(workbook, downtimeSheet, "Простой");
 
-      const meta = currentDocumentMeta();
-      if (meta) {
-        const documentRows: (string | number)[][] = [
-          ["Параметр", "Значение"],
-          ["Договор", `№ ${documentSettings.contractNumber} от ${dateLabel(documentSettings.contractDate)}`],
-          ["Акт аренды", `№ ${meta.actNumber} от ${dateLabel(meta.documentDate)}`],
-          ["Акт сверки", `№ ${meta.reconciliationNumber} от ${dateLabel(meta.documentDate)}`],
-          ["Арендодатель", `${documentSettings.lessorFull}, ИНН ${documentSettings.lessorInn}`],
-          ["Арендатор", `${documentSettings.lesseeFull}, ИНН ${documentSettings.lesseeInn}, КПП ${documentSettings.lesseeKpp}`],
-          ["Автомобиль", `${documentSettings.vehicleModel}, VIN ${documentSettings.vehicleVin}, ${documentSettings.vehiclePlate}`],
-          ["Долг на начало, ₽", meta.openingBalanceKopecks / 100],
-          ["Начислено, ₽", calculation.totalKopecks / 100],
-          ["Оплачено, ₽", totalPaid / 100],
-          ["Зачтено топлива, ₽", customerFuel / 100],
-          ["Сальдо на конец, ₽", (meta.openingBalanceKopecks + calculation.totalKopecks - totalPaid - customerFuel) / 100],
-        ];
-        const documentSheet = XLSX.utils.aoa_to_sheet(documentRows);
-        documentSheet["!cols"] = [{ wch: 28 }, { wch: 90 }];
-        XLSX.utils.book_append_sheet(workbook, documentSheet, "Документы");
-      }
-
       const fileName = `arenda_ts_${month}.xlsx`;
       if (window.AndroidApp) {
         const base64 = XLSX.write(workbook, {
