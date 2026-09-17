@@ -154,7 +154,13 @@ export function calculateRental(
     .reduce((sum, entry) => sum + entry.units, 0);
   const downtimeDays = unavailable.size;
   const payableDays = Math.max(0, bounds.days - downtimeDays);
-  const baseKopecks = Math.round(settings.baseKopecks * payableDays / bounds.days);
+  // По согласованной схеме простой уменьшает постоянную часть только тогда,
+  // когда месячная интенсивность ниже включённого объёма. При достижении
+  // лимита постоянная часть остаётся полной, а сверх лимита начисляется ставка.
+  const reduceBaseForDowntime = actualUnits < settings.includedUnits;
+  const baseKopecks = reduceBaseForDowntime
+    ? Math.round(settings.baseKopecks * payableDays / bounds.days)
+    : settings.baseKopecks;
   const excessUnits = Math.max(0, actualUnits - settings.includedUnits);
   const variableKopecks = excessUnits * settings.rateKopecks;
 

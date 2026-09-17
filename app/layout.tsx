@@ -39,7 +39,14 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ru">
+    <html lang="ru" suppressHydrationWarning>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `try{document.documentElement.dataset.theme=localStorage.getItem("arenda-ts-theme-v1")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}`,
+          }}
+        />
+      </head>
       <body className="antialiased">
         <PwaRegister />
         {children}
