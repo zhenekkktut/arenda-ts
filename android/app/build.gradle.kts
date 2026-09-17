@@ -16,7 +16,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = buildNumber
-        versionName = "3.3.$buildNumber"
+        versionName = "3.4.$buildNumber"
     }
 
     compileOptions {

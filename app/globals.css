@@ -201,7 +201,7 @@ textarea {
   box-shadow: 0 8px 25px rgba(21, 45, 63, 0.07);
 }
 
-.quick-entry-primary {
+.panel.quick-entry-primary {
   margin-top: 0.8rem;
   padding: 0.85rem;
   border-color: #e8bd61;
@@ -1290,7 +1290,8 @@ body {
 
 .export-button,
 .install-button,
-.settings-button {
+.settings-button,
+.theme-button {
   min-width: 2.75rem;
   height: 2.75rem;
   border: 0;
@@ -1302,7 +1303,8 @@ body {
 
 .export-button:hover,
 .install-button:hover,
-.settings-button:hover {
+.settings-button:hover,
+.theme-button:hover {
   color: #1769bb;
   background: #eaf3ff;
 }
@@ -1927,5 +1929,373 @@ button[data-slot="button"] {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* Быстрый последовательный ввод из блокнота */
+.panel.quick-entry-primary {
+  color: #fff;
+  background:
+    radial-gradient(circle at 92% 5%, rgba(255, 255, 255, 0.22), transparent 9rem),
+    linear-gradient(135deg, #168fe8 0%, #3978ed 58%, #5a63e8 100%);
+  box-shadow: 0 12px 30px rgba(38, 116, 220, 0.23);
+}
+
+.quick-entry-title {
+  display: block;
+  margin-top: 0.12rem;
+  color: #fff;
+  font-size: 1.08rem;
+  font-weight: 800;
+  letter-spacing: -0.015em;
+}
+
+.entry-existing-chip {
+  display: inline-flex;
+  min-height: 1.8rem;
+  align-items: center;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.17);
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+
+.fast-entry-date-row {
+  display: flex;
+  align-items: end;
+  gap: 0.55rem;
+}
+
+.fast-entry-date-row label {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 0.3rem;
+}
+
+.fast-entry-date-row input {
+  min-height: 3.1rem;
+  border: 0;
+  border-radius: 1rem;
+  color: #101828;
+  background: #fff;
+  box-shadow: 0 5px 14px rgba(22, 55, 105, 0.12);
+  color-scheme: light;
+  font-size: 1rem;
+  font-weight: 720;
+}
+
+.fast-entry-row label {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.today-button {
+  min-height: 3.1rem !important;
+  padding-inline: 0.8rem;
+  color: #fff !important;
+  background: rgba(255, 255, 255, 0.14) !important;
+}
+
+.today-button:hover {
+  background: rgba(255, 255, 255, 0.22) !important;
+}
+
+.fast-entry-hint {
+  margin: -0.05rem 0 0;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+.calculation-note {
+  margin: 0.85rem 0 0;
+  padding: 0.75rem 0.85rem;
+  border-radius: 0.9rem;
+  color: #526174;
+  background: #f4f6f9;
+  font-size: 0.82rem;
+}
+
+.downtime-panel .section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.downtime-explanation {
+  margin: 0;
+  padding: 0.85rem;
+  border-radius: 0.95rem;
+  color: #5d6777;
+  background: #f4f6f9;
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.downtime-empty {
+  margin: 0.85rem 0 0;
+  color: #8390a1;
+  font-size: 0.88rem;
+  text-align: center;
+}
+
+.downtime-list {
+  display: grid;
+  margin-top: 0.75rem;
+}
+
+.downtime-row {
+  display: flex;
+  min-height: 3.7rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-top: 1px solid #eef1f5;
+}
+
+.downtime-row:first-child {
+  border-top: 0;
+}
+
+.downtime-row > span {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.9rem;
+  font-weight: 690;
+}
+
+.downtime-row > span svg {
+  width: 1.1rem;
+  color: #2688eb;
+}
+
+.downtime-row > div {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.downtime-row button[data-slot="button"] {
+  min-width: 2.6rem;
+  min-height: 2.6rem;
+  color: #748297;
+  background: #f3f5f8;
+}
+
+/* Полноценная тёмная тема, включая диалоги и нижнюю навигацию */
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --background: #0c111b;
+  --foreground: #edf2f8;
+  --card: #151c28;
+  --card-foreground: #edf2f8;
+  --popover: #151c28;
+  --popover-foreground: #edf2f8;
+  --primary: #55a7ff;
+  --primary-foreground: #07111e;
+  --secondary: #202938;
+  --secondary-foreground: #e8eef7;
+  --muted: #1d2634;
+  --muted-foreground: #9aa8ba;
+  --accent: #20334b;
+  --accent-foreground: #a9d2ff;
+  --destructive: #ff6872;
+  --border: #2a3443;
+  --input: #303b4b;
+  --ring: #55a7ff;
+}
+
+html[data-theme="dark"],
+html[data-theme="dark"] body {
+  background: #0c111b;
+  color: #edf2f8;
+}
+
+html[data-theme="dark"] .app-root {
+  background:
+    radial-gradient(circle at 85% -10%, rgba(53, 140, 231, 0.13), transparent 19rem),
+    #0c111b;
+}
+
+html[data-theme="dark"] .app-header {
+  color: #edf2f8;
+  border-bottom-color: rgba(55, 68, 86, 0.8);
+  background: rgba(13, 19, 29, 0.94);
+}
+
+html[data-theme="dark"] .app-name,
+html[data-theme="dark"] .app-status-line,
+html[data-theme="dark"] .eyebrow,
+html[data-theme="dark"] .money-card span,
+html[data-theme="dark"] .money-card small,
+html[data-theme="dark"] .calculation-list span,
+html[data-theme="dark"] .record-row p,
+html[data-theme="dark"] .expense-row p,
+html[data-theme="dark"] .downtime-empty {
+  color: #93a1b4;
+}
+
+html[data-theme="dark"] .export-button,
+html[data-theme="dark"] .install-button,
+html[data-theme="dark"] .settings-button,
+html[data-theme="dark"] .theme-button {
+  color: #cbd5e2;
+  background: #1c2532;
+}
+
+html[data-theme="dark"] .export-button:hover,
+html[data-theme="dark"] .install-button:hover,
+html[data-theme="dark"] .settings-button:hover,
+html[data-theme="dark"] .theme-button:hover {
+  color: #86beff;
+  background: #243247;
+}
+
+html[data-theme="dark"] .month-bar,
+html[data-theme="dark"] .panel,
+html[data-theme="dark"] .money-card,
+html[data-theme="dark"] .finance-summary,
+html[data-theme="dark"] .dashboard-actions button,
+html[data-theme="dark"] .dialog-card,
+html[data-theme="dark"] [data-slot="alert-dialog-content"] {
+  color: #edf2f8;
+  background: #151c28;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.24);
+}
+
+html[data-theme="dark"] .panel.quick-entry-primary,
+html[data-theme="dark"] .money-card-main {
+  color: #fff;
+  background:
+    radial-gradient(circle at 92% 5%, rgba(255, 255, 255, 0.16), transparent 9rem),
+    linear-gradient(135deg, #087dc7 0%, #2863c9 58%, #514ebf 100%);
+}
+
+html[data-theme="dark"] .month-icon,
+html[data-theme="dark"] .dashboard-actions button > span {
+  color: #68b3ff;
+  background: #20334a;
+}
+
+html[data-theme="dark"] .dashboard-actions button:nth-child(2) > span {
+  color: #c6a4ff;
+  background: #332849;
+}
+
+html[data-theme="dark"] .dashboard-actions button:nth-child(3) > span {
+  color: #75d8ae;
+  background: #193c34;
+}
+
+html[data-theme="dark"] .month-bar > input,
+html[data-theme="dark"] .entry-form input,
+html[data-theme="dark"] .dialog-form input,
+html[data-theme="dark"] .dialog-form textarea,
+html[data-theme="dark"] [data-slot="select-trigger"] {
+  color: #edf2f8;
+  background: #202938 !important;
+  color-scheme: dark;
+}
+
+html[data-theme="dark"] .entry-form input:focus,
+html[data-theme="dark"] .dialog-form input:focus,
+html[data-theme="dark"] .dialog-form textarea:focus,
+html[data-theme="dark"] [data-slot="select-trigger"]:focus-visible {
+  background: #263143 !important;
+}
+
+html[data-theme="dark"] .fast-entry-date-row input,
+html[data-theme="dark"] .fast-entry-row input {
+  color: #101828;
+  background: #fff !important;
+  color-scheme: light;
+}
+
+html[data-theme="dark"] .money-card strong,
+html[data-theme="dark"] .section-heading h2,
+html[data-theme="dark"] .invoice-card h2,
+html[data-theme="dark"] .expense-row h2,
+html[data-theme="dark"] .calculation-list strong,
+html[data-theme="dark"] .dashboard-actions button,
+html[data-theme="dark"] .record-row strong {
+  color: #edf2f8;
+}
+
+html[data-theme="dark"] .invoice-amounts div,
+html[data-theme="dark"] .schedule-grid > div,
+html[data-theme="dark"] .copy-details,
+html[data-theme="dark"] .settings-section,
+html[data-theme="dark"] .document-summary-grid,
+html[data-theme="dark"] .calculation-note,
+html[data-theme="dark"] .downtime-explanation {
+  color: #aab6c7;
+  background: #1d2634;
+}
+
+html[data-theme="dark"] .record-row,
+html[data-theme="dark"] .downtime-row {
+  border-top-color: #273141;
+}
+
+html[data-theme="dark"] .record-row button[data-slot="button"],
+html[data-theme="dark"] .invoice-card button[data-slot="button"][data-size="icon"],
+html[data-theme="dark"] .expense-row button[data-slot="button"][data-size="icon"],
+html[data-theme="dark"] .downtime-row button[data-slot="button"] {
+  color: #a4b1c2;
+  background: #202938;
+}
+
+html[data-theme="dark"] .help-note,
+html[data-theme="dark"] .locked-note {
+  color: #efd992;
+  background: #352e1d;
+}
+
+html[data-theme="dark"] .offline-storage-panel {
+  background: #15283c;
+}
+
+html[data-theme="dark"] .offline-storage-panel strong {
+  color: #a9d2ff;
+}
+
+html[data-theme="dark"] .offline-storage-panel p {
+  color: #9fb0c2;
+}
+
+html[data-theme="dark"] .app-tabs {
+  border-top-color: rgba(49, 61, 78, 0.9);
+  background: rgba(14, 20, 31, 0.96) !important;
+  box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.24);
+}
+
+html[data-theme="dark"] .app-tab {
+  color: #7f8da0 !important;
+}
+
+html[data-theme="dark"] .app-tab[data-state="active"] {
+  color: #67b2ff !important;
+}
+
+@media (max-width: 639px) {
+  html[data-theme="dark"] [data-slot="dialog-footer"],
+  html[data-theme="dark"] [data-slot="alert-dialog-footer"] {
+    border-top-color: #2a3443;
+    background: rgba(21, 28, 40, 0.97);
+  }
+}
+
+@media (max-width: 390px) {
+  .fast-entry-row button {
+    min-width: 6.8rem;
+    padding-inline: 0.75rem;
+  }
+
+  .today-button {
+    padding-inline: 0.65rem;
   }
 }

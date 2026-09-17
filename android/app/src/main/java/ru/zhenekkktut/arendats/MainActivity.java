@@ -43,6 +43,7 @@ public class MainActivity extends Activity {
     private static final int PDF_OUTPUT_HEIGHT = 842;
 
     private WebView webView;
+    private FrameLayout rootView;
     private WebViewAssetLoader assetLoader;
     private ValueCallback<Uri[]> fileChooserCallback;
     private byte[] pendingFileBytes;
@@ -137,7 +138,7 @@ public class MainActivity extends Activity {
             }
         });
 
-        FrameLayout rootView = new FrameLayout(this);
+        rootView = new FrameLayout(this);
         rootView.setBackgroundColor(Color.WHITE);
         rootView.addView(
             webView,
@@ -264,6 +265,22 @@ public class MainActivity extends Activity {
     }
 
     private final class AndroidBridge {
+        @JavascriptInterface
+        public void setTheme(String theme) {
+            final boolean dark = "dark".equals(theme);
+            runOnUiThread(() -> {
+                int background = dark ? Color.rgb(12, 17, 27) : Color.rgb(244, 246, 249);
+                int statusBar = dark ? Color.rgb(12, 17, 27) : Color.WHITE;
+                getWindow().setStatusBarColor(statusBar);
+                getWindow().setNavigationBarColor(background);
+                getWindow().getDecorView().setSystemUiVisibility(
+                    dark ? 0 : View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+                );
+                if (webView != null) webView.setBackgroundColor(background);
+                if (rootView != null) rootView.setBackgroundColor(background);
+            });
+        }
+
         @JavascriptInterface
         public void copyText(String text) {
             ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);

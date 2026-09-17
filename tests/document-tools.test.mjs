@@ -14,11 +14,11 @@ const module = { exports: {} };
 new Function("exports", "module", compiled)(module.exports, module);
 const tools = module.exports;
 
-test("rent calculation deduplicates overlapping downtime days", () => {
+test("rent calculation deduplicates downtime and reduces base below 2000 units", () => {
   const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS };
   const calculation = tools.calculateRental(
     "2026-08",
-    [{ entryDate: "2026-08-01", units: 2_800 }],
+    [{ entryDate: "2026-08-01", units: 1_800 }],
     [
       { id: 1, startDate: "2026-08-10", endDate: "2026-08-20", reason: "Ремонт", note: "" },
       { id: 2, startDate: "2026-08-15", endDate: "2026-08-25", reason: "Ремонт", note: "" },
@@ -30,7 +30,34 @@ test("rent calculation deduplicates overlapping downtime days", () => {
   assert.equal(calculation.downtimeDays, 16);
   assert.equal(calculation.payableDays, 15);
   assert.equal(calculation.baseKopecks, Math.round(8_000_000 * 15 / 31));
-  assert.equal(calculation.variableKopecks, 3_200_000);
+  assert.equal(calculation.variableKopecks, 0);
+});
+
+test("downtime does not reduce the base at or above 2000 units", () => {
+  const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS };
+  const downtime = [
+    { id: 1, startDate: "2026-08-10", endDate: "2026-08-20", reason: "Простой автомобиля", note: "" },
+  ];
+
+  const atLimit = tools.calculateRental(
+    "2026-08",
+    [{ entryDate: "2026-08-01", units: 2_000 }],
+    downtime,
+    settings,
+  );
+  const aboveLimit = tools.calculateRental(
+    "2026-08",
+    [{ entryDate: "2026-08-01", units: 2_800 }],
+    downtime,
+    settings,
+  );
+
+  assert.equal(atLimit.baseKopecks, 8_000_000);
+  assert.equal(atLimit.baseReductionKopecks, 0);
+  assert.equal(atLimit.totalKopecks, 8_000_000);
+  assert.equal(aboveLimit.baseKopecks, 8_000_000);
+  assert.equal(aboveLimit.variableKopecks, 3_200_000);
+  assert.equal(aboveLimit.totalKopecks, 11_200_000);
 });
 
 test("official documents separate accrual from payments and fuel offsets", () => {

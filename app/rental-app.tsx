@@ -14,11 +14,14 @@ import {
   Fuel,
   LoaderCircle,
   LockKeyhole,
+  Moon,
   Plus,
   Pencil,
+  CirclePause,
   ReceiptText,
   Smartphone,
   Settings,
+  Sun,
   Trash2,
   UnlockKeyhole,
   Upload,
@@ -160,6 +163,7 @@ type AndroidAppBridge = {
   copyText: (text: string) => void;
   saveBase64File: (base64: string, fileName: string, mimeType: string) => void;
   saveHtmlAsPdf: (html: string, fileName: string) => void;
+  setTheme?: (theme: "light" | "dark") => void;
 };
 
 declare global {
@@ -194,6 +198,16 @@ const DEFAULT_RULES = {
 };
 
 const OFFLINE_STORAGE_KEY = "arenda-ts-offline-v1";
+const THEME_STORAGE_KEY = "arenda-ts-theme-v1";
+
+function applyTheme(theme: "light" | "dark") {
+  document.documentElement.dataset.theme = theme;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute(
+    "content",
+    theme === "dark" ? "#0c111b" : "#ffffff",
+  );
+  window.AndroidApp?.setTheme?.(theme);
+}
 
 function emptyOfflineStore(): OfflineStore {
   return {
@@ -633,6 +647,18 @@ function dateLabel(value: string | null) {
   return new Intl.DateTimeFormat("ru-RU").format(new Date(`${value}T12:00:00`));
 }
 
+function nextIsoDate(value: string) {
+  const date = new Date(`${value}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
+}
+
+function downtimeLabel(downtime: Downtime) {
+  return downtime.startDate === downtime.endDate
+    ? dateLabel(downtime.startDate)
+    : `${dateLabel(downtime.startDate)} — ${dateLabel(downtime.endDate)}`;
+}
+
 function monthLabel(value: string) {
   const text = new Intl.DateTimeFormat("ru-RU", {
     month: "long",
@@ -815,15 +841,16 @@ export default function RentalApp() {
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [copiedKey, setCopiedKey] = useState("");
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [theme, setTheme] = useState<"light" | "dark">("light");
 
   const [entryDate, setEntryDate] = useState(today);
+  const entryUnitsRef = useRef<HTMLInputElement>(null);
   const [editingEntry, setEditingEntry] = useState<Entry | null>(null);
   const [editUnits, setEditUnits] = useState("");
   const [editNote, setEditNote] = useState("");
   const [expensePayer, setExpensePayer] = useState<"self" | "customer">("self");
   const [entryUnits, setEntryUnits] = useState("");
   const [entryNote, setEntryNote] = useState("");
-  const [entryOptionsOpen, setEntryOptionsOpen] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
   const backupInputRef = useRef<HTMLInputElement>(null);
   const [importOpen, setImportOpen] = useState(false);
@@ -870,8 +897,6 @@ export default function RentalApp() {
   const [editingDowntimeId, setEditingDowntimeId] = useState<number | null>(null);
   const [downtimeStart, setDowntimeStart] = useState(today);
   const [downtimeEnd, setDowntimeEnd] = useState(today);
-  const [downtimeReason, setDowntimeReason] = useState("Ремонт автомобиля");
-  const [downtimeNote, setDowntimeNote] = useState("");
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -917,6 +942,14 @@ export default function RentalApp() {
       window.removeEventListener("beforeinstallprompt", offerInstall);
       window.removeEventListener("appinstalled", installed);
     };
+  }, []);
+
+  useEffect(() => {
+    const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+    const nextTheme = savedTheme === "dark" ? "dark" : "light";
+    applyTheme(nextTheme);
+    const timer = window.setTimeout(() => setTheme(nextTheme), 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => {
@@ -1007,6 +1040,21 @@ export default function RentalApp() {
   const cashResult = totalPaid - selfExpenses;
   const progress = Math.min(100, (calculation.actualUnits / calculation.includedUnits) * 100);
   const importTotalUnits = importRows.reduce((sum, row) => sum + row.units, 0);
+  const selectedEntry = data?.entries.find((entry) => entry.entryDate === entryDate);
+
+  function selectEntryDate(nextDate: string) {
+    const existing = data?.entries.find((entry) => entry.entryDate === nextDate);
+    setEntryDate(nextDate);
+    setEntryUnits(existing ? String(existing.units) : "");
+    setEntryNote(existing?.note ?? "");
+  }
+
+  function toggleTheme() {
+    const nextTheme = theme === "dark" ? "light" : "dark";
+    setTheme(nextTheme);
+    window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+    applyTheme(nextTheme);
+  }
 
   async function saveEntry(event: FormEvent) {
     event.preventDefault();
@@ -1020,12 +1068,11 @@ export default function RentalApp() {
       `Записано: ${number(units)} бутылок`,
     );
     if (ok) {
+      const followingDate = nextIsoDate(entryDate);
       setEntryUnits("");
       setEntryNote("");
-      if (month === today.slice(0, 7)) {
-        setEntryDate(today);
-        setEntryOptionsOpen(false);
-      }
+      if (followingDate.slice(0, 7) === month) selectEntryDate(followingDate);
+      window.requestAnimationFrame(() => entryUnitsRef.current?.focus());
     }
   }
 
@@ -1314,8 +1361,6 @@ export default function RentalApp() {
     setEditingDowntimeId(downtime?.id ?? null);
     setDowntimeStart(downtime?.startDate ?? selectedDate);
     setDowntimeEnd(downtime?.endDate ?? selectedDate);
-    setDowntimeReason(downtime?.reason ?? "Ремонт автомобиля");
-    setDowntimeNote(downtime?.note ?? "");
     setDowntimeOpen(true);
   }
 
@@ -1327,8 +1372,8 @@ export default function RentalApp() {
         id: editingDowntimeId,
         startDate: downtimeStart,
         endDate: downtimeEnd,
-        reason: downtimeReason,
-        note: downtimeNote,
+        reason: "Простой автомобиля",
+        note: "",
       },
       editingDowntimeId === null ? "Простой добавлен" : "Простой изменён",
     );
@@ -1338,7 +1383,7 @@ export default function RentalApp() {
   function askDeleteDowntime(downtime: Downtime) {
     setConfirm({
       title: "Удалить период простоя?",
-      description: `${dateLabel(downtime.startDate)} — ${dateLabel(downtime.endDate)} · ${downtime.reason}`,
+      description: downtimeLabel(downtime),
       actionLabel: "Удалить",
       destructive: true,
       run: async () => {
@@ -1600,17 +1645,15 @@ export default function RentalApp() {
       XLSX.utils.book_append_sheet(workbook, expensesSheet, "Расходы");
 
       const downtimeRows: (string | number)[][] = [
-        ["Начало", "Окончание", "Причина", "Примечание"],
+        ["Начало", "Окончание"],
         ...(data.downtimes ?? []).map((downtime) => [
           dateLabel(downtime.startDate),
           dateLabel(downtime.endDate),
-          downtime.reason,
-          downtime.note,
         ]),
-        ["ИТОГО ДНЕЙ ПРОСТОЯ", calculation.downtimeDays, "", ""],
+        ["ИТОГО ДНЕЙ ПРОСТОЯ", calculation.downtimeDays],
       ];
       const downtimeSheet = XLSX.utils.aoa_to_sheet(downtimeRows);
-      downtimeSheet["!cols"] = [{ wch: 15 }, { wch: 15 }, { wch: 34 }, { wch: 42 }];
+      downtimeSheet["!cols"] = [{ wch: 22 }, { wch: 22 }];
       XLSX.utils.book_append_sheet(workbook, downtimeSheet, "Простой");
 
       const fileName = `arenda_ts_${month}.xlsx`;
@@ -1709,7 +1752,7 @@ export default function RentalApp() {
 
   return (
     <div className="app-root min-h-screen">
-      <Toaster position="top-center" richColors />
+      <Toaster position="top-center" richColors theme={theme} />
 
       <header className="app-header">
         <div className="app-shell flex items-center justify-between gap-3 py-3">
@@ -1748,6 +1791,16 @@ export default function RentalApp() {
               <FileSpreadsheet className="size-5" />
               <span className="hidden sm:inline">Excel</span>
             </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              className="theme-button"
+              onClick={toggleTheme}
+              aria-label={theme === "dark" ? "Включить светлую тему" : "Включить тёмную тему"}
+              title={theme === "dark" ? "Светлая тема" : "Тёмная тема"}
+            >
+              {theme === "dark" ? <Sun className="size-5" /> : <Moon className="size-5" />}
+            </Button>
             {offlineMode && (
               <Button
                 type="button"
@@ -1778,8 +1831,7 @@ export default function RentalApp() {
             onChange={(event) => {
               const nextMonth = event.target.value;
               setMonth(nextMonth);
-              setEntryDate(nextMonth === today.slice(0, 7) ? today : `${nextMonth}-01`);
-              setEntryOptionsOpen(nextMonth !== today.slice(0, 7));
+              selectEntryDate(nextMonth === today.slice(0, 7) ? today : `${nextMonth}-01`);
             }}
             className="h-11 w-[155px] border-slate-200 bg-white text-base font-semibold"
             aria-label="Месяц"
@@ -1797,28 +1849,36 @@ export default function RentalApp() {
               <form onSubmit={saveEntry} className="fast-entry-form">
                 <div className="fast-entry-meta">
                   <div>
-                    <span className="eyebrow">Бутылки за день</span>
-                    <strong className="entry-date-line">
-                      <CalendarDays />
-                      {entryDate === today ? "Сегодня · " : ""}{dateLabel(entryDate)}
-                    </strong>
+                    <span className="eyebrow">Быстрая запись</span>
+                    <strong className="quick-entry-title">Бутылки за день</strong>
                   </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="entry-options-toggle"
-                    aria-expanded={entryOptionsOpen}
-                    onClick={() => setEntryOptionsOpen((open) => !open)}
-                  >
-                    {entryOptionsOpen ? "Готово" : "Изменить"}
-                  </Button>
+                  {selectedEntry && <span className="entry-existing-chip">Запись есть</span>}
+                </div>
+
+                <div className="fast-entry-date-row">
+                  <label>
+                    <FieldLabel>Дата доставки</FieldLabel>
+                    <Input
+                      type="date"
+                      value={entryDate}
+                      min={`${month}-01`}
+                      max={periodBounds(month).end}
+                      onChange={(event) => selectEntryDate(event.target.value)}
+                      required
+                    />
+                  </label>
+                  {month === today.slice(0, 7) && entryDate !== today && (
+                    <Button type="button" variant="ghost" className="today-button" onClick={() => selectEntryDate(today)}>
+                      Сегодня
+                    </Button>
+                  )}
                 </div>
 
                 <div className="fast-entry-row">
                   <label>
-                    <span className="sr-only">Количество бутылок</span>
+                    <FieldLabel>Количество бутылок</FieldLabel>
                     <Input
+                      ref={entryUnitsRef}
                       type="number"
                       min="0"
                       step="1"
@@ -1834,27 +1894,15 @@ export default function RentalApp() {
                     />
                   </label>
                   <Button type="submit" disabled={busy || !entryUnits}>
-                    {busy ? <LoaderCircle className="animate-spin" /> : <Plus />}
-                    Записать
+                    {busy ? <LoaderCircle className="animate-spin" /> : selectedEntry ? <Pencil /> : <Plus />}
+                    {selectedEntry ? "Обновить" : "Записать"}
                   </Button>
                 </div>
-
-                {entryOptionsOpen && (
-                  <div className="fast-entry-options">
-                    <label>
-                      <FieldLabel>Дата записи</FieldLabel>
-                      <Input type="date" value={entryDate} onChange={(event) => setEntryDate(event.target.value)} required />
-                    </label>
-                    <label>
-                      <FieldLabel>Примечание — необязательно</FieldLabel>
-                      <Input
-                        placeholder="Если нужно что-то отметить"
-                        value={entryNote}
-                        onChange={(event) => setEntryNote(event.target.value)}
-                      />
-                    </label>
-                  </div>
-                )}
+                <p className="fast-entry-hint">
+                  {selectedEntry
+                    ? `Сейчас записано ${number(selectedEntry.units)}. Сохранение заменит количество.`
+                    : "После сохранения дата перейдёт на следующий день."}
+                </p>
               </form>
             )}
           </section>
@@ -1925,9 +1973,9 @@ export default function RentalApp() {
                     <span><WalletCards /></span>
                     <strong>Расход</strong>
                   </button>
-                  <button type="button" onClick={exportExcel}>
-                    <span><FileSpreadsheet /></span>
-                    <strong>Выгрузить Excel</strong>
+                  <button type="button" onClick={() => offlineMode ? openDowntime() : void exportExcel()}>
+                    <span>{offlineMode ? <CirclePause /> : <FileSpreadsheet />}</span>
+                    <strong>{offlineMode ? "Простой" : "Выгрузить Excel"}</strong>
                   </button>
                 </section>
 
@@ -1951,14 +1999,47 @@ export default function RentalApp() {
                     <div><span>Постоянная часть за полный месяц</span><strong>{money(calculation.baseFullKopecks)}</strong></div>
                     {calculation.downtimeDays > 0 && <>
                       <div><span>Простой автомобиля</span><strong>{calculation.downtimeDays} дн.</strong></div>
-                      <div><span>Уменьшение за простой</span><strong>-{money(calculation.baseReductionKopecks)}</strong></div>
+                      {calculation.baseReductionKopecks > 0 && <div><span>Уменьшение за простой</span><strong>-{money(calculation.baseReductionKopecks)}</strong></div>}
                     </>}
                     <div><span>Постоянная часть к начислению</span><strong>{money(calculation.baseKopecks)}</strong></div>
                     <div><span>Превышение</span><strong>{number(calculation.excessUnits)} ед.</strong></div>
                     <div><span>Ставка сверх лимита</span><strong>{money(calculation.rateKopecks)} / ед.</strong></div>
                     <div className="calculation-total"><span>Переменная часть</span><strong>{money(calculation.variableKopecks)}</strong></div>
                   </div>
+                  {calculation.downtimeDays > 0 && calculation.actualUnits >= calculation.includedUnits && (
+                    <p className="calculation-note">При {number(calculation.includedUnits)} бутылках и больше постоянная часть не уменьшается.</p>
+                  )}
                 </section>
+
+                {offlineMode && (
+                  <section className="panel downtime-panel">
+                    <div className="section-heading">
+                      <div>
+                        <span className="eyebrow">Уменьшение аренды</span>
+                        <h2>Простой автомобиля</h2>
+                      </div>
+                      <Button type="button" variant="outline" size="sm" onClick={() => openDowntime()} disabled={Boolean(data.closure)}>
+                        <Plus />Добавить
+                      </Button>
+                    </div>
+                    <p className="downtime-explanation">Если за месяц меньше {number(calculation.includedUnits)} бутылок, постоянная часть автоматически уменьшается пропорционально дням простоя.</p>
+                    {(data.downtimes ?? []).length === 0 ? (
+                      <p className="downtime-empty">Простоев за выбранный месяц нет.</p>
+                    ) : (
+                      <div className="downtime-list">
+                        {(data.downtimes ?? []).map((downtime) => (
+                          <article className="downtime-row" key={downtime.id}>
+                            <span><CirclePause />{downtimeLabel(downtime)}</span>
+                            <div>
+                              {!data.closure && <Button type="button" variant="ghost" size="icon" onClick={() => openDowntime(downtime)} aria-label="Редактировать простой"><Pencil /></Button>}
+                              {!data.closure && <Button type="button" variant="ghost" size="icon" onClick={() => askDeleteDowntime(downtime)} aria-label="Удалить простой"><Trash2 /></Button>}
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                )}
 
                 <section className="panel cash-result">
                   <div>
@@ -2440,7 +2521,7 @@ export default function RentalApp() {
                 <label><FieldLabel>Включено бутылей</FieldLabel><Input type="number" min="0" step="1" inputMode="numeric" value={settingsDraft.includedUnits} onChange={(event) => setSettingsDraft((value) => ({ ...value, includedUnits: Number(event.target.value) }))} required /></label>
                 <label><FieldLabel>Ставка сверх лимита, ₽</FieldLabel><Input type="number" min="0" step="0.01" inputMode="decimal" value={settingsDraft.rateKopecks / 100} onChange={(event) => setSettingsDraft((value) => ({ ...value, rateKopecks: Math.round(Number(event.target.value) * 100) }))} required /></label>
               </div>
-              <p className="help-note">По умолчанию: 80 000 ₽ за 2 000 бутылок и 40 ₽ за каждую сверх лимита.</p>
+              <p className="help-note">По умолчанию: 80 000 ₽ за 2 000 бутылок и 40 ₽ за каждую сверх лимита. Простой уменьшает постоянную часть только при объёме меньше 2 000.</p>
             </div>
 
             <DialogFooter>
@@ -2455,15 +2536,14 @@ export default function RentalApp() {
         <DialogContent className="dialog-card">
           <DialogHeader>
             <DialogTitle>{editingDowntimeId === null ? "Добавить простой" : "Редактировать простой"}</DialogTitle>
-            <DialogDescription>Дни начала и окончания включаются в период простоя.</DialogDescription>
+            <DialogDescription>Укажите только даты. Дни начала и окончания входят в простой.</DialogDescription>
           </DialogHeader>
           <form onSubmit={saveDowntime} className="dialog-form">
             <div className="grid grid-cols-2 gap-3">
               <label><FieldLabel>Начало</FieldLabel><Input type="date" value={downtimeStart} onChange={(event) => setDowntimeStart(event.target.value)} required /></label>
               <label><FieldLabel>Окончание</FieldLabel><Input type="date" value={downtimeEnd} onChange={(event) => setDowntimeEnd(event.target.value)} required /></label>
             </div>
-            <label><FieldLabel>Причина</FieldLabel><Input value={downtimeReason} onChange={(event) => setDowntimeReason(event.target.value)} placeholder="Например: ремонт автомобиля" required /></label>
-            <label><FieldLabel>Примечание</FieldLabel><Textarea value={downtimeNote} onChange={(event) => setDowntimeNote(event.target.value)} placeholder="Заказ-наряд, подробности — необязательно" /></label>
+            <p className="help-note">Причина не требуется. При месячном объёме меньше {number(documentSettings.includedUnits)} постоянная часть пересчитается автоматически.</p>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setDowntimeOpen(false)}>Отмена</Button>
               <Button type="submit" disabled={busy}>{busy && <LoaderCircle className="animate-spin" />}Сохранить</Button>
