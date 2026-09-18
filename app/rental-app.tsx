@@ -1858,20 +1858,18 @@ export default function RentalApp() {
                 <div className="fast-entry-date-row">
                   <label>
                     <FieldLabel>Дата доставки</FieldLabel>
-                    <Input
-                      type="date"
-                      value={entryDate}
-                      min={`${month}-01`}
-                      max={periodBounds(month).end}
-                      onChange={(event) => selectEntryDate(event.target.value)}
-                      required
-                    />
+                    <span className="date-input-shell">
+                      <Input
+                        type="date"
+                        value={entryDate}
+                        min={`${month}-01`}
+                        max={periodBounds(month).end}
+                        onChange={(event) => selectEntryDate(event.target.value)}
+                        required
+                      />
+                      <CalendarDays className="date-input-icon" aria-hidden="true" />
+                    </span>
                   </label>
-                  {month === today.slice(0, 7) && entryDate !== today && (
-                    <Button type="button" variant="ghost" className="today-button" onClick={() => selectEntryDate(today)}>
-                      Сегодня
-                    </Button>
-                  )}
                 </div>
 
                 <div className="fast-entry-row">

@@ -36,6 +36,15 @@ test("quick entry always exposes the historical date and advances after save", (
   assert.doesNotMatch(app, /entryOptionsOpen/);
 });
 
+test("quick entry controls keep a stable mobile layout", () => {
+  assert.match(app, /className="date-input-shell"/);
+  assert.match(app, /className="date-input-icon"/);
+  assert.doesNotMatch(app, /today-button/);
+  assert.match(styles, /\.fast-entry-row\s*\{[\s\S]*?align-items:\s*end/);
+  assert.match(styles, /\.fast-entry-row button\s*\{[\s\S]*?width:\s*8\.4rem/);
+  assert.match(styles, /input::\-webkit-calendar-picker-indicator[\s\S]*?opacity:\s*0/);
+});
+
 test("dark theme is persisted and also updates Android system bars", () => {
   assert.match(app, /arenda-ts-theme-v1/);
   assert.match(styles, /html\[data-theme="dark"\]/);
