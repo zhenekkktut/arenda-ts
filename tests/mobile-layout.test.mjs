@@ -39,10 +39,13 @@ test("quick entry always exposes the historical date and advances after save", (
 test("quick entry controls keep a stable mobile layout", () => {
   assert.match(app, /className="date-input-shell"/);
   assert.match(app, /className="date-input-icon"/);
+  assert.match(app, /className="date-input-native"/);
+  assert.match(app, /\{dateLabel\(entryDate\)\}/);
+  assert.match(app, /className="fast-entry-quantity"[\s\S]*?<FieldLabel>Количество бутылок<\/FieldLabel>[\s\S]*?className="fast-entry-row"/);
   assert.doesNotMatch(app, /today-button/);
-  assert.match(styles, /\.fast-entry-row\s*\{[\s\S]*?align-items:\s*end/);
+  assert.match(styles, /\.fast-entry-row\s*\{[\s\S]*?align-items:\s*stretch/);
   assert.match(styles, /\.fast-entry-row button\s*\{[\s\S]*?width:\s*8\.4rem/);
-  assert.match(styles, /input::\-webkit-calendar-picker-indicator[\s\S]*?opacity:\s*0/);
+  assert.match(styles, /\.date-input-native\s*\{[\s\S]*?opacity:\s*0/);
 });
 
 test("dark theme is persisted and also updates Android system bars", () => {
@@ -51,4 +54,13 @@ test("dark theme is persisted and also updates Android system bars", () => {
   assert.match(activity, /public void setTheme\(String theme\)/);
   assert.match(activity, /setStatusBarColor\(statusBar\)/);
   assert.match(activity, /setNavigationBarColor\(background\)/);
+});
+
+test("expense category filter updates both the total and visible rows", () => {
+  assert.match(app, /const \[expenseFilter, setExpenseFilter\]/);
+  assert.match(app, /const filteredExpenses = data\?\.expenses\.filter/);
+  assert.match(app, /const filteredExpenseTotal = filteredExpenses\.reduce/);
+  assert.match(app, /money\(filteredExpenseTotal\)/);
+  assert.match(app, /filteredExpenses\.map\(\(expense\)/);
+  assert.match(styles, /\.expense-filter\s*\{[\s\S]*?overflow-x:\s*auto/);
 });

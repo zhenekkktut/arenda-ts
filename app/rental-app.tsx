@@ -877,6 +877,7 @@ export default function RentalApp() {
   const [paymentNote, setPaymentNote] = useState("");
 
   const [editingExpenseId, setEditingExpenseId] = useState<number | null>(null);
+  const [expenseFilter, setExpenseFilter] = useState<Expense["category"] | "all">("all");
   const [expenseOpen, setExpenseOpen] = useState(false);
   const [expenseDate, setExpenseDate] = useState(today);
   const [expenseCategory, setExpenseCategory] = useState<Expense["category"]>("base_lease");
@@ -1034,6 +1035,10 @@ export default function RentalApp() {
   const totalExpenses = data?.expenses.reduce((sum, expense) => sum + expense.amountKopecks, 0) ?? 0;
   const customerFuel = data?.expenses.filter((e) => e.category === "fuel" && e.payer === "customer").reduce((sum, e) => sum + e.amountKopecks, 0) ?? 0;
   const selfExpenses = totalExpenses - customerFuel;
+  const filteredExpenses = data?.expenses.filter((expense) => expenseFilter === "all" || expense.category === expenseFilter) ?? [];
+  const filteredExpenseTotal = filteredExpenses.reduce((sum, expense) => sum + expense.amountKopecks, 0);
+  const filteredCustomerFuel = filteredExpenses.filter((expense) => expense.category === "fuel" && expense.payer === "customer").reduce((sum, expense) => sum + expense.amountKopecks, 0);
+  const filteredSelfFuel = filteredExpenses.filter((expense) => expense.category === "fuel" && expense.payer !== "customer").reduce((sum, expense) => sum + expense.amountKopecks, 0);
   const netRent = Math.max(0, calculation.totalKopecks - customerFuel);
   const remainingToInvoice = Math.max(0, netRent - totalInvoiced);
   const rentBalance = Math.max(0, netRent - totalPaid);
@@ -1859,22 +1864,27 @@ export default function RentalApp() {
                   <label>
                     <FieldLabel>Дата доставки</FieldLabel>
                     <span className="date-input-shell">
+                      <span className="date-input-value" aria-hidden="true">
+                        {dateLabel(entryDate)}
+                      </span>
+                      <CalendarDays className="date-input-icon" aria-hidden="true" />
                       <Input
+                        className="date-input-native"
                         type="date"
                         value={entryDate}
                         min={`${month}-01`}
                         max={periodBounds(month).end}
                         onChange={(event) => selectEntryDate(event.target.value)}
+                        aria-label="Дата доставки"
                         required
                       />
-                      <CalendarDays className="date-input-icon" aria-hidden="true" />
                     </span>
                   </label>
                 </div>
 
-                <div className="fast-entry-row">
-                  <label>
-                    <FieldLabel>Количество бутылок</FieldLabel>
+                <div className="fast-entry-quantity">
+                  <FieldLabel>Количество бутылок</FieldLabel>
+                  <div className="fast-entry-row">
                     <Input
                       ref={entryUnitsRef}
                       type="number"
@@ -1890,11 +1900,11 @@ export default function RentalApp() {
                       onFocus={(event) => event.currentTarget.select()}
                       required
                     />
-                  </label>
-                  <Button type="submit" disabled={busy || !entryUnits}>
-                    {busy ? <LoaderCircle className="animate-spin" /> : selectedEntry ? <Pencil /> : <Plus />}
-                    {selectedEntry ? "Обновить" : "Записать"}
-                  </Button>
+                    <Button type="submit" disabled={busy || !entryUnits}>
+                      {busy ? <LoaderCircle className="animate-spin" /> : selectedEntry ? <Pencil /> : <Plus />}
+                      {selectedEntry ? "Обновить" : "Записать"}
+                    </Button>
+                  </div>
                 </div>
                 <p className="fast-entry-hint">
                   {selectedEntry
@@ -2242,26 +2252,46 @@ export default function RentalApp() {
               </TabsContent>
 
               <TabsContent value="expenses" className="space-y-4">
+                <div className="expense-filter" role="group" aria-label="Фильтр расходов по категории">
+                  {(["all", "fuel", "repair", "base_lease", "insurance", "tax", "other"] as const).map((category) => (
+                    <Button
+                      key={category}
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className={expenseFilter === category ? "expense-filter-active" : ""}
+                      aria-pressed={expenseFilter === category}
+                      onClick={() => setExpenseFilter(category)}
+                    >
+                      {category === "all" ? "Все" : expenseLabels[category]}
+                    </Button>
+                  ))}
+                </div>
                 <section className="panel expense-total">
                   <div>
-                    <span className="eyebrow">Расходы за месяц</span>
-                    <strong>{money(totalExpenses)}</strong>
+                    <span className="eyebrow">{expenseFilter === "all" ? "Расходы за месяц" : `${expenseLabels[expenseFilter]} за месяц`}</span>
+                    <strong>{money(filteredExpenseTotal)}</strong>
                   </div>
                   <WalletCards />
                 </section>
                 <Button type="button" onClick={openExpense} className="h-12 w-full sm:w-auto">
                   <Plus />Добавить расход
                 </Button>
-                <p className="help-note">Собственные расходы: {money(selfExpenses)}. Топливо заказчика: {money(customerFuel)} — вычитается из начисленной аренды.</p>
+                {expenseFilter === "all" && (
+                  <p className="help-note">Собственные расходы: {money(selfExpenses)}. Топливо заказчика: {money(customerFuel)} — вычитается из начисленной аренды.</p>
+                )}
+                {expenseFilter === "fuel" && (
+                  <p className="help-note">Оплатил я: {money(filteredSelfFuel)}. Оплатил заказчик: {money(filteredCustomerFuel)} — вычитается из начисленной аренды.</p>
+                )}
 
-                {data.expenses.length === 0 ? (
+                {filteredExpenses.length === 0 ? (
                   <section className="panel empty-state">
                     <WalletCards />
-                    <p>Расходов за этот месяц пока нет.</p>
+                    <p>{data.expenses.length === 0 ? "Расходов за этот месяц пока нет." : `По категории «${expenseLabels[expenseFilter as Expense["category"]]}» расходов нет.`}</p>
                   </section>
                 ) : (
                   <div className="space-y-3">
-                    {data.expenses.map((expense) => (
+                    {filteredExpenses.map((expense) => (
                       <article className="panel expense-row" key={expense.id}>
                         <div className="expense-icon">
                           {expense.category === "fuel" ? <Fuel /> : expense.category === "repair" ? <Wrench /> : <WalletCards />}
