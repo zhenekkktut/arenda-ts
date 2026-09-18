@@ -1424,6 +1424,7 @@ body {
 }
 
 .fast-entry-row {
+  align-items: end;
   gap: 0.55rem;
 }
 
@@ -1443,7 +1444,11 @@ body {
 }
 
 .fast-entry-row button {
-  min-width: 7.4rem;
+  width: 8.4rem;
+  min-width: 8.4rem;
+  height: 3.35rem;
+  min-height: 3.35rem;
+  align-self: end;
   border-radius: 1rem;
   color: #1769bb;
   background: #fff;
@@ -1975,8 +1980,16 @@ button[data-slot="button"] {
   gap: 0.3rem;
 }
 
+.date-input-shell {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
 .fast-entry-date-row input {
+  width: 100%;
   min-height: 3.1rem;
+  padding-right: 3rem;
   border: 0;
   border-radius: 1rem;
   color: #101828;
@@ -1987,20 +2000,30 @@ button[data-slot="button"] {
   font-weight: 720;
 }
 
+.fast-entry-date-row input::-webkit-calendar-picker-indicator {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.date-input-icon {
+  position: absolute;
+  top: 50%;
+  right: 1rem;
+  width: 1.15rem;
+  height: 1.15rem;
+  color: #3978ed;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
 .fast-entry-row label {
   display: grid;
   gap: 0.3rem;
-}
-
-.today-button {
-  min-height: 3.1rem !important;
-  padding-inline: 0.8rem;
-  color: #fff !important;
-  background: rgba(255, 255, 255, 0.14) !important;
-}
-
-.today-button:hover {
-  background: rgba(255, 255, 255, 0.22) !important;
 }
 
 .fast-entry-hint {
@@ -2291,11 +2314,8 @@ html[data-theme="dark"] .app-tab[data-state="active"] {
 
 @media (max-width: 390px) {
   .fast-entry-row button {
-    min-width: 6.8rem;
+    width: 7.7rem;
+    min-width: 7.7rem;
     padding-inline: 0.75rem;
-  }
-
-  .today-button {
-    padding-inline: 0.65rem;
   }
 }
