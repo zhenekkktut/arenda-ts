@@ -614,6 +614,29 @@ textarea {
   border: 1px solid #f2d99a;
 }
 
+.expense-filter-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.expense-filter-heading > div {
+  min-width: 0;
+}
+
+.expense-filter-heading strong {
+  display: block;
+  margin-top: 0.15rem;
+  color: #172033;
+  font-size: 1rem;
+  font-weight: 790;
+}
+
+.expense-filter-heading button[data-slot="button"] {
+  flex: 0 0 auto;
+}
+
 .locked-note {
   display: flex;
   align-items: center;
@@ -1140,6 +1163,46 @@ textarea {
 
 .expense-icon svg {
   width: 1.2rem;
+}
+
+.expense-category-editor {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.expense-category-edit-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 2.75rem;
+  align-items: end;
+  gap: 0.5rem;
+}
+
+.expense-category-edit-row label {
+  min-width: 0;
+}
+
+.expense-category-edit-row label > span {
+  display: block;
+  margin: 0 0 0.28rem 0.15rem;
+  color: #7c8999;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.expense-category-edit-row button[data-slot="button"] {
+  width: 2.75rem;
+  min-width: 2.75rem;
+  min-height: 3rem;
+  color: #c0464d;
+  background: #fff1f2;
+}
+
+.entry-record-value span {
+  display: block;
+  margin-top: 0.12rem;
+  color: #2b86dc;
+  font-size: 0.78rem;
+  font-weight: 740;
 }
 
 .dialog-card {
@@ -2005,53 +2068,84 @@ button[data-slot="button"] {
   font-weight: 750;
 }
 
-.fast-entry-date-row {
-  display: flex;
-  align-items: end;
+.week-calendar {
+  display: grid;
   gap: 0.55rem;
+  padding: 0.65rem;
+  border: 1px solid rgba(255, 255, 255, 0.17);
+  border-radius: 1.1rem;
+  background: rgba(8, 43, 113, 0.14);
+  backdrop-filter: blur(10px);
 }
 
-.fast-entry-date-row label {
+.week-calendar-toolbar {
   display: grid;
-  min-width: 0;
-  flex: 1;
+  grid-template-columns: 2.35rem minmax(0, 1fr) 2.35rem 2.35rem;
+  align-items: center;
   gap: 0.3rem;
 }
 
-.date-input-shell {
-  position: relative;
-  display: flex;
-  width: 100%;
-  min-height: 3.1rem;
-  min-width: 0;
-  align-items: center;
-  padding-right: 3rem;
-  padding-left: 1rem;
-  border: 0;
-  border-radius: 1rem;
-  color: #101828;
-  background: #fff;
-  box-shadow: 0 5px 14px rgba(22, 55, 105, 0.12);
-  color-scheme: light;
-  font-size: 1rem;
-  font-weight: 720;
+.week-calendar-toolbar button[data-slot="button"],
+.week-date-jump {
+  display: grid;
+  width: 2.35rem;
+  min-width: 2.35rem;
+  height: 2.35rem;
+  min-height: 2.35rem;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 0.78rem;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
 }
 
-.date-input-shell:focus-within {
-  outline: 3px solid rgba(255, 255, 255, 0.38);
+.week-calendar-toolbar button[data-slot="button"]:disabled {
+  opacity: 0.35;
+}
+
+.week-calendar-toolbar svg,
+.week-date-jump svg {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+
+.week-range {
+  min-width: 0;
+  text-align: center;
+}
+
+.week-range span {
+  display: block;
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.week-range strong {
+  display: block;
+  overflow: hidden;
+  color: #fff;
+  font-size: 0.86rem;
+  font-weight: 780;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.week-date-jump {
+  position: relative;
+  cursor: pointer;
+}
+
+.week-date-jump:focus-within {
+  outline: 2px solid rgba(255, 255, 255, 0.65);
   outline-offset: 2px;
 }
 
-.date-input-value {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.date-input-native {
+.week-date-native {
   position: absolute;
   inset: 0;
-  z-index: 2;
   width: 100%;
   height: 100%;
   min-height: 100% !important;
@@ -2059,20 +2153,110 @@ button[data-slot="button"] {
   border: 0 !important;
   background: transparent !important;
   box-shadow: none !important;
-  margin: 0;
   opacity: 0;
   cursor: pointer;
 }
 
-.date-input-icon {
-  position: absolute;
-  top: 50%;
-  right: 1rem;
-  width: 1.15rem;
-  height: 1.15rem;
-  color: #3978ed;
-  pointer-events: none;
-  transform: translateY(-50%);
+.week-days {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.28rem;
+}
+
+.week-day {
+  display: grid;
+  min-width: 0;
+  min-height: 4.05rem;
+  place-items: center;
+  align-content: center;
+  gap: 0.06rem;
+  padding: 0.3rem 0.08rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.72rem;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.week-day span {
+  color: rgba(255, 255, 255, 0.67);
+  font-size: 0.72rem;
+  font-weight: 730;
+  text-transform: uppercase;
+}
+
+.week-day strong {
+  font-size: 0.94rem;
+  font-weight: 820;
+  line-height: 1.1;
+}
+
+.week-day small {
+  overflow: hidden;
+  max-width: 100%;
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 0.72rem;
+  font-weight: 760;
+  text-overflow: ellipsis;
+}
+
+.week-day-selected {
+  border-color: #fff;
+  color: #1769bb;
+  background: #fff;
+  box-shadow: 0 6px 15px rgba(10, 46, 105, 0.18);
+}
+
+.week-day-selected span,
+.week-day-selected small {
+  color: #62728a;
+}
+
+.week-day:disabled {
+  opacity: 0.24;
+}
+
+.week-totals {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.4rem;
+}
+
+.week-totals > div {
+  display: grid;
+  gap: 0.05rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 0.75rem;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.week-totals span {
+  color: rgba(255, 255, 255, 0.69);
+  font-size: 0.72rem;
+}
+
+.week-totals strong {
+  color: #fff;
+  font-size: 0.87rem;
+  font-weight: 790;
+}
+
+.entry-live-total {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  padding: 0.48rem 0.62rem;
+  border-radius: 0.75rem;
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 0.75rem;
+}
+
+.entry-live-total strong {
+  color: #fff;
+  font-size: 0.78rem;
+  font-weight: 790;
+  text-align: right;
 }
 
 .fast-entry-hint {
@@ -2280,11 +2464,27 @@ html[data-theme="dark"] [data-slot="select-trigger"]:focus-visible {
   background: #263143 !important;
 }
 
-html[data-theme="dark"] .fast-entry-date-row input,
 html[data-theme="dark"] .fast-entry-row input {
   color: #101828;
   background: #fff !important;
   color-scheme: light;
+}
+
+html[data-theme="dark"] .expense-filter-heading strong {
+  color: #edf2f8;
+}
+
+html[data-theme="dark"] .expense-category-edit-row label > span {
+  color: #94a3b5;
+}
+
+html[data-theme="dark"] .expense-category-edit-row button[data-slot="button"] {
+  color: #ff9ca2;
+  background: #382128;
+}
+
+html[data-theme="dark"] .entry-record-value span {
+  color: #6db5fb;
 }
 
 html[data-theme="dark"] .money-card strong,

@@ -7,6 +7,8 @@ import {
   Calculator,
   CarFront,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Copy,
   Download,
   FileSpreadsheet,
@@ -21,6 +23,7 @@ import {
   ReceiptText,
   Smartphone,
   Settings,
+  SlidersHorizontal,
   Sun,
   Trash2,
   UnlockKeyhole,
@@ -107,11 +110,17 @@ type Expense = {
   payer?: "self" | "customer";
   id: number;
   expenseDate: string;
-  category: "base_lease" | "repair" | "fuel" | "insurance" | "tax" | "other";
+  category: string;
   amountKopecks: number;
   method: "bank" | "cash";
   documentNumber: string;
   note: string;
+};
+
+type ExpenseCategory = {
+  id: string;
+  name: string;
+  builtIn: boolean;
 };
 
 type Closure = {
@@ -136,6 +145,7 @@ type DashboardData = {
   invoices: Invoice[];
   payments: Payment[];
   expenses: Expense[];
+  expenseCategories?: ExpenseCategory[];
   closure: Closure | null;
   rules: {
     baseKopecks: number;
@@ -148,11 +158,12 @@ type DashboardData = {
 };
 
 type OfflineStore = {
-  version: 2;
+  version: 3;
   entries: Entry[];
   invoices: Invoice[];
   payments: Payment[];
   expenses: Expense[];
+  expenseCategories: ExpenseCategory[];
   closures: Closure[];
   settings: DocumentSettings;
   downtimes: Downtime[];
@@ -197,6 +208,41 @@ const DEFAULT_RULES = {
   rateKopecks: DEFAULT_DOCUMENT_SETTINGS.rateKopecks,
 };
 
+const DEFAULT_EXPENSE_CATEGORIES: ExpenseCategory[] = [
+  { id: "fuel", name: "Топливо", builtIn: true },
+  { id: "repair", name: "Ремонт", builtIn: true },
+  { id: "base_lease", name: "Аренда Евгению", builtIn: true },
+  { id: "insurance", name: "Страхование", builtIn: true },
+  { id: "tax", name: "Налог и сборы", builtIn: true },
+  { id: "other", name: "Прочее", builtIn: true },
+];
+const WEEKDAY_LABELS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+
+function normalizeExpenseCategories(value: unknown): ExpenseCategory[] {
+  const supplied = Array.isArray(value) ? value : [];
+  const valid = supplied
+    .filter((item): item is Partial<ExpenseCategory> & { id: string; name: string } => (
+      Boolean(item) &&
+      typeof item === "object" &&
+      typeof (item as Partial<ExpenseCategory>).id === "string" &&
+      /^[a-z0-9_-]{1,48}$/.test((item as Partial<ExpenseCategory>).id ?? "") &&
+      typeof (item as Partial<ExpenseCategory>).name === "string" &&
+      Boolean((item as Partial<ExpenseCategory>).name?.trim())
+    ))
+    .map((item) => ({
+      id: item.id,
+      name: item.name.trim().slice(0, 36),
+      builtIn: DEFAULT_EXPENSE_CATEGORIES.some((category) => category.id === item.id),
+    }));
+  const byId = new Map(valid.map((category) => [category.id, category]));
+  const defaults = DEFAULT_EXPENSE_CATEGORIES.map((category) => ({
+    ...category,
+    name: byId.get(category.id)?.name ?? category.name,
+  }));
+  const custom = valid.filter((category) => !category.builtIn).slice(0, 12);
+  return [...defaults, ...custom];
+}
+
 const OFFLINE_STORAGE_KEY = "arenda-ts-offline-v1";
 const THEME_STORAGE_KEY = "arenda-ts-theme-v1";
 
@@ -211,11 +257,12 @@ function applyTheme(theme: "light" | "dark") {
 
 function emptyOfflineStore(): OfflineStore {
   return {
-    version: 2,
+    version: 3,
     entries: [],
     invoices: [],
     payments: [],
     expenses: [],
+    expenseCategories: normalizeExpenseCategories(undefined),
     closures: [],
     settings: { ...DEFAULT_DOCUMENT_SETTINGS },
     downtimes: [],
@@ -241,11 +288,12 @@ function normalizeOfflineStore(value: unknown): OfflineStore {
     throw new Error("В резервной копии не хватает данных");
   }
   return {
-    version: 2,
+    version: 3,
     entries: store.entries,
     invoices: store.invoices,
     payments: store.payments,
     expenses: store.expenses,
+    expenseCategories: normalizeExpenseCategories(store.expenseCategories),
     closures: store.closures,
     settings: {
       ...DEFAULT_DOCUMENT_SETTINGS,
@@ -308,6 +356,7 @@ function offlineDashboard(period: string): DashboardData {
     invoices,
     payments,
     expenses,
+    expenseCategories: store.expenseCategories,
     closure: store.closures.find((closure) => closure.period === period) ?? null,
     rules: {
       baseKopecks: store.settings.baseKopecks,
@@ -436,9 +485,10 @@ function saveOfflineAction(payload: Record<string, unknown>) {
     store.payments = store.payments.filter((payment) => payment.id !== id);
   } else if (action === "create_expense" || action === "update_expense") {
     const amountKopecks = Number(payload.amountKopecks);
+    const category = String(payload.category ?? "");
     if (
       !validIsoDate(payload.expenseDate) ||
-      !["base_lease", "repair", "fuel", "insurance", "tax", "other"].includes(String(payload.category)) ||
+      !store.expenseCategories.some((item) => item.id === category) ||
       !Number.isSafeInteger(amountKopecks) ||
       amountKopecks <= 0 ||
       !["bank", "cash"].includes(String(payload.method))
@@ -452,8 +502,8 @@ function saveOfflineAction(payload: Record<string, unknown>) {
     store.expenses.push({
       id: recordId,
       expenseDate: payload.expenseDate,
-      category: payload.category as Expense["category"],
-      payer: payload.category === "fuel" && payload.payer === "customer" ? "customer" : "self",
+      category,
+      payer: category === "fuel" && payload.payer === "customer" ? "customer" : "self",
       amountKopecks,
       method: payload.method as Expense["method"],
       documentNumber: typeof payload.documentNumber === "string" ? payload.documentNumber.trim().slice(0, 80) : "",
@@ -462,6 +512,13 @@ function saveOfflineAction(payload: Record<string, unknown>) {
   } else if (action === "delete_expense") {
     const id = Number(payload.id);
     store.expenses = store.expenses.filter((expense) => expense.id !== id);
+  } else if (action === "save_expense_categories") {
+    if (!Array.isArray(payload.categories)) throw new Error("Проверьте список категорий");
+    const categories = normalizeExpenseCategories(payload.categories);
+    const categoryIds = new Set(categories.map((category) => category.id));
+    const usedMissingCategory = store.expenses.find((expense) => !categoryIds.has(expense.category));
+    if (usedMissingCategory) throw new Error("Нельзя удалить категорию, пока в ней есть расходы");
+    store.expenseCategories = categories;
   } else if (action === "save_settings") {
     const value = payload.settings;
     if (!value || typeof value !== "object") throw new Error("Проверьте настройки договора");
@@ -614,15 +671,6 @@ const monthNamesGenitive = [
   "декабрь",
 ];
 
-const expenseLabels: Record<Expense["category"], string> = {
-  base_lease: "Аренда Евгению",
-  repair: "Ремонт",
-  fuel: "Топливо",
-  insurance: "Страхование",
-  tax: "Налог и сборы",
-  other: "Прочее",
-};
-
 function localIsoDate() {
   const now = new Date();
   return new Date(now.getTime() - now.getTimezoneOffset() * 60_000)
@@ -651,6 +699,24 @@ function nextIsoDate(value: string) {
   const date = new Date(`${value}T12:00:00Z`);
   date.setUTCDate(date.getUTCDate() + 1);
   return date.toISOString().slice(0, 10);
+}
+
+function addIsoDays(value: string, amount: number) {
+  const date = new Date(`${value}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + amount);
+  return date.toISOString().slice(0, 10);
+}
+
+function weekStart(value: string) {
+  const date = new Date(`${value}T12:00:00Z`);
+  const day = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() - day + 1);
+  return date.toISOString().slice(0, 10);
+}
+
+function shortWeekRange(start: string, end: string) {
+  const format = new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short" });
+  return `${format.format(new Date(`${start}T12:00:00Z`))} — ${format.format(new Date(`${end}T12:00:00Z`))}`;
 }
 
 function downtimeLabel(downtime: Downtime) {
@@ -877,10 +943,12 @@ export default function RentalApp() {
   const [paymentNote, setPaymentNote] = useState("");
 
   const [editingExpenseId, setEditingExpenseId] = useState<number | null>(null);
-  const [expenseFilter, setExpenseFilter] = useState<Expense["category"] | "all">("all");
+  const [expenseFilter, setExpenseFilter] = useState<string>("all");
   const [expenseOpen, setExpenseOpen] = useState(false);
+  const [expenseCategoriesOpen, setExpenseCategoriesOpen] = useState(false);
+  const [expenseCategoriesDraft, setExpenseCategoriesDraft] = useState<ExpenseCategory[]>(() => normalizeExpenseCategories(undefined));
   const [expenseDate, setExpenseDate] = useState(today);
-  const [expenseCategory, setExpenseCategory] = useState<Expense["category"]>("base_lease");
+  const [expenseCategory, setExpenseCategory] = useState("base_lease");
   const [expenseAmount, setExpenseAmount] = useState("20000");
   const [expenseMethod, setExpenseMethod] = useState<Expense["method"]>("bank");
   const [expenseDocument, setExpenseDocument] = useState("");
@@ -1046,12 +1114,46 @@ export default function RentalApp() {
   const progress = Math.min(100, (calculation.actualUnits / calculation.includedUnits) * 100);
   const importTotalUnits = importRows.reduce((sum, row) => sum + row.units, 0);
   const selectedEntry = data?.entries.find((entry) => entry.entryDate === entryDate);
+  const expenseCategories = useMemo(
+    () => normalizeExpenseCategories(data?.expenseCategories),
+    [data?.expenseCategories],
+  );
+  const expenseCategoryNames = useMemo(
+    () => new Map(expenseCategories.map((category) => [category.id, category.name])),
+    [expenseCategories],
+  );
+  const expenseCategoryName = (category: string) => expenseCategoryNames.get(category) ?? "Другая категория";
+  const currentWeekStart = weekStart(entryDate);
+  const currentWeekDays = useMemo(() => {
+    const entriesByDate = new Map((data?.entries ?? []).map((entry) => [entry.entryDate, entry]));
+    return Array.from({ length: 7 }, (_, index) => {
+      const date = addIsoDays(currentWeekStart, index);
+      return {
+        date,
+        inMonth: date.slice(0, 7) === month,
+        entry: entriesByDate.get(date),
+      };
+    });
+  }, [currentWeekStart, data?.entries, month]);
+  const weekUnits = currentWeekDays.reduce((sum, day) => sum + (day.entry?.units ?? 0), 0);
+  const weekAmountKopecks = weekUnits * documentSettings.rateKopecks;
+  const entryUnitsNumber = /^\d+$/.test(entryUnits) ? Number(entryUnits) : 0;
+  const entryAmountKopecks = entryUnitsNumber * documentSettings.rateKopecks;
+  const monthBounds = periodBounds(month);
+  const canGoToPreviousWeek = addIsoDays(entryDate, -7) >= monthBounds.start;
+  const canGoToNextWeek = addIsoDays(entryDate, 7) <= monthBounds.end;
 
   function selectEntryDate(nextDate: string) {
     const existing = data?.entries.find((entry) => entry.entryDate === nextDate);
     setEntryDate(nextDate);
     setEntryUnits(existing ? String(existing.units) : "");
     setEntryNote(existing?.note ?? "");
+  }
+
+  function moveEntryWeek(offset: -1 | 1) {
+    const nextDate = addIsoDays(entryDate, offset * 7);
+    if (nextDate < monthBounds.start || nextDate > monthBounds.end) return;
+    selectEntryDate(nextDate);
   }
 
   function toggleTheme() {
@@ -1288,15 +1390,67 @@ export default function RentalApp() {
   }
 
   function openExpense() {
+    const initialCategory = expenseFilter !== "all" && expenseCategories.some((category) => category.id === expenseFilter)
+      ? expenseFilter
+      : "base_lease";
     setEditingExpenseId(null);
     setExpenseDate(month === today.slice(0, 7) ? today : `${month}-01`);
     setExpensePayer("self");
-    setExpenseCategory("base_lease");
-    setExpenseAmount("20000");
+    setExpenseCategory(initialCategory);
+    setExpenseAmount(initialCategory === "base_lease" ? "20000" : "");
     setExpenseMethod("bank");
     setExpenseDocument("");
     setExpenseNote("");
     setExpenseOpen(true);
+  }
+
+  function openExpenseCategories() {
+    setExpenseCategoriesDraft(expenseCategories.map((category) => ({ ...category })));
+    setExpenseCategoriesOpen(true);
+  }
+
+  function addExpenseCategory() {
+    const customCount = expenseCategoriesDraft.filter((category) => !category.builtIn).length;
+    if (customCount >= 12) {
+      toast.error("Можно добавить не больше 12 своих категорий");
+      return;
+    }
+    setExpenseCategoriesDraft((categories) => [
+      ...categories,
+      {
+        id: `custom_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+        name: "Новая категория",
+        builtIn: false,
+      },
+    ]);
+  }
+
+  function removeExpenseCategory(category: ExpenseCategory) {
+    if (category.builtIn) return;
+    if (data?.expenses.some((expense) => expense.category === category.id)) {
+      toast.error("Сначала перенесите или удалите расходы из этой категории");
+      return;
+    }
+    setExpenseCategoriesDraft((categories) => categories.filter((item) => item.id !== category.id));
+  }
+
+  async function saveExpenseCategories(event: FormEvent) {
+    event.preventDefault();
+    if (expenseCategoriesDraft.some((category) => !category.name.trim())) {
+      toast.error("У каждой категории должно быть название");
+      return;
+    }
+    const categories = normalizeExpenseCategories(expenseCategoriesDraft);
+    const ok = await request(
+      { action: "save_expense_categories", categories },
+      "Категории расходов сохранены",
+    );
+    if (ok) {
+      if (expenseFilter !== "all" && !categories.some((category) => category.id === expenseFilter)) {
+        setExpenseFilter("all");
+      }
+      setExpenseCategoriesOpen(false);
+    }
   }
 
   async function createExpense(event: FormEvent) {
@@ -1507,7 +1661,7 @@ export default function RentalApp() {
   function askDeleteExpense(expense: Expense) {
     setConfirm({
       title: "Удалить расход?",
-      description: `${expenseLabels[expense.category]} · ${money(expense.amountKopecks)}`,
+      description: `${expenseCategoryName(expense.category)} · ${money(expense.amountKopecks)}`,
       actionLabel: "Удалить",
       destructive: true,
       run: async () => {
@@ -1635,7 +1789,7 @@ export default function RentalApp() {
         ["Дата", "Категория", "Сумма, ₽", "Способ оплаты", "Документ", "Примечание", "Кто оплатил", "Вычет из аренды, ₽"],
         ...data.expenses.map((expense) => [
           dateLabel(expense.expenseDate),
-          expenseLabels[expense.category],
+          expenseCategoryName(expense.category),
           expense.amountKopecks / 100,
           expense.method === "bank" ? "Безналичные" : "Наличные",
           expense.documentNumber,
@@ -1843,7 +1997,7 @@ export default function RentalApp() {
           />
         </section>
 
-        {data && !loading && !loadError && (
+        {data && !loading && !loadError && (tab === "summary" || tab === "entries") && (
           <section className="panel quick-entry quick-entry-primary">
             {data.closure ? (
               <div className="locked-note">
@@ -1855,35 +2009,75 @@ export default function RentalApp() {
                 <div className="fast-entry-meta">
                   <div>
                     <span className="eyebrow">Быстрая запись</span>
-                    <strong className="quick-entry-title">Бутылки за день</strong>
+                    <strong className="quick-entry-title">Бутылки за неделю</strong>
                   </div>
                   {selectedEntry && <span className="entry-existing-chip">Запись есть</span>}
                 </div>
 
-                <div className="fast-entry-date-row">
-                  <label>
-                    <FieldLabel>Дата доставки</FieldLabel>
-                    <span className="date-input-shell">
-                      <span className="date-input-value" aria-hidden="true">
-                        {dateLabel(entryDate)}
-                      </span>
-                      <CalendarDays className="date-input-icon" aria-hidden="true" />
+                <div className="week-calendar" aria-label="Записи по дням недели">
+                  <div className="week-calendar-toolbar">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => moveEntryWeek(-1)}
+                      disabled={!canGoToPreviousWeek}
+                      aria-label="Предыдущая неделя"
+                    >
+                      <ChevronLeft />
+                    </Button>
+                    <div className="week-range">
+                      <span>Неделя</span>
+                      <strong>{shortWeekRange(currentWeekStart, addIsoDays(currentWeekStart, 6))}</strong>
+                    </div>
+                    <label className="week-date-jump" aria-label="Выбрать дату">
+                      <CalendarDays />
                       <Input
-                        className="date-input-native"
+                        className="week-date-native"
                         type="date"
                         value={entryDate}
-                        min={`${month}-01`}
-                        max={periodBounds(month).end}
+                        min={monthBounds.start}
+                        max={monthBounds.end}
                         onChange={(event) => selectEntryDate(event.target.value)}
-                        aria-label="Дата доставки"
                         required
                       />
-                    </span>
-                  </label>
+                    </label>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => moveEntryWeek(1)}
+                      disabled={!canGoToNextWeek}
+                      aria-label="Следующая неделя"
+                    >
+                      <ChevronRight />
+                    </Button>
+                  </div>
+                  <div className="week-days">
+                    {currentWeekDays.map((day, index) => (
+                      <button
+                        key={day.date}
+                        type="button"
+                        className={day.date === entryDate ? "week-day week-day-selected" : "week-day"}
+                        disabled={!day.inMonth}
+                        onClick={() => selectEntryDate(day.date)}
+                        aria-pressed={day.date === entryDate}
+                        aria-label={`${WEEKDAY_LABELS[index]}, ${dateLabel(day.date)}${day.entry ? `, ${day.entry.units} бутылок` : ", записи нет"}`}
+                      >
+                        <span>{WEEKDAY_LABELS[index]}</span>
+                        <strong>{Number(day.date.slice(-2))}</strong>
+                        <small>{day.entry ? number(day.entry.units) : "—"}</small>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="week-totals">
+                    <div><span>За неделю</span><strong>{number(weekUnits)} бут.</strong></div>
+                    <div><span>По {number(documentSettings.rateKopecks / 100)} ₽</span><strong>{money(weekAmountKopecks)}</strong></div>
+                  </div>
                 </div>
 
                 <div className="fast-entry-quantity">
-                  <FieldLabel>Количество бутылок</FieldLabel>
+                  <FieldLabel>{dateLabel(entryDate)} · количество бутылок</FieldLabel>
                   <div className="fast-entry-row">
                     <Input
                       ref={entryUnitsRef}
@@ -1904,6 +2098,10 @@ export default function RentalApp() {
                       {busy ? <LoaderCircle className="animate-spin" /> : selectedEntry ? <Pencil /> : <Plus />}
                       {selectedEntry ? "Обновить" : "Записать"}
                     </Button>
+                  </div>
+                  <div className="entry-live-total" aria-live="polite">
+                    <span>Стоимость за выбранный день</span>
+                    <strong>{number(entryUnitsNumber)} × {number(documentSettings.rateKopecks / 100)} ₽ = {money(entryAmountKopecks)}</strong>
                   </div>
                 </div>
                 <p className="fast-entry-hint">
@@ -2113,8 +2311,9 @@ export default function RentalApp() {
                       {data.entries.map((entry) => (
                         <article className="record-row" key={entry.id}>
                           <div className="record-date"><CalendarDays />{dateLabel(entry.entryDate)}</div>
-                          <div className="min-w-0 flex-1">
+                          <div className="entry-record-value min-w-0 flex-1">
                             <strong>{number(entry.units)} ед.</strong>
+                            <span>{money(entry.units * documentSettings.rateKopecks)}</span>
                             {entry.note && <p>{entry.note}</p>}
                           </div>
                           {!data.closure && (
@@ -2252,24 +2451,35 @@ export default function RentalApp() {
               </TabsContent>
 
               <TabsContent value="expenses" className="space-y-4">
+                <div className="expense-filter-heading">
+                  <div>
+                    <span className="eyebrow">Показывать расходы</span>
+                    <strong>Фильтр по категориям</strong>
+                  </div>
+                  {offlineMode && (
+                    <Button type="button" variant="outline" size="sm" onClick={openExpenseCategories}>
+                      <SlidersHorizontal />Настроить
+                    </Button>
+                  )}
+                </div>
                 <div className="expense-filter" role="group" aria-label="Фильтр расходов по категории">
-                  {(["all", "fuel", "repair", "base_lease", "insurance", "tax", "other"] as const).map((category) => (
+                  {[{ id: "all", name: "Все" }, ...expenseCategories].map((category) => (
                     <Button
-                      key={category}
+                      key={category.id}
                       type="button"
                       variant="ghost"
                       size="sm"
-                      className={expenseFilter === category ? "expense-filter-active" : ""}
-                      aria-pressed={expenseFilter === category}
-                      onClick={() => setExpenseFilter(category)}
+                      className={expenseFilter === category.id ? "expense-filter-active" : ""}
+                      aria-pressed={expenseFilter === category.id}
+                      onClick={() => setExpenseFilter(category.id)}
                     >
-                      {category === "all" ? "Все" : expenseLabels[category]}
+                      {category.name}
                     </Button>
                   ))}
                 </div>
                 <section className="panel expense-total">
                   <div>
-                    <span className="eyebrow">{expenseFilter === "all" ? "Расходы за месяц" : `${expenseLabels[expenseFilter]} за месяц`}</span>
+                    <span className="eyebrow">{expenseFilter === "all" ? "Расходы за месяц" : `${expenseCategoryName(expenseFilter)} за месяц`}</span>
                     <strong>{money(filteredExpenseTotal)}</strong>
                   </div>
                   <WalletCards />
@@ -2287,7 +2497,7 @@ export default function RentalApp() {
                 {filteredExpenses.length === 0 ? (
                   <section className="panel empty-state">
                     <WalletCards />
-                    <p>{data.expenses.length === 0 ? "Расходов за этот месяц пока нет." : `По категории «${expenseLabels[expenseFilter as Expense["category"]]}» расходов нет.`}</p>
+                    <p>{data.expenses.length === 0 ? "Расходов за этот месяц пока нет." : `По категории «${expenseCategoryName(expenseFilter)}» расходов нет.`}</p>
                   </section>
                 ) : (
                   <div className="space-y-3">
@@ -2298,7 +2508,7 @@ export default function RentalApp() {
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center justify-between gap-2">
-                            <h2>{expenseLabels[expense.category]}</h2>
+                            <h2>{expenseCategoryName(expense.category)}</h2>
                             <strong>{money(expense.amountKopecks)}</strong>
                           </div>
                           <p>{expense.payer === "customer" ? "Заказчик · вычет из аренды" : "Оплатил я"} · {dateLabel(expense.expenseDate)} · {expense.method === "bank" ? "Безналичные" : "Наличные"}</p>
@@ -2489,19 +2699,15 @@ export default function RentalApp() {
               <Select
                 value={expenseCategory}
                 onValueChange={(value) => {
-                  const category = value as Expense["category"];
-                  setExpenseCategory(category);
-                  if (editingExpenseId === null && category === "base_lease") setExpenseAmount("20000");
+                  setExpenseCategory(value);
+                  if (editingExpenseId === null && value === "base_lease") setExpenseAmount("20000");
                 }}
               >
                 <SelectTrigger className="h-11 w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="base_lease">Аренда Евгению</SelectItem>
-                  <SelectItem value="repair">Ремонт</SelectItem>
-                  <SelectItem value="fuel">Топливо</SelectItem>
-                  <SelectItem value="insurance">Страхование</SelectItem>
-                  <SelectItem value="tax">Налог и сборы</SelectItem>
-                  <SelectItem value="other">Прочее</SelectItem>
+                  {expenseCategories.map((category) => (
+                    <SelectItem key={category.id} value={category.id}>{category.name}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </label>
@@ -2530,6 +2736,54 @@ export default function RentalApp() {
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setExpenseOpen(false)}>Отмена</Button>
               <Button type="submit" disabled={busy}>{busy && <LoaderCircle className="animate-spin" />}Сохранить расход</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={expenseCategoriesOpen} onOpenChange={setExpenseCategoriesOpen}>
+        <DialogContent className="dialog-card max-h-[92vh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Категории расходов</DialogTitle>
+            <DialogDescription>Переименуйте готовые категории или добавьте свои. Изменения сразу появятся в фильтре и при добавлении расхода.</DialogDescription>
+          </DialogHeader>
+          <form onSubmit={saveExpenseCategories} className="dialog-form">
+            <div className="expense-category-editor">
+              {expenseCategoriesDraft.map((category) => (
+                <div className="expense-category-edit-row" key={category.id}>
+                  <label>
+                    <span>{category.builtIn ? "Основная категория" : "Своя категория"}</span>
+                    <Input
+                      value={category.name}
+                      maxLength={36}
+                      onChange={(event) => setExpenseCategoriesDraft((categories) => categories.map((item) => (
+                        item.id === category.id ? { ...item, name: event.target.value } : item
+                      )))}
+                      aria-label={`Название категории ${category.name}`}
+                      required
+                    />
+                  </label>
+                  {!category.builtIn && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => removeExpenseCategory(category)}
+                      aria-label={`Удалить категорию ${category.name}`}
+                    >
+                      <Trash2 />
+                    </Button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <Button type="button" variant="outline" onClick={addExpenseCategory} className="w-full">
+              <Plus />Добавить свою категорию
+            </Button>
+            <p className="help-note">Основные категории можно переименовать. Свою категорию можно удалить, если в ней ещё нет расходов.</p>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setExpenseCategoriesOpen(false)}>Отмена</Button>
+              <Button type="submit" disabled={busy}>{busy && <LoaderCircle className="animate-spin" />}Сохранить категории</Button>
             </DialogFooter>
           </form>
         </DialogContent>
