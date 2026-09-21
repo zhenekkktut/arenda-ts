@@ -29,7 +29,7 @@ test("Android keeps content clear of system bars and resizes for the keyboard", 
 });
 
 test("quick entry always exposes the historical date and advances after save", () => {
-  assert.match(app, /className="week-date-native"/);
+  assert.match(app, /className="date-input-native"/);
   assert.match(app, /min=\{monthBounds\.start\}/);
   assert.match(app, /const followingDate = nextIsoDate\(entryDate\)/);
   assert.match(app, /selectEntryDate\(followingDate\)/);
@@ -37,14 +37,20 @@ test("quick entry always exposes the historical date and advances after save", (
 });
 
 test("quick entry controls keep a stable mobile layout", () => {
-  assert.match(app, /className="week-calendar"/);
-  assert.match(app, /currentWeekDays\.map/);
-  assert.match(app, /weekUnits \* documentSettings\.rateKopecks/);
-  assert.match(app, /entryUnitsNumber \* documentSettings\.rateKopecks/);
+  assert.match(app, /quick-entry-title">Бутылки за день/);
+  assert.match(app, /className="fast-entry-date-row"/);
   assert.match(app, /className="fast-entry-quantity"[\s\S]*?className="fast-entry-row"/);
+  assert.doesNotMatch(app, /entry-live-total/);
   assert.doesNotMatch(app, /today-button/);
   assert.match(styles, /\.fast-entry-row\s*\{[\s\S]*?align-items:\s*stretch/);
   assert.match(styles, /\.fast-entry-row button\s*\{[\s\S]*?width:\s*8\.4rem/);
+});
+
+test("weekly bottle calendar lives in the Days section", () => {
+  assert.match(app, /<TabsContent value="entries"[\s\S]*?className="panel week-overview"/);
+  assert.match(app, /className="panel week-overview"[\s\S]*?currentWeekDays\.map/);
+  assert.match(app, /weekUnits \* documentSettings\.rateKopecks/);
+  assert.match(app, /weekEntries\.map\(\(entry\)/);
   assert.match(styles, /\.week-days\s*\{[\s\S]*?grid-template-columns:\s*repeat\(7/);
   assert.match(styles, /\.week-date-native\s*\{[\s\S]*?opacity:\s*0/);
 });
@@ -66,10 +72,13 @@ test("expense category filter updates both the total and visible rows", () => {
   assert.match(styles, /\.expense-filter\s*\{[\s\S]*?overflow-x:\s*auto/);
 });
 
-test("expense categories can be renamed and extended in the offline app", () => {
+test("expense categories can be renamed, added, and deleted in the offline app", () => {
   assert.match(app, /save_expense_categories/);
   assert.match(app, /Категории расходов/);
   assert.match(app, /Добавить свою категорию/);
+  assert.match(app, /removeExpenseCategory/);
+  assert.match(app, /category: fallbackCategory\.id/);
+  assert.doesNotMatch(app, /!category\.builtIn && \(/);
   assert.match(app, /expenseCategories\.map/);
   assert.match(app, /expenseCategoryName\(expense\.category\)/);
 });

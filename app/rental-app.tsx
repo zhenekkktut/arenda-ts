@@ -158,7 +158,7 @@ type DashboardData = {
 };
 
 type OfflineStore = {
-  version: 3;
+  version: 4;
   entries: Entry[];
   invoices: Invoice[];
   payments: Payment[];
@@ -218,8 +218,8 @@ const DEFAULT_EXPENSE_CATEGORIES: ExpenseCategory[] = [
 ];
 const WEEKDAY_LABELS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
 
-function normalizeExpenseCategories(value: unknown): ExpenseCategory[] {
-  const supplied = Array.isArray(value) ? value : [];
+function normalizeExpenseCategories(value: unknown, allowEmpty = false): ExpenseCategory[] {
+  const supplied = Array.isArray(value) ? value : DEFAULT_EXPENSE_CATEGORIES;
   const valid = supplied
     .filter((item): item is Partial<ExpenseCategory> & { id: string; name: string } => (
       Boolean(item) &&
@@ -234,13 +234,18 @@ function normalizeExpenseCategories(value: unknown): ExpenseCategory[] {
       name: item.name.trim().slice(0, 36),
       builtIn: DEFAULT_EXPENSE_CATEGORIES.some((category) => category.id === item.id),
     }));
-  const byId = new Map(valid.map((category) => [category.id, category]));
-  const defaults = DEFAULT_EXPENSE_CATEGORIES.map((category) => ({
-    ...category,
-    name: byId.get(category.id)?.name ?? category.name,
-  }));
-  const custom = valid.filter((category) => !category.builtIn).slice(0, 12);
-  return [...defaults, ...custom];
+  const unique: ExpenseCategory[] = [];
+  const seen = new Set<string>();
+  let customCount = 0;
+  for (const category of valid) {
+    if (seen.has(category.id)) continue;
+    if (!category.builtIn && customCount >= 12) continue;
+    seen.add(category.id);
+    if (!category.builtIn) customCount += 1;
+    unique.push(category);
+  }
+  if (unique.length > 0 || allowEmpty) return unique;
+  return DEFAULT_EXPENSE_CATEGORIES.map((category) => ({ ...category }));
 }
 
 const OFFLINE_STORAGE_KEY = "arenda-ts-offline-v1";
@@ -257,7 +262,7 @@ function applyTheme(theme: "light" | "dark") {
 
 function emptyOfflineStore(): OfflineStore {
   return {
-    version: 3,
+    version: 4,
     entries: [],
     invoices: [],
     payments: [],
@@ -288,7 +293,7 @@ function normalizeOfflineStore(value: unknown): OfflineStore {
     throw new Error("В резервной копии не хватает данных");
   }
   return {
-    version: 3,
+    version: 4,
     entries: store.entries,
     invoices: store.invoices,
     payments: store.payments,
@@ -514,10 +519,15 @@ function saveOfflineAction(payload: Record<string, unknown>) {
     store.expenses = store.expenses.filter((expense) => expense.id !== id);
   } else if (action === "save_expense_categories") {
     if (!Array.isArray(payload.categories)) throw new Error("Проверьте список категорий");
-    const categories = normalizeExpenseCategories(payload.categories);
+    const categories = normalizeExpenseCategories(payload.categories, true);
+    if (categories.length === 0) throw new Error("Оставьте хотя бы одну категорию");
     const categoryIds = new Set(categories.map((category) => category.id));
-    const usedMissingCategory = store.expenses.find((expense) => !categoryIds.has(expense.category));
-    if (usedMissingCategory) throw new Error("Нельзя удалить категорию, пока в ней есть расходы");
+    const fallbackCategory = categories.find((category) => category.id === "other") ?? categories[0];
+    store.expenses = store.expenses.map((expense) => (
+      categoryIds.has(expense.category)
+        ? expense
+        : { ...expense, category: fallbackCategory.id, payer: "self" }
+    ));
     store.expenseCategories = categories;
   } else if (action === "save_settings") {
     const value = payload.settings;
@@ -1137,8 +1147,9 @@ export default function RentalApp() {
   }, [currentWeekStart, data?.entries, month]);
   const weekUnits = currentWeekDays.reduce((sum, day) => sum + (day.entry?.units ?? 0), 0);
   const weekAmountKopecks = weekUnits * documentSettings.rateKopecks;
-  const entryUnitsNumber = /^\d+$/.test(entryUnits) ? Number(entryUnits) : 0;
-  const entryAmountKopecks = entryUnitsNumber * documentSettings.rateKopecks;
+  const weekEntries = currentWeekDays
+    .flatMap((day) => day.entry ? [day.entry] : [])
+    .sort((a, b) => b.entryDate.localeCompare(a.entryDate));
   const monthBounds = periodBounds(month);
   const canGoToPreviousWeek = addIsoDays(entryDate, -7) >= monthBounds.start;
   const canGoToNextWeek = addIsoDays(entryDate, 7) <= monthBounds.end;
@@ -1392,7 +1403,7 @@ export default function RentalApp() {
   function openExpense() {
     const initialCategory = expenseFilter !== "all" && expenseCategories.some((category) => category.id === expenseFilter)
       ? expenseFilter
-      : "base_lease";
+      : expenseCategories.find((category) => category.id === "base_lease")?.id ?? expenseCategories[0]?.id ?? "other";
     setEditingExpenseId(null);
     setExpenseDate(month === today.slice(0, 7) ? today : `${month}-01`);
     setExpensePayer("self");
@@ -1426,12 +1437,15 @@ export default function RentalApp() {
   }
 
   function removeExpenseCategory(category: ExpenseCategory) {
-    if (category.builtIn) return;
-    if (data?.expenses.some((expense) => expense.category === category.id)) {
-      toast.error("Сначала перенесите или удалите расходы из этой категории");
+    if (expenseCategoriesDraft.length <= 1) {
+      toast.error("Оставьте хотя бы одну категорию");
       return;
     }
+    const usedCount = data?.expenses.filter((expense) => expense.category === category.id).length ?? 0;
     setExpenseCategoriesDraft((categories) => categories.filter((item) => item.id !== category.id));
+    if (usedCount > 0) {
+      toast.info(`${number(usedCount)} расходов будут перенесены в оставшуюся категорию`);
+    }
   }
 
   async function saveExpenseCategories(event: FormEvent) {
@@ -1440,7 +1454,11 @@ export default function RentalApp() {
       toast.error("У каждой категории должно быть название");
       return;
     }
-    const categories = normalizeExpenseCategories(expenseCategoriesDraft);
+    const categories = normalizeExpenseCategories(expenseCategoriesDraft, true);
+    if (categories.length === 0) {
+      toast.error("Оставьте хотя бы одну категорию");
+      return;
+    }
     const ok = await request(
       { action: "save_expense_categories", categories },
       "Категории расходов сохранены",
@@ -2009,75 +2027,35 @@ export default function RentalApp() {
                 <div className="fast-entry-meta">
                   <div>
                     <span className="eyebrow">Быстрая запись</span>
-                    <strong className="quick-entry-title">Бутылки за неделю</strong>
+                    <strong className="quick-entry-title">Бутылки за день</strong>
                   </div>
                   {selectedEntry && <span className="entry-existing-chip">Запись есть</span>}
                 </div>
 
-                <div className="week-calendar" aria-label="Записи по дням недели">
-                  <div className="week-calendar-toolbar">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => moveEntryWeek(-1)}
-                      disabled={!canGoToPreviousWeek}
-                      aria-label="Предыдущая неделя"
-                    >
-                      <ChevronLeft />
-                    </Button>
-                    <div className="week-range">
-                      <span>Неделя</span>
-                      <strong>{shortWeekRange(currentWeekStart, addIsoDays(currentWeekStart, 6))}</strong>
-                    </div>
-                    <label className="week-date-jump" aria-label="Выбрать дату">
-                      <CalendarDays />
+                <div className="fast-entry-date-row">
+                  <label>
+                    <FieldLabel>Дата доставки</FieldLabel>
+                    <span className="date-input-shell">
+                      <span className="date-input-value" aria-hidden="true">
+                        {dateLabel(entryDate)}
+                      </span>
+                      <CalendarDays className="date-input-icon" aria-hidden="true" />
                       <Input
-                        className="week-date-native"
+                        className="date-input-native"
                         type="date"
                         value={entryDate}
                         min={monthBounds.start}
                         max={monthBounds.end}
                         onChange={(event) => selectEntryDate(event.target.value)}
+                        aria-label="Дата доставки"
                         required
                       />
-                    </label>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => moveEntryWeek(1)}
-                      disabled={!canGoToNextWeek}
-                      aria-label="Следующая неделя"
-                    >
-                      <ChevronRight />
-                    </Button>
-                  </div>
-                  <div className="week-days">
-                    {currentWeekDays.map((day, index) => (
-                      <button
-                        key={day.date}
-                        type="button"
-                        className={day.date === entryDate ? "week-day week-day-selected" : "week-day"}
-                        disabled={!day.inMonth}
-                        onClick={() => selectEntryDate(day.date)}
-                        aria-pressed={day.date === entryDate}
-                        aria-label={`${WEEKDAY_LABELS[index]}, ${dateLabel(day.date)}${day.entry ? `, ${day.entry.units} бутылок` : ", записи нет"}`}
-                      >
-                        <span>{WEEKDAY_LABELS[index]}</span>
-                        <strong>{Number(day.date.slice(-2))}</strong>
-                        <small>{day.entry ? number(day.entry.units) : "—"}</small>
-                      </button>
-                    ))}
-                  </div>
-                  <div className="week-totals">
-                    <div><span>За неделю</span><strong>{number(weekUnits)} бут.</strong></div>
-                    <div><span>По {number(documentSettings.rateKopecks / 100)} ₽</span><strong>{money(weekAmountKopecks)}</strong></div>
-                  </div>
+                    </span>
+                  </label>
                 </div>
 
                 <div className="fast-entry-quantity">
-                  <FieldLabel>{dateLabel(entryDate)} · количество бутылок</FieldLabel>
+                  <FieldLabel>Количество бутылок</FieldLabel>
                   <div className="fast-entry-row">
                     <Input
                       ref={entryUnitsRef}
@@ -2098,10 +2076,6 @@ export default function RentalApp() {
                       {busy ? <LoaderCircle className="animate-spin" /> : selectedEntry ? <Pencil /> : <Plus />}
                       {selectedEntry ? "Обновить" : "Записать"}
                     </Button>
-                  </div>
-                  <div className="entry-live-total" aria-live="polite">
-                    <span>Стоимость за выбранный день</span>
-                    <strong>{number(entryUnitsNumber)} × {number(documentSettings.rateKopecks / 100)} ₽ = {money(entryAmountKopecks)}</strong>
                   </div>
                 </div>
                 <p className="fast-entry-hint">
@@ -2273,14 +2247,77 @@ export default function RentalApp() {
               </TabsContent>
 
               <TabsContent value="entries" className="space-y-4">
+                <section className="panel week-overview" aria-label="Просмотр бутылок за неделю">
+                  <div className="week-calendar-toolbar">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => moveEntryWeek(-1)}
+                      disabled={!canGoToPreviousWeek}
+                      aria-label="Предыдущая неделя"
+                    >
+                      <ChevronLeft />
+                    </Button>
+                    <div className="week-range">
+                      <span>Неделя</span>
+                      <strong>{shortWeekRange(currentWeekStart, addIsoDays(currentWeekStart, 6))}</strong>
+                    </div>
+                    <label className="week-date-jump" aria-label="Выбрать неделю по дате">
+                      <CalendarDays />
+                      <Input
+                        className="week-date-native"
+                        type="date"
+                        value={entryDate}
+                        min={monthBounds.start}
+                        max={monthBounds.end}
+                        onChange={(event) => selectEntryDate(event.target.value)}
+                      />
+                    </label>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => moveEntryWeek(1)}
+                      disabled={!canGoToNextWeek}
+                      aria-label="Следующая неделя"
+                    >
+                      <ChevronRight />
+                    </Button>
+                  </div>
+
+                  <div className="week-days">
+                    {currentWeekDays.map((day, index) => (
+                      <button
+                        key={day.date}
+                        type="button"
+                        className={day.date === entryDate ? "week-day week-day-selected" : "week-day"}
+                        disabled={!day.inMonth}
+                        onClick={() => selectEntryDate(day.date)}
+                        aria-pressed={day.date === entryDate}
+                        aria-label={`${WEEKDAY_LABELS[index]}, ${dateLabel(day.date)}${day.entry ? `, ${day.entry.units} бутылок` : ", записи нет"}`}
+                      >
+                        <span>{WEEKDAY_LABELS[index]}</span>
+                        <strong>{Number(day.date.slice(-2))}</strong>
+                        <small>{day.entry ? number(day.entry.units) : "—"}</small>
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="week-totals">
+                    <div><span>Бутылок за неделю</span><strong>{number(weekUnits)}</strong></div>
+                    <div><span>По {number(documentSettings.rateKopecks / 100)} ₽ за единицу</span><strong>{money(weekAmountKopecks)}</strong></div>
+                  </div>
+                </section>
+
                 <section className="panel">
                   <div className="section-heading">
                     <div>
-                      <span className="eyebrow">{monthLabel(month)}</span>
-                      <h2>История показателей</h2>
+                      <span className="eyebrow">{shortWeekRange(currentWeekStart, addIsoDays(currentWeekStart, 6))}</span>
+                      <h2>Записи недели</h2>
                     </div>
                     <div className="entry-heading-actions">
-                      <strong>{number(calculation.actualUnits)} ед.</strong>
+                      <strong>{number(weekUnits)} ед.</strong>
                       <Button
                         type="button"
                         variant="outline"
@@ -2300,15 +2337,15 @@ export default function RentalApp() {
                       />
                     </div>
                   </div>
-                  {data.entries.length === 0 ? (
+                  {weekEntries.length === 0 ? (
                     <div className="empty-state">
                       <CalendarDays />
-                      <p>За этот месяц записей пока нет.</p>
-                      <Button type="button" variant="outline" onClick={() => setTab("summary")}>Добавить первую</Button>
+                      <p>За эту неделю записей пока нет.</p>
+                      <Button type="button" variant="outline" onClick={() => entryUnitsRef.current?.focus()}>Добавить запись</Button>
                     </div>
                   ) : (
                     <div className="record-list">
-                      {data.entries.map((entry) => (
+                      {weekEntries.map((entry) => (
                         <article className="record-row" key={entry.id}>
                           <div className="record-date"><CalendarDays />{dateLabel(entry.entryDate)}</div>
                           <div className="entry-record-value min-w-0 flex-1">
@@ -2745,14 +2782,14 @@ export default function RentalApp() {
         <DialogContent className="dialog-card max-h-[92vh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Категории расходов</DialogTitle>
-            <DialogDescription>Переименуйте готовые категории или добавьте свои. Изменения сразу появятся в фильтре и при добавлении расхода.</DialogDescription>
+            <DialogDescription>Категории можно переименовывать, добавлять и удалять. Изменения появятся в фильтре и при добавлении расхода.</DialogDescription>
           </DialogHeader>
           <form onSubmit={saveExpenseCategories} className="dialog-form">
             <div className="expense-category-editor">
               {expenseCategoriesDraft.map((category) => (
                 <div className="expense-category-edit-row" key={category.id}>
                   <label>
-                    <span>{category.builtIn ? "Основная категория" : "Своя категория"}</span>
+                    <span>{category.builtIn ? "Готовая категория" : "Своя категория"}</span>
                     <Input
                       value={category.name}
                       maxLength={36}
@@ -2763,24 +2800,25 @@ export default function RentalApp() {
                       required
                     />
                   </label>
-                  {!category.builtIn && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => removeExpenseCategory(category)}
-                      aria-label={`Удалить категорию ${category.name}`}
-                    >
-                      <Trash2 />
-                    </Button>
-                  )}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => removeExpenseCategory(category)}
+                    disabled={expenseCategoriesDraft.length <= 1}
+                    aria-label={`Удалить категорию ${category.name}`}
+                  >
+                    <Trash2 />
+                  </Button>
                 </div>
               ))}
             </div>
             <Button type="button" variant="outline" onClick={addExpenseCategory} className="w-full">
               <Plus />Добавить свою категорию
             </Button>
-            <p className="help-note">Основные категории можно переименовать. Свою категорию можно удалить, если в ней ещё нет расходов.</p>
+            <p className="help-note">
+              Удалённая категория исчезнет из фильтра. Если в ней есть расходы, они сохранятся и перейдут в категорию «{expenseCategoriesDraft.find((category) => category.id === "other")?.name ?? expenseCategoriesDraft[0]?.name ?? "оставшаяся"}».
+            </p>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setExpenseCategoriesOpen(false)}>Отмена</Button>
               <Button type="submit" disabled={busy}>{busy && <LoaderCircle className="animate-spin" />}Сохранить категории</Button>
