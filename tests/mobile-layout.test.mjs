@@ -29,7 +29,7 @@ test("Android keeps content clear of system bars and resizes for the keyboard", 
 });
 
 test("quick entry always exposes the historical date and advances after save", () => {
-  assert.match(app, /className="date-input-native"/);
+  assert.match(app, /className="fast-entry-date-input"/);
   assert.match(app, /min=\{monthBounds\.start\}/);
   assert.match(app, /const followingDate = nextIsoDate\(entryDate\)/);
   assert.match(app, /selectEntryDate\(followingDate\)/);
@@ -37,13 +37,22 @@ test("quick entry always exposes the historical date and advances after save", (
 });
 
 test("quick entry controls keep a stable mobile layout", () => {
-  assert.match(app, /quick-entry-title">Бутылки за день/);
+  assert.match(app, /quick-entry-title">Быстрая запись/);
   assert.match(app, /className="fast-entry-date-row"/);
   assert.match(app, /className="fast-entry-quantity"[\s\S]*?className="fast-entry-row"/);
   assert.doesNotMatch(app, /entry-live-total/);
   assert.doesNotMatch(app, /today-button/);
   assert.match(styles, /\.fast-entry-row\s*\{[\s\S]*?align-items:\s*stretch/);
   assert.match(styles, /\.fast-entry-row button\s*\{[\s\S]*?width:\s*8\.4rem/);
+  assert.match(styles, /\.fast-entry-date-control\s*\{[\s\S]*?grid-template-columns:\s*auto minmax\(0, 1fr\)/);
+});
+
+test("invoice texts open in a separate compact dialog", () => {
+  assert.match(app, /setTextInvoice\(invoice\)/);
+  assert.match(app, /<Dialog open=\{Boolean\(textInvoice\)\}/);
+  assert.doesNotMatch(app, /<details className="copy-details">/);
+  assert.match(app, /Направляю счёт №/);
+  assert.doesNotMatch(app, /по субаренде/);
 });
 
 test("weekly bottle calendar lives in the Days section", () => {

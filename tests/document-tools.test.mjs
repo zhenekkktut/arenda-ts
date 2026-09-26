@@ -14,7 +14,7 @@ const module = { exports: {} };
 new Function("exports", "module", compiled)(module.exports, module);
 const tools = module.exports;
 
-test("rent calculation deduplicates downtime and reduces base below 2000 units", () => {
+test("rent calculation deduplicates downtime and applies the contract max formula", () => {
   const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS };
   const calculation = tools.calculateRental(
     "2026-08",
@@ -30,10 +30,12 @@ test("rent calculation deduplicates downtime and reduces base below 2000 units",
   assert.equal(calculation.downtimeDays, 16);
   assert.equal(calculation.payableDays, 15);
   assert.equal(calculation.baseKopecks, Math.round(8_000_000 * 15 / 31));
-  assert.equal(calculation.variableKopecks, 0);
+  assert.equal(calculation.intensityKopecks, 7_200_000);
+  assert.equal(calculation.variableKopecks, 7_200_000 - calculation.baseKopecks);
+  assert.equal(calculation.totalKopecks, 7_200_000);
 });
 
-test("downtime does not reduce the base at or above 2000 units", () => {
+test("downtime always reduces F while the total remains the greater of F and I", () => {
   const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS };
   const downtime = [
     { id: 1, startDate: "2026-08-10", endDate: "2026-08-20", reason: "Простой автомобиля", note: "" },
@@ -52,11 +54,14 @@ test("downtime does not reduce the base at or above 2000 units", () => {
     settings,
   );
 
-  assert.equal(atLimit.baseKopecks, 8_000_000);
-  assert.equal(atLimit.baseReductionKopecks, 0);
+  assert.equal(atLimit.baseKopecks, Math.round(8_000_000 * 20 / 31));
+  assert.equal(atLimit.baseReductionKopecks, 8_000_000 - atLimit.baseKopecks);
+  assert.equal(atLimit.intensityKopecks, 8_000_000);
+  assert.equal(atLimit.variableKopecks, 8_000_000 - atLimit.baseKopecks);
   assert.equal(atLimit.totalKopecks, 8_000_000);
-  assert.equal(aboveLimit.baseKopecks, 8_000_000);
-  assert.equal(aboveLimit.variableKopecks, 3_200_000);
+  assert.equal(aboveLimit.baseKopecks, Math.round(8_000_000 * 20 / 31));
+  assert.equal(aboveLimit.intensityKopecks, 11_200_000);
+  assert.equal(aboveLimit.variableKopecks, 11_200_000 - aboveLimit.baseKopecks);
   assert.equal(aboveLimit.totalKopecks, 11_200_000);
 });
 

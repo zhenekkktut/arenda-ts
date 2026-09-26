@@ -45,6 +45,7 @@ export type DocumentCalculation = {
   baseKopecks: number;
   baseReductionKopecks: number;
   rateKopecks: number;
+  intensityKopecks: number;
   variableKopecks: number;
   totalKopecks: number;
   calendarDays: number;
@@ -73,7 +74,7 @@ type ExpenseLike = {
 export const DEFAULT_DOCUMENT_SETTINGS: DocumentSettings = {
   city: "Выборг",
   contractNumber: "[НОМЕР ДОГОВОРА]",
-  contractDate: "2026-08-01",
+  contractDate: "2026-01-01",
   lessorFull: "Индивидуальный предприниматель [ФИО]",
   lessorShort: "ИП [ФИО]",
   lessorSignerShort: "[ФИО]",
@@ -84,7 +85,7 @@ export const DEFAULT_DOCUMENT_SETTINGS: DocumentSettings = {
   lesseeKpp: "[КПП]",
   lesseeDirector: "[ФИО ДИРЕКТОРА]",
   lesseeDirectorShort: "[ФИО]",
-  vehicleModel: "Fiat Ducato",
+  vehicleModel: "[АВТОМОБИЛЬ]",
   vehicleVin: "[VIN]",
   vehiclePlate: "[ГОСНОМЕР]",
   baseKopecks: 8_000_000,
@@ -154,15 +155,12 @@ export function calculateRental(
     .reduce((sum, entry) => sum + entry.units, 0);
   const downtimeDays = unavailable.size;
   const payableDays = Math.max(0, bounds.days - downtimeDays);
-  // По согласованной схеме простой уменьшает постоянную часть только тогда,
-  // когда месячная интенсивность ниже включённого объёма. При достижении
-  // лимита постоянная часть остаётся полной, а сверх лимита начисляется ставка.
-  const reduceBaseForDowntime = actualUnits < settings.includedUnits;
-  const baseKopecks = reduceBaseForDowntime
-    ? Math.round(settings.baseKopecks * payableDays / bounds.days)
-    : settings.baseKopecks;
+  // Пункты 2.3–2.4 договора: полные дни подтверждённого простоя всегда
+  // исключаются из оплачиваемых дней. Итог месяца — большая из сумм Ф и И.
+  const baseKopecks = Math.round(settings.baseKopecks * payableDays / bounds.days);
+  const intensityKopecks = actualUnits * settings.rateKopecks;
   const excessUnits = Math.max(0, actualUnits - settings.includedUnits);
-  const variableKopecks = excessUnits * settings.rateKopecks;
+  const variableKopecks = Math.max(0, intensityKopecks - baseKopecks);
 
   return {
     actualUnits,
@@ -172,8 +170,9 @@ export function calculateRental(
     baseKopecks,
     baseReductionKopecks: settings.baseKopecks - baseKopecks,
     rateKopecks: settings.rateKopecks,
+    intensityKopecks,
     variableKopecks,
-    totalKopecks: baseKopecks + variableKopecks,
+    totalKopecks: Math.max(baseKopecks, intensityKopecks),
     calendarDays: bounds.days,
     downtimeDays,
     payableDays,
@@ -305,12 +304,8 @@ function signatures(settings: DocumentSettings) {
 function rentActBody(input: OfficialDocumentInput) {
   const { settings, meta, calculation } = input;
   const bounds = periodBounds(meta.period);
-  const variableFormula = calculation.excessUnits > 0
-    ? `(${integer(calculation.actualUnits)} - ${integer(calculation.includedUnits)}) × ${rubles(calculation.rateKopecks)} руб.`
-    : `превышение отсутствует`;
-  const baseLabel = calculation.downtimeDays > 0
-    ? `Постоянная часть: ${rubles(calculation.baseFullKopecks)} × ${calculation.payableDays} / ${calculation.calendarDays} дней`
-    : `Постоянная часть за полный месяц (до ${integer(calculation.includedUnits)} бутылей)`;
+  const baseLabel = `Постоянная часть Ф = ${rubles(calculation.baseFullKopecks)} × ${calculation.payableDays} / ${calculation.calendarDays} дней`;
+  const intensityLabel = `Показатель интенсивности И = ${rubles(calculation.rateKopecks)} × ${integer(calculation.actualUnits)} ед.`;
   const downtimeText = calculation.downtimeDays > 0
     ? ` Исключено ${calculation.downtimeDays} ${plural(calculation.downtimeDays, "календарный день", "календарных дня", "календарных дней")} простоя автомобиля.`
     : "";
@@ -327,8 +322,9 @@ function rentActBody(input: OfficialDocumentInput) {
     <p>3. Арендная плата за ${escapeHtml(periodLabel(meta.period))}:</p>
     <table><thead><tr><th>Состав арендной платы</th><th class="money">Сумма, руб.</th></tr></thead><tbody>
       <tr><td>${baseLabel}</td><td class="money">${rubles(calculation.baseKopecks)}</td></tr>
-      <tr><td>Переменная часть: ${variableFormula}</td><td class="money">${rubles(calculation.variableKopecks)}</td></tr>
-      <tr class="total"><td>Итого начислено, без НДС</td><td class="money">${rubles(calculation.totalKopecks)}</td></tr>
+      <tr><td>${intensityLabel}</td><td class="money">${rubles(calculation.intensityKopecks)}</td></tr>
+      <tr><td>Переменная часть: И − Ф, если результат положительный</td><td class="money">${rubles(calculation.variableKopecks)}</td></tr>
+      <tr class="total"><td>Итого: большая из сумм Ф и И, без НДС</td><td class="money">${rubles(calculation.totalKopecks)}</td></tr>
     </tbody></table>
     <p class="words">Всего начислено: ${rubles(calculation.totalKopecks)} (${escapeHtml(moneyWords(calculation.totalKopecks))}), без НДС.</p>
     <p>4. Сведения об оплате, зачётах и остатке задолженности за указанный период оформляются отдельным актом сверки взаимных расчётов № ${escapeHtml(meta.reconciliationNumber)} от ${escapeHtml(longDate(meta.documentDate))}.</p>

@@ -130,6 +130,7 @@ type Closure = {
   excessUnits: number;
   baseKopecks: number;
   rateKopecks: number;
+  intensityKopecks?: number;
   variableKopecks: number;
   totalKopecks: number;
   closedAt: string;
@@ -250,6 +251,22 @@ function normalizeExpenseCategories(value: unknown, allowEmpty = false): Expense
 
 const OFFLINE_STORAGE_KEY = "arenda-ts-offline-v1";
 const THEME_STORAGE_KEY = "arenda-ts-theme-v1";
+const DOCUMENT_TEXT_FIELDS = [
+  "city", "contractNumber", "lessorFull", "lessorShort", "lessorSignerShort", "lessorInn",
+  "lesseeFull", "lesseeShort", "lesseeInn", "lesseeKpp", "lesseeDirector",
+  "lesseeDirectorShort", "vehicleModel", "vehicleVin", "vehiclePlate",
+] as const satisfies readonly (keyof DocumentSettings)[];
+
+function normalizeDocumentSettings(value: unknown): DocumentSettings {
+  const supplied = value && typeof value === "object" ? value as Partial<DocumentSettings> : {};
+  const settings: DocumentSettings = { ...DEFAULT_DOCUMENT_SETTINGS, ...supplied };
+  for (const field of DOCUMENT_TEXT_FIELDS) {
+    if (!settings[field].trim() || settings[field].includes("[")) {
+      settings[field] = DEFAULT_DOCUMENT_SETTINGS[field];
+    }
+  }
+  return settings;
+}
 
 function applyTheme(theme: "light" | "dark") {
   document.documentElement.dataset.theme = theme;
@@ -269,7 +286,7 @@ function emptyOfflineStore(): OfflineStore {
     expenses: [],
     expenseCategories: normalizeExpenseCategories(undefined),
     closures: [],
-    settings: { ...DEFAULT_DOCUMENT_SETTINGS },
+    settings: normalizeDocumentSettings(undefined),
     downtimes: [],
     documents: [],
   };
@@ -300,10 +317,7 @@ function normalizeOfflineStore(value: unknown): OfflineStore {
     expenses: store.expenses,
     expenseCategories: normalizeExpenseCategories(store.expenseCategories),
     closures: store.closures,
-    settings: {
-      ...DEFAULT_DOCUMENT_SETTINGS,
-      ...(store.settings && typeof store.settings === "object" ? store.settings : {}),
-    },
+    settings: normalizeDocumentSettings(store.settings),
     downtimes: Array.isArray(store.downtimes) ? store.downtimes : [],
     documents: Array.isArray(store.documents) ? store.documents : [],
   };
@@ -544,12 +558,7 @@ function saveOfflineAction(payload: Record<string, unknown>) {
     ) {
       throw new Error("Проверьте дату договора и условия расчёта");
     }
-    const textFields: (keyof DocumentSettings)[] = [
-      "city", "contractNumber", "lessorFull", "lessorShort", "lessorSignerShort", "lessorInn",
-      "lesseeFull", "lesseeShort", "lesseeInn", "lesseeKpp", "lesseeDirector",
-      "lesseeDirectorShort", "vehicleModel", "vehicleVin", "vehiclePlate",
-    ];
-    for (const field of textFields) {
+    for (const field of DOCUMENT_TEXT_FIELDS) {
       if (typeof settings[field] !== "string" || !String(settings[field]).trim()) {
         throw new Error("Заполните все реквизиты договора");
       }
@@ -748,39 +757,39 @@ function documentPeriod(value: string) {
   return `${monthNamesGenitive[Number(month) - 1]} ${year} года`;
 }
 
-function invoiceLine(invoice: Invoice) {
+function invoiceLine(invoice: Invoice, settings: DocumentSettings) {
   const part =
     invoice.kind === "fixed"
-      ? "Постоянная часть арендной платы"
+      ? "Часть постоянной арендной платы"
       : invoice.kind === "variable"
         ? "Переменная часть арендной платы"
         : "Арендная плата";
-  return `${part} по договору субаренды транспортного средства Fiat Ducato без экипажа за ${documentPeriod(invoice.period)}.`;
+  return `${part} за ${documentPeriod(invoice.period)} по договору аренды транспортного средства без экипажа № ${settings.contractNumber} от ${dateLabel(settings.contractDate)}, автомобиль ${settings.vehicleModel}, VIN ${settings.vehicleVin}.`;
 }
 
-function paymentPurpose(invoice: Invoice) {
+function paymentPurpose(invoice: Invoice, settings: DocumentSettings) {
   const part =
     invoice.kind === "fixed"
-      ? "постоянную часть арендной платы"
+      ? "часть постоянной арендной платы"
       : invoice.kind === "variable"
         ? "переменную часть арендной платы"
         : "арендную плату";
-  return `Оплата по счёту №${invoice.invoiceNumber} от ${dateLabel(invoice.invoiceDate)} за ${part} по субаренде автомобиля Fiat Ducato без экипажа за ${documentPeriod(invoice.period)}. Без НДС.`;
+  return `Оплата по счёту № ${invoice.invoiceNumber} от ${dateLabel(invoice.invoiceDate)} за ${part} за ${documentPeriod(invoice.period)} по договору № ${settings.contractNumber} от ${dateLabel(settings.contractDate)}. Без НДС.`;
 }
 
-function emailSubject(invoice: Invoice) {
-  return `Счёт №${invoice.invoiceNumber} от ${dateLabel(invoice.invoiceDate)} — аренда Fiat Ducato`;
+function emailSubject(invoice: Invoice, settings: DocumentSettings) {
+  return `Счёт № ${invoice.invoiceNumber} — аренда ${settings.vehicleModel} за ${documentPeriod(invoice.period)}`;
 }
 
-function emailText(invoice: Invoice) {
-  const part =
+function emailText(invoice: Invoice, settings: DocumentSettings) {
+  const action =
     invoice.kind === "fixed"
-      ? "постоянной части арендной платы"
+      ? "на частичную оплату постоянной арендной платы"
       : invoice.kind === "variable"
-        ? "переменной части арендной платы"
-        : "арендной платы";
+        ? "на оплату переменной части арендной платы"
+        : "на оплату арендной платы";
 
-  return `Счёт №${invoice.invoiceNumber} от ${dateLabel(invoice.invoiceDate)} на оплату ${part} по субаренде автомобиля Fiat Ducato без экипажа за ${documentPeriod(invoice.period)}.\nСумма: ${money(invoice.amountKopecks)}.\nСчёт во вложении.`;
+  return `Направляю счёт № ${invoice.invoiceNumber} ${action} за ${settings.vehicleModel} за ${documentPeriod(invoice.period)} по договору № ${settings.contractNumber} от ${dateLabel(settings.contractDate)}.`;
 }
 
 function toKopecks(value: string) {
@@ -916,6 +925,8 @@ export default function RentalApp() {
   const [loadError, setLoadError] = useState("");
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [copiedKey, setCopiedKey] = useState("");
+  const [textInvoice, setTextInvoice] = useState<Invoice | null>(null);
+  const [settlementOpen, setSettlementOpen] = useState(false);
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">("light");
 
@@ -1079,26 +1090,21 @@ export default function RentalApp() {
     includedUnits: rules.includedUnits,
     rateKopecks: rules.rateKopecks,
   };
-  const documentSettingsReady = !Object.values(documentSettings).some(
-    (value) => typeof value === "string" && value.includes("["),
-  );
+  const invoiceTextReady = [
+    documentSettings.contractNumber,
+    documentSettings.vehicleModel,
+    documentSettings.vehicleVin,
+  ].every((value) => value.trim() && !value.includes("["));
   const liveCalculation = calculateRental(
     month,
     data?.entries ?? [],
     data?.downtimes ?? [],
     documentSettings,
   );
-  const calculation: DocumentCalculation = data?.closure
-    ? {
-        ...liveCalculation,
-        ...data.closure,
-        baseFullKopecks: data.closure.baseFullKopecks ?? data.closure.baseKopecks,
-        baseReductionKopecks: data.closure.baseReductionKopecks ?? 0,
-        calendarDays: data.closure.calendarDays ?? liveCalculation.calendarDays,
-        downtimeDays: data.closure.downtimeDays ?? 0,
-        payableDays: data.closure.payableDays ?? liveCalculation.calendarDays,
-      }
-    : liveCalculation;
+  // Закрытие месяца блокирует редактирование, но расчёт всегда строится по
+  // действующей договорной формуле. Так старые сохранённые итоги не сохраняют
+  // ошибочную логику после обновления приложения.
+  const calculation: DocumentCalculation = liveCalculation;
 
   const paidByInvoice = useMemo(() => {
     const map = new Map<number, number>();
@@ -1113,15 +1119,21 @@ export default function RentalApp() {
   const totalExpenses = data?.expenses.reduce((sum, expense) => sum + expense.amountKopecks, 0) ?? 0;
   const customerFuel = data?.expenses.filter((e) => e.category === "fuel" && e.payer === "customer").reduce((sum, e) => sum + e.amountKopecks, 0) ?? 0;
   const selfExpenses = totalExpenses - customerFuel;
+  const fixedInvoiced = data?.invoices.filter((invoice) => invoice.kind === "fixed").reduce((sum, invoice) => sum + invoice.amountKopecks, 0) ?? 0;
+  const variableInvoiced = data?.invoices.filter((invoice) => invoice.kind === "variable").reduce((sum, invoice) => sum + invoice.amountKopecks, 0) ?? 0;
+  const fixedTargetKopecks = Math.max(0, calculation.baseKopecks - customerFuel);
+  const fixedRemainingKopecks = Math.max(0, fixedTargetKopecks - fixedInvoiced);
+  const variableRemainingKopecks = Math.max(0, calculation.variableKopecks - variableInvoiced);
   const filteredExpenses = data?.expenses.filter((expense) => expenseFilter === "all" || expense.category === expenseFilter) ?? [];
   const filteredExpenseTotal = filteredExpenses.reduce((sum, expense) => sum + expense.amountKopecks, 0);
   const filteredCustomerFuel = filteredExpenses.filter((expense) => expense.category === "fuel" && expense.payer === "customer").reduce((sum, expense) => sum + expense.amountKopecks, 0);
   const filteredSelfFuel = filteredExpenses.filter((expense) => expense.category === "fuel" && expense.payer !== "customer").reduce((sum, expense) => sum + expense.amountKopecks, 0);
   const netRent = Math.max(0, calculation.totalKopecks - customerFuel);
   const remainingToInvoice = Math.max(0, netRent - totalInvoiced);
-  const rentBalance = Math.max(0, netRent - totalPaid);
   const cashResult = totalPaid - selfExpenses;
-  const progress = Math.min(100, (calculation.actualUnits / calculation.includedUnits) * 100);
+  const progress = calculation.includedUnits > 0
+    ? Math.min(100, (calculation.actualUnits / calculation.includedUnits) * 100)
+    : 100;
   const importTotalUnits = importRows.reduce((sum, row) => sum + row.units, 0);
   const selectedEntry = data?.entries.find((entry) => entry.entryDate === entryDate);
   const expenseCategories = useMemo(
@@ -1323,17 +1335,23 @@ export default function RentalApp() {
     }
   }
 
-  function openInvoice(kind: Invoice["kind"] = "fixed") {
+  function openInvoice(requestedKind?: Invoice["kind"]) {
     setEditingInvoiceId(null);
     const selectedDate = month === today.slice(0, 7) ? today : `${month}-01`;
-    setInvoiceKind(kind);
-    setInvoiceAmount(
-      kind === "fixed"
-        ? String(calculation.baseKopecks / 100)
-        : kind === "variable"
-          ? String(calculation.variableKopecks / 100)
-          : "",
+    const kind = requestedKind ?? (
+      fixedRemainingKopecks > 0
+        ? "fixed"
+        : data?.closure && variableRemainingKopecks > 0 && remainingToInvoice > 0
+          ? "variable"
+          : "fixed"
     );
+    const suggestedAmount = kind === "fixed"
+      ? Math.min(fixedRemainingKopecks || calculation.baseKopecks, remainingToInvoice || calculation.baseKopecks)
+      : kind === "variable"
+        ? Math.min(variableRemainingKopecks, remainingToInvoice || variableRemainingKopecks)
+        : remainingToInvoice;
+    setInvoiceKind(kind);
+    setInvoiceAmount(suggestedAmount > 0 ? String(suggestedAmount / 100) : "");
     setInvoiceNumber("");
     setInvoiceDate(selectedDate);
     setInvoiceDueDate("");
@@ -1346,6 +1364,14 @@ export default function RentalApp() {
     const amountKopecks = toKopecks(invoiceAmount);
     if (!invoiceNumber.trim() || !amountKopecks) {
       toast.error("Укажите номер и сумму счёта");
+      return;
+    }
+    if (editingInvoiceId === null && invoiceKind === "variable" && !data?.closure) {
+      toast.error("Переменная часть выставляется после закрытия месяца");
+      return;
+    }
+    if (editingInvoiceId === null && invoiceKind === "variable" && fixedRemainingKopecks > 0) {
+      toast.error("Сначала выставьте постоянную часть");
       return;
     }
     const ok = await request(
@@ -1731,17 +1757,17 @@ export default function RentalApp() {
         ["Показатель", "Значение"],
         ["Расчётный период", monthLabel(month)],
         ["Фактическая интенсивность, ед.", calculation.actualUnits],
-        ["Включено в постоянную часть, ед.", calculation.includedUnits],
-        ["Превышение, ед.", calculation.excessUnits],
+        ["Контрольный объём, ед.", calculation.includedUnits],
         ["Календарных дней", calculation.calendarDays],
         ["Дней простоя", calculation.downtimeDays],
         ["Оплачиваемых дней", calculation.payableDays],
         ["Постоянная часть за полный месяц, ₽", calculation.baseFullKopecks / 100],
         ["Уменьшение за простой, ₽", calculation.baseReductionKopecks / 100],
         ["Постоянная часть к начислению, ₽", calculation.baseKopecks / 100],
-        ["Ставка сверх лимита, ₽/ед.", calculation.rateKopecks / 100],
-        ["Переменная часть, ₽", calculation.variableKopecks / 100],
-        ["ИТОГО АРЕНДА, ₽", calculation.totalKopecks / 100],
+        ["Ставка интенсивности, ₽/ед.", calculation.rateKopecks / 100],
+        ["Показатель интенсивности И = 40 × N, ₽", calculation.intensityKopecks / 100],
+        ["Переменная часть И − Ф, ₽", calculation.variableKopecks / 100],
+        ["ИТОГО — большая из Ф и И, ₽", calculation.totalKopecks / 100],
         ["Топливо оплачено заказчиком, ₽", customerFuel / 100],
         ["Аренда после вычета топлива, ₽", netRent / 100],
         ["Уже выставлено, ₽", totalInvoiced / 100],
@@ -1787,10 +1813,10 @@ export default function RentalApp() {
             [...new Set(invoicePayments.map((payment) => payment.method === "bank" ? "Безналичные" : "Наличные"))].join(", "),
             invoicePayments.map((payment) => payment.documentNumber).filter(Boolean).join(", "),
             invoice.note,
-            invoiceLine(invoice),
-            paymentPurpose(invoice),
-            emailSubject(invoice),
-            emailText(invoice),
+            invoiceLine(invoice, documentSettings),
+            paymentPurpose(invoice, documentSettings),
+            emailSubject(invoice, documentSettings),
+            emailText(invoice, documentSettings),
           ];
         }),
         ["ИТОГО", "", "", totalInvoiced / 100, totalPaid / 100, Math.max(0, totalInvoiced - totalPaid) / 100, "", "", "", "", "", "", "", "", ""],
@@ -1888,25 +1914,23 @@ export default function RentalApp() {
     }
   }
 
-  function settlementPanel() {
-    return <section className="panel">
-      <h2 className="font-semibold">Расчёт с заказчиком</h2>
+  function settlementDetails() {
+    return <div className="settlement-details">
       <div className="calculation-list mt-3">
-        <div><span>Начислено за месяц</span><strong>{money(calculation.totalKopecks)}</strong></div>
+        <div><span>Аренда по договору</span><strong>{money(calculation.totalKopecks)}</strong></div>
         <div><span>Минус топливо заказчика</span><strong>{money(customerFuel)}</strong></div>
-        <div><span>После вычета топлива</span><strong>{money(netRent)}</strong></div>
+        <div><span>К выставлению после топлива</span><strong>{money(netRent)}</strong></div>
         <div><span>Уже выставлено</span><strong>{money(totalInvoiced)}</strong></div>
         <div className="calculation-total"><span>Осталось выставить</span><strong>{money(remainingToInvoice)}</strong></div>
       </div>
       {customerFuel > calculation.totalKopecks && <p className="help-note">Топливо превышает начисление на {money(customerFuel - calculation.totalKopecks)}. Перенос на другой месяц не выполняется автоматически.</p>}
       {totalInvoiced > netRent && <p className="help-note">Выставлено больше расчётной суммы на {money(totalInvoiced - netRent)}. Проверьте ранее выставленные счета.</p>}
-      <Button className="mt-4" type="button" disabled={remainingToInvoice <= 0} onClick={() => {
-        openInvoice("other");
-        setInvoiceAmount(String(remainingToInvoice / 100));
-        setInvoiceNote(`Начислено: ${money(calculation.totalKopecks)}. Топливо заказчика: ${money(customerFuel)}. Ранее выставлено: ${money(totalInvoiced)}.`);
-      }}>Счёт на остаток</Button>
-      <p className="help-note">Существующие счета сохраняют свою сумму. Оплаты по счетам учитываются отдельно от суммы к выставлению.</p>
-    </section>;
+      <Button className="mt-4 w-full" type="button" disabled={remainingToInvoice <= 0} onClick={() => {
+        setSettlementOpen(false);
+        openInvoice();
+      }}>Создать следующий счёт</Button>
+      <p className="help-note">Сначала приложение предложит постоянную часть. Переменную часть — только после закрытия месяца.</p>
+    </div>;
   }
 
   async function installApp() {
@@ -2025,32 +2049,23 @@ export default function RentalApp() {
             ) : (
               <form onSubmit={saveEntry} className="fast-entry-form">
                 <div className="fast-entry-meta">
-                  <div>
-                    <span className="eyebrow">Быстрая запись</span>
-                    <strong className="quick-entry-title">Бутылки за день</strong>
-                  </div>
+                  <strong className="quick-entry-title">Быстрая запись</strong>
                   {selectedEntry && <span className="entry-existing-chip">Запись есть</span>}
                 </div>
 
                 <div className="fast-entry-date-row">
-                  <label>
-                    <FieldLabel>Дата доставки</FieldLabel>
-                    <span className="date-input-shell">
-                      <span className="date-input-value" aria-hidden="true">
-                        {dateLabel(entryDate)}
-                      </span>
-                      <CalendarDays className="date-input-icon" aria-hidden="true" />
-                      <Input
-                        className="date-input-native"
-                        type="date"
-                        value={entryDate}
-                        min={monthBounds.start}
-                        max={monthBounds.end}
-                        onChange={(event) => selectEntryDate(event.target.value)}
-                        aria-label="Дата доставки"
-                        required
-                      />
-                    </span>
+                  <label className="fast-entry-date-control">
+                    <FieldLabel>Дата</FieldLabel>
+                    <Input
+                      className="fast-entry-date-input"
+                      type="date"
+                      value={entryDate}
+                      min={monthBounds.start}
+                      max={monthBounds.end}
+                      onChange={(event) => selectEntryDate(event.target.value)}
+                      aria-label="Дата доставки"
+                      required
+                    />
                   </label>
                 </div>
 
@@ -2078,11 +2093,6 @@ export default function RentalApp() {
                     </Button>
                   </div>
                 </div>
-                <p className="fast-entry-hint">
-                  {selectedEntry
-                    ? `Сейчас записано ${number(selectedEntry.units)}. Сохранение заменит количество.`
-                    : "После сохранения дата перейдёт на следующий день."}
-                </p>
               </form>
             )}
           </section>
@@ -2127,25 +2137,27 @@ export default function RentalApp() {
           ) : data ? (
             <>
               <TabsContent value="summary" className="space-y-4">
-                {offlineMode && settlementPanel()}
                 <section className="summary-grid">
                   <article className="money-card money-card-main">
-                    <span>Аренда за месяц</span>
-                    <strong>{money(calculation.totalKopecks)}</strong>
-                    <small>{data.closure ? "Итог зафиксирован" : "Сумма обновляется автоматически"}</small>
+                    <span>К выставлению</span>
+                    <strong>{money(netRent)}</strong>
+                    <small>после учёта топлива заказчика</small>
                   </article>
                   <article className="money-card">
-                    <span>Оплачено</span>
-                    <strong>{money(totalPaid)}</strong>
+                    <span>Выставлено</span>
+                    <strong>{money(totalInvoiced)}</strong>
                   </article>
                   <article className="money-card">
                     <span>Остаток</span>
-                    <strong className={rentBalance > 0 ? "text-amber-700" : "text-emerald-700"}>{money(rentBalance)}</strong>
+                    <strong className={remainingToInvoice > 0 ? "text-amber-700" : "text-emerald-700"}>{money(remainingToInvoice)}</strong>
                   </article>
                 </section>
+                <Button type="button" variant="outline" className="summary-details-button" onClick={() => setSettlementOpen(true)}>
+                  <Calculator />Расчёт подробнее
+                </Button>
 
                 <section className="dashboard-actions" aria-label="Быстрые действия">
-                  <button type="button" onClick={() => openInvoice("fixed")}>
+                  <button type="button" onClick={() => openInvoice()}>
                     <span><ReceiptText /></span>
                     <strong>Новый счёт</strong>
                   </button>
@@ -2181,14 +2193,10 @@ export default function RentalApp() {
                       <div><span>Простой автомобиля</span><strong>{calculation.downtimeDays} дн.</strong></div>
                       {calculation.baseReductionKopecks > 0 && <div><span>Уменьшение за простой</span><strong>-{money(calculation.baseReductionKopecks)}</strong></div>}
                     </>}
-                    <div><span>Постоянная часть к начислению</span><strong>{money(calculation.baseKopecks)}</strong></div>
-                    <div><span>Превышение</span><strong>{number(calculation.excessUnits)} ед.</strong></div>
-                    <div><span>Ставка сверх лимита</span><strong>{money(calculation.rateKopecks)} / ед.</strong></div>
+                    <div><span>Постоянная часть Ф</span><strong>{money(calculation.baseKopecks)}</strong></div>
+                    <div><span>{number(calculation.actualUnits)} × {money(calculation.rateKopecks)}</span><strong>{money(calculation.intensityKopecks)}</strong></div>
                     <div className="calculation-total"><span>Переменная часть</span><strong>{money(calculation.variableKopecks)}</strong></div>
                   </div>
-                  {calculation.downtimeDays > 0 && calculation.actualUnits >= calculation.includedUnits && (
-                    <p className="calculation-note">При {number(calculation.includedUnits)} бутылках и больше постоянная часть не уменьшается.</p>
-                  )}
                 </section>
 
                 {offlineMode && (
@@ -2202,7 +2210,7 @@ export default function RentalApp() {
                         <Plus />Добавить
                       </Button>
                     </div>
-                    <p className="downtime-explanation">Если за месяц меньше {number(calculation.includedUnits)} бутылок, постоянная часть автоматически уменьшается пропорционально дням простоя.</p>
+                    <p className="downtime-explanation">Полные дни простоя уменьшают постоянную часть пропорционально календарным дням месяца.</p>
                     {(data.downtimes ?? []).length === 0 ? (
                       <p className="downtime-empty">Простоев за выбранный месяц нет.</p>
                     ) : (
@@ -2369,7 +2377,6 @@ export default function RentalApp() {
               </TabsContent>
 
               <TabsContent value="invoices" className="space-y-4">
-                {offlineMode && settlementPanel()}
                 <section className="finance-summary">
                   <div><span>Выставлено</span><strong>{money(totalInvoiced)}</strong></div>
                   <div><span>Получено</span><strong>{money(totalPaid)}</strong></div>
@@ -2378,17 +2385,17 @@ export default function RentalApp() {
                 <section className="panel payment-schedule">
                   <div className="section-heading">
                     <div>
-                      <span className="eyebrow">График по договору</span>
-                      <h2>Постоянная часть — {money(calculation.baseKopecks)}</h2>
+                      <span className="eyebrow">Порядок по договору</span>
+                      <h2>Сначала постоянная, затем переменная</h2>
                     </div>
                   </div>
                   <div className="schedule-grid">
-                    <div><span>Первая часть</span><strong>{money(Math.round(calculation.baseKopecks / 2))}</strong></div>
-                    <div><span>Вторая часть</span><strong>{money(calculation.baseKopecks - Math.round(calculation.baseKopecks / 2))}</strong></div>
-                    <div><span>После закрытия месяца</span><strong>{money(calculation.variableKopecks)}</strong><small>переменная часть</small></div>
+                    <div><span>Постоянная часть</span><strong>{money(fixedTargetKopecks)}</strong><small>можно несколькими счетами</small></div>
+                    <div><span>Осталось постоянной части</span><strong>{money(fixedRemainingKopecks)}</strong></div>
+                    <div><span>Переменная часть</span><strong>{money(calculation.variableKopecks)}</strong><small>{data.closure ? "рассчитана по итогам месяца" : "после закрытия месяца"}</small></div>
                   </div>
                 </section>
-                <Button type="button" onClick={() => openInvoice("fixed")} className="h-12 w-full sm:w-auto">
+                <Button type="button" onClick={() => openInvoice()} className="h-12 w-full sm:w-auto">
                   <Plus />Добавить выставленный счёт
                 </Button>
 
@@ -2403,10 +2410,6 @@ export default function RentalApp() {
                       const invoicePayments = data.payments.filter((payment) => payment.invoiceId === invoice.id);
                       const paid = paidByInvoice.get(invoice.id) ?? 0;
                       const status = statusFor(invoice, paid);
-                      const lineText = invoiceLine(invoice);
-                      const purposeText = paymentPurpose(invoice);
-                      const subjectText = emailSubject(invoice);
-                      const letterText = emailText(invoice);
                       return (
                         <article className="panel invoice-card" key={invoice.id}>
                           <div className="flex items-start justify-between gap-3">
@@ -2432,38 +2435,22 @@ export default function RentalApp() {
                           {invoice.dueDate && <p className="due-line">Срок оплаты: <strong>{dateLabel(invoice.dueDate)}</strong></p>}
                           {invoice.note && <p className="record-note">{invoice.note}</p>}
 
-                          <details className="copy-details">
-                            <summary>
-                              <FileText />
-                              Тексты для счёта и письма
-                            </summary>
-                            <div className="copy-stack">
-                              <CopyBlock
-                                title="Строка счёта в банке"
-                                text={lineText}
-                                copied={copiedKey === `line-${invoice.id}`}
-                                onCopy={() => void copyText(lineText, `line-${invoice.id}`)}
-                              />
-                              <CopyBlock
-                                title="Назначение платежа"
-                                text={purposeText}
-                                copied={copiedKey === `purpose-${invoice.id}`}
-                                onCopy={() => void copyText(purposeText, `purpose-${invoice.id}`)}
-                              />
-                              <CopyBlock
-                                title="Тема письма"
-                                text={subjectText}
-                                copied={copiedKey === `subject-${invoice.id}`}
-                                onCopy={() => void copyText(subjectText, `subject-${invoice.id}`)}
-                              />
-                              <CopyBlock
-                                title="Текст письма"
-                                text={letterText}
-                                copied={copiedKey === `email-${invoice.id}`}
-                                onCopy={() => void copyText(letterText, `email-${invoice.id}`)}
-                              />
-                            </div>
-                          </details>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="invoice-copy-button"
+                            onClick={() => {
+                              if (!invoiceTextReady) {
+                                toast.error("Сначала заполните данные договора в настройках");
+                                openSettings();
+                                return;
+                              }
+                              setCopiedKey("");
+                              setTextInvoice(invoice);
+                            }}
+                          >
+                            <FileText />Тексты для счёта и письма
+                          </Button>
 
                           {invoicePayments.length > 0 && (
                             <div className="payment-list">
@@ -2591,6 +2578,53 @@ export default function RentalApp() {
         )}
       </main>
 
+      <Dialog open={settlementOpen} onOpenChange={setSettlementOpen}>
+        <DialogContent className="dialog-card sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Расчёт с заказчиком</DialogTitle>
+            <DialogDescription>Подробности суммы к выставлению за {monthLabel(month).toLowerCase()}.</DialogDescription>
+          </DialogHeader>
+          {settlementDetails()}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(textInvoice)} onOpenChange={(open) => { if (!open) setTextInvoice(null); }}>
+        <DialogContent className="dialog-card copy-dialog max-h-[92vh] overflow-y-auto sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Тексты для счёта № {textInvoice?.invoiceNumber ?? ""}</DialogTitle>
+            <DialogDescription>Скопируйте нужный текст и вставьте его в банк или письмо.</DialogDescription>
+          </DialogHeader>
+          {textInvoice && (
+            <div className="copy-stack copy-dialog-stack">
+              <CopyBlock
+                title="Строка счёта в банке"
+                text={invoiceLine(textInvoice, documentSettings)}
+                copied={copiedKey === `line-${textInvoice.id}`}
+                onCopy={() => void copyText(invoiceLine(textInvoice, documentSettings), `line-${textInvoice.id}`)}
+              />
+              <CopyBlock
+                title="Назначение платежа"
+                text={paymentPurpose(textInvoice, documentSettings)}
+                copied={copiedKey === `purpose-${textInvoice.id}`}
+                onCopy={() => void copyText(paymentPurpose(textInvoice, documentSettings), `purpose-${textInvoice.id}`)}
+              />
+              <CopyBlock
+                title="Тема письма"
+                text={emailSubject(textInvoice, documentSettings)}
+                copied={copiedKey === `subject-${textInvoice.id}`}
+                onCopy={() => void copyText(emailSubject(textInvoice, documentSettings), `subject-${textInvoice.id}`)}
+              />
+              <CopyBlock
+                title="Текст письма"
+                text={emailText(textInvoice, documentSettings)}
+                copied={copiedKey === `email-${textInvoice.id}`}
+                onCopy={() => void copyText(emailText(textInvoice, documentSettings), `email-${textInvoice.id}`)}
+              />
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={Boolean(editingEntry)} onOpenChange={(open) => { if (!open) setEditingEntry(null); }}>
         <DialogContent className="dialog-card">
           <DialogHeader>
@@ -2667,17 +2701,18 @@ export default function RentalApp() {
                 onValueChange={(value) => {
                   const kind = value as Invoice["kind"];
                   setInvoiceKind(kind);
-                  if (editingInvoiceId === null && kind === "fixed") setInvoiceAmount(String(calculation.baseKopecks / 100));
-                  if (editingInvoiceId === null && kind === "variable") setInvoiceAmount(String(calculation.variableKopecks / 100));
+                  if (editingInvoiceId === null && kind === "fixed") setInvoiceAmount(fixedRemainingKopecks > 0 ? String(fixedRemainingKopecks / 100) : "");
+                  if (editingInvoiceId === null && kind === "variable") setInvoiceAmount(variableRemainingKopecks > 0 ? String(variableRemainingKopecks / 100) : "");
                 }}
               >
                 <SelectTrigger className="h-11 w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="fixed">Постоянная часть</SelectItem>
-                  <SelectItem value="variable">Переменная часть</SelectItem>
+                  <SelectItem value="fixed">Часть постоянной арендной платы</SelectItem>
+                  <SelectItem value="variable" disabled={!data?.closure && editingInvoiceId === null}>Переменная часть</SelectItem>
                   <SelectItem value="other">Прочее начисление</SelectItem>
                 </SelectContent>
               </Select>
+              {editingInvoiceId === null && <p className="help-note">Постоянную часть можно выставлять несколькими счетами. Переменная доступна после закрытия месяца.</p>}
             </label>
             <div className="grid grid-cols-2 gap-3">
               <label><FieldLabel>Номер счёта</FieldLabel><Input value={invoiceNumber} onChange={(event) => setInvoiceNumber(event.target.value)} placeholder="Например, 24" required /></label>
@@ -2831,17 +2866,28 @@ export default function RentalApp() {
         <DialogContent className="dialog-card sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Настройки расчёта</DialogTitle>
-            <DialogDescription>Здесь можно изменить базовую аренду, лимит и ставку сверх лимита.</DialogDescription>
+            <DialogDescription>Здесь можно изменить постоянную часть, контрольный объём и ставку за единицу.</DialogDescription>
           </DialogHeader>
           <form onSubmit={saveSettings} className="dialog-form">
             <div className="settings-section">
               <strong>Условия аренды</strong>
               <label><FieldLabel>Постоянная часть за полный месяц, ₽</FieldLabel><Input type="number" min="0.01" step="0.01" inputMode="decimal" value={settingsDraft.baseKopecks / 100} onChange={(event) => setSettingsDraft((value) => ({ ...value, baseKopecks: Math.round(Number(event.target.value) * 100) }))} required /></label>
               <div className="grid grid-cols-2 gap-3">
-                <label><FieldLabel>Включено бутылей</FieldLabel><Input type="number" min="0" step="1" inputMode="numeric" value={settingsDraft.includedUnits} onChange={(event) => setSettingsDraft((value) => ({ ...value, includedUnits: Number(event.target.value) }))} required /></label>
-                <label><FieldLabel>Ставка сверх лимита, ₽</FieldLabel><Input type="number" min="0" step="0.01" inputMode="decimal" value={settingsDraft.rateKopecks / 100} onChange={(event) => setSettingsDraft((value) => ({ ...value, rateKopecks: Math.round(Number(event.target.value) * 100) }))} required /></label>
+                <label><FieldLabel>Контрольный объём, ед.</FieldLabel><Input type="number" min="0" step="1" inputMode="numeric" value={settingsDraft.includedUnits} onChange={(event) => setSettingsDraft((value) => ({ ...value, includedUnits: Number(event.target.value) }))} required /></label>
+                <label><FieldLabel>Ставка за единицу, ₽</FieldLabel><Input type="number" min="0" step="0.01" inputMode="decimal" value={settingsDraft.rateKopecks / 100} onChange={(event) => setSettingsDraft((value) => ({ ...value, rateKopecks: Math.round(Number(event.target.value) * 100) }))} required /></label>
               </div>
-              <p className="help-note">По умолчанию: 80 000 ₽ за 2 000 бутылок и 40 ₽ за каждую сверх лимита. Простой уменьшает постоянную часть только при объёме меньше 2 000.</p>
+              <p className="help-note">Итог месяца — большая из сумм: постоянная часть с учётом простоя или количество × ставка. Переменная часть равна положительной разнице между ними.</p>
+            </div>
+
+            <div className="settings-section">
+              <strong>Данные для текста счёта</strong>
+              <div className="grid grid-cols-2 gap-3">
+                <label><FieldLabel>Номер договора</FieldLabel><Input value={settingsDraft.contractNumber} onChange={(event) => setSettingsDraft((value) => ({ ...value, contractNumber: event.target.value }))} required /></label>
+                <label><FieldLabel>Дата договора</FieldLabel><Input type="date" value={settingsDraft.contractDate} onChange={(event) => setSettingsDraft((value) => ({ ...value, contractDate: event.target.value }))} required /></label>
+              </div>
+              <label><FieldLabel>Автомобиль</FieldLabel><Input value={settingsDraft.vehicleModel} onChange={(event) => setSettingsDraft((value) => ({ ...value, vehicleModel: event.target.value }))} placeholder="Например, Fiat Ducato" required /></label>
+              <label><FieldLabel>VIN</FieldLabel><Input value={settingsDraft.vehicleVin} onChange={(event) => setSettingsDraft((value) => ({ ...value, vehicleVin: event.target.value }))} required /></label>
+              <p className="help-note">Эти данные хранятся только на телефоне и автоматически подставляются в тексты для банка и письма.</p>
             </div>
 
             <DialogFooter>
@@ -2863,7 +2909,7 @@ export default function RentalApp() {
               <label><FieldLabel>Начало</FieldLabel><Input type="date" value={downtimeStart} onChange={(event) => setDowntimeStart(event.target.value)} required /></label>
               <label><FieldLabel>Окончание</FieldLabel><Input type="date" value={downtimeEnd} onChange={(event) => setDowntimeEnd(event.target.value)} required /></label>
             </div>
-            <p className="help-note">Причина не требуется. При месячном объёме меньше {number(documentSettings.includedUnits)} постоянная часть пересчитается автоматически.</p>
+            <p className="help-note">Причина не требуется. Полные дни простоя автоматически уменьшают постоянную часть пропорционально календарным дням месяца.</p>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setDowntimeOpen(false)}>Отмена</Button>
               <Button type="submit" disabled={busy}>{busy && <LoaderCircle className="animate-spin" />}Сохранить</Button>
