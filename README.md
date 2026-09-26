@@ -14,7 +14,7 @@
 
 ## Установить на Android
 
-- [Скачать актуальный APK для Android](https://github.com/zhenekkktut/arenda-ts/releases/download/android-latest/arenda-ts.apk)
+- Новая сборка появляется в [GitHub Actions](https://github.com/zhenekkktut/arenda-ts/actions/workflows/android-apk.yml): откройте последнюю успешную проверку и скачайте артефакт `arenda-ts-apk`.
 
 На Android разрешите установку из браузера, откройте скачанный `arenda-ts.apk` и нажмите «Установить».
 
