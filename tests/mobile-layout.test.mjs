@@ -47,6 +47,23 @@ test("quick entry controls keep a stable mobile layout", () => {
   assert.match(styles, /\.fast-entry-date-control\s*\{[\s\S]*?grid-template-columns:\s*auto minmax\(0, 1fr\)/);
 });
 
+test("quick entry stays compact on Home and opens from the center action", () => {
+  assert.match(app, /tab === "summary"/);
+  assert.doesNotMatch(app, /tab === "summary" \|\| tab === "entries"/);
+  assert.match(app, /className="app-tabs grid h-auto w-full grid-cols-5/);
+  assert.match(app, /className="app-quick-action"/);
+  assert.match(app, /<Dialog open=\{quickEntryOpen\}/);
+  assert.match(styles, /\.app-quick-action > span\s*\{[\s\S]*?border-radius:\s*999px/);
+});
+
+test("theme control lives in settings and destructive edits can be undone", () => {
+  assert.doesNotMatch(app, /className="theme-button"/);
+  assert.match(app, /className="settings-section theme-settings-row"/);
+  assert.match(app, /onCheckedChange=\{\(checked\) => changeTheme/);
+  assert.match(app, /label:\s*"Вернуть"/);
+  assert.match(app, /duration:\s*5_000/);
+});
+
 test("invoice texts open in a separate compact dialog", () => {
   assert.match(app, /setTextInvoice\(invoice\)/);
   assert.match(app, /<Dialog open=\{Boolean\(textInvoice\)\}/);

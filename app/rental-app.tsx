@@ -37,6 +37,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
@@ -927,11 +928,13 @@ export default function RentalApp() {
   const [copiedKey, setCopiedKey] = useState("");
   const [textInvoice, setTextInvoice] = useState<Invoice | null>(null);
   const [settlementOpen, setSettlementOpen] = useState(false);
+  const [quickEntryOpen, setQuickEntryOpen] = useState(false);
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">("light");
 
   const [entryDate, setEntryDate] = useState(today);
   const entryUnitsRef = useRef<HTMLInputElement>(null);
+  const quickEntryUnitsRef = useRef<HTMLInputElement>(null);
   const [editingEntry, setEditingEntry] = useState<Entry | null>(null);
   const [editUnits, setEditUnits] = useState("");
   const [editNote, setEditNote] = useState("");
@@ -983,6 +986,7 @@ export default function RentalApp() {
   const [documentBasis, setDocumentBasis] = useState("");
   const [openingBalance, setOpeningBalance] = useState("0");
 
+  const [downtimeListOpen, setDowntimeListOpen] = useState(false);
   const [downtimeOpen, setDowntimeOpen] = useState(false);
   const [editingDowntimeId, setEditingDowntimeId] = useState<number | null>(null);
   const [downtimeStart, setDowntimeStart] = useState(today);
@@ -1059,7 +1063,7 @@ export default function RentalApp() {
       try {
         if (isOfflineRuntime()) {
           saveOfflineAction(payload);
-          toast.success(success);
+          if (success) toast.success(success);
           await loadData();
           return true;
         }
@@ -1070,7 +1074,7 @@ export default function RentalApp() {
         });
         const result = (await response.json()) as { error?: string };
         if (!response.ok) throw new Error(result.error || "Не удалось сохранить");
-        toast.success(success);
+        if (success) toast.success(success);
         await loadData();
         return true;
       } catch (error) {
@@ -1082,6 +1086,22 @@ export default function RentalApp() {
     },
     [loadData],
   );
+
+  function showDeletedWithUndo(message: string, restore: () => Promise<unknown>) {
+    if (!offlineMode) {
+      toast.success(message);
+      return;
+    }
+    toast.success(message, {
+      duration: 5_000,
+      action: {
+        label: "Вернуть",
+        onClick: () => {
+          void restore();
+        },
+      },
+    });
+  }
 
   const rules = data?.rules ?? DEFAULT_RULES;
   const documentSettings = data?.settings ?? {
@@ -1179,8 +1199,7 @@ export default function RentalApp() {
     selectEntryDate(nextDate);
   }
 
-  function toggleTheme() {
-    const nextTheme = theme === "dark" ? "light" : "dark";
+  function changeTheme(nextTheme: "light" | "dark") {
     setTheme(nextTheme);
     window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
     applyTheme(nextTheme);
@@ -1198,11 +1217,15 @@ export default function RentalApp() {
       `Записано: ${number(units)} бутылок`,
     );
     if (ok) {
+      navigator.vibrate?.(12);
       const followingDate = nextIsoDate(entryDate);
       setEntryUnits("");
       setEntryNote("");
       if (followingDate.slice(0, 7) === month) selectEntryDate(followingDate);
-      window.requestAnimationFrame(() => entryUnitsRef.current?.focus());
+      window.requestAnimationFrame(() => {
+        if (quickEntryOpen) quickEntryUnitsRef.current?.focus();
+        else entryUnitsRef.current?.focus();
+      });
     }
   }
 
@@ -1590,7 +1613,16 @@ export default function RentalApp() {
       actionLabel: "Удалить",
       destructive: true,
       run: async () => {
-        await request({ action: "delete_downtime", id: downtime.id }, "Простой удалён");
+        const ok = await request({ action: "delete_downtime", id: downtime.id }, "");
+        if (ok) {
+          showDeletedWithUndo("Простой удалён", () => request({
+            action: "create_downtime",
+            startDate: downtime.startDate,
+            endDate: downtime.endDate,
+            reason: downtime.reason,
+            note: downtime.note,
+          }, "Простой восстановлен"));
+        }
       },
     });
   }
@@ -1670,10 +1702,18 @@ export default function RentalApp() {
       actionLabel: "Удалить",
       destructive: true,
       run: async () => {
-        await request(
+        const ok = await request(
           { action: "delete_entry", id: entry.id, entryDate: entry.entryDate },
-          "Запись удалена",
+          "",
         );
+        if (ok) {
+          showDeletedWithUndo("Запись удалена", () => request({
+            action: "save_entry",
+            entryDate: entry.entryDate,
+            units: entry.units,
+            note: entry.note,
+          }, "Запись восстановлена"));
+        }
       },
     });
   }
@@ -1697,7 +1737,18 @@ export default function RentalApp() {
       actionLabel: "Удалить",
       destructive: true,
       run: async () => {
-        await request({ action: "delete_payment", id: payment.id }, "Оплата удалена");
+        const ok = await request({ action: "delete_payment", id: payment.id }, "");
+        if (ok) {
+          showDeletedWithUndo("Оплата удалена", () => request({
+            action: "create_payment",
+            invoiceId: payment.invoiceId,
+            paymentDate: payment.paymentDate,
+            amountKopecks: payment.amountKopecks,
+            method: payment.method,
+            documentNumber: payment.documentNumber,
+            note: payment.note,
+          }, "Оплата восстановлена"));
+        }
       },
     });
   }
@@ -1709,7 +1760,19 @@ export default function RentalApp() {
       actionLabel: "Удалить",
       destructive: true,
       run: async () => {
-        await request({ action: "delete_expense", id: expense.id }, "Расход удалён");
+        const ok = await request({ action: "delete_expense", id: expense.id }, "");
+        if (ok) {
+          showDeletedWithUndo("Расход удалён", () => request({
+            action: "create_expense",
+            expenseDate: expense.expenseDate,
+            category: expense.category,
+            payer: expense.payer ?? "self",
+            amountKopecks: expense.amountKopecks,
+            method: expense.method,
+            documentNumber: expense.documentNumber,
+            note: expense.note,
+          }, "Расход восстановлен"));
+        }
       },
     });
   }
@@ -1992,16 +2055,6 @@ export default function RentalApp() {
               <FileSpreadsheet className="size-5" />
               <span className="hidden sm:inline">Excel</span>
             </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              className="theme-button"
-              onClick={toggleTheme}
-              aria-label={theme === "dark" ? "Включить светлую тему" : "Включить тёмную тему"}
-              title={theme === "dark" ? "Светлая тема" : "Тёмная тема"}
-            >
-              {theme === "dark" ? <Sun className="size-5" /> : <Moon className="size-5" />}
-            </Button>
             {offlineMode && (
               <Button
                 type="button"
@@ -2039,7 +2092,7 @@ export default function RentalApp() {
           />
         </section>
 
-        {data && !loading && !loadError && (tab === "summary" || tab === "entries") && (
+        {data && !loading && !loadError && tab === "summary" && (
           <section className="panel quick-entry quick-entry-primary">
             {data.closure ? (
               <div className="locked-note">
@@ -2106,7 +2159,7 @@ export default function RentalApp() {
           }}
           className="modern-tabs mt-4 gap-4"
         >
-          <TabsList className="app-tabs grid h-auto w-full grid-cols-4 bg-transparent p-0" aria-label="Разделы приложения">
+          <TabsList className="app-tabs grid h-auto w-full grid-cols-5 bg-transparent p-0" aria-label="Разделы приложения">
             <TabsTrigger value="summary" className="app-tab">
               <Calculator />
               <span>Главная</span>
@@ -2115,6 +2168,19 @@ export default function RentalApp() {
               <CalendarDays />
               <span>Дни</span>
             </TabsTrigger>
+            <button
+              type="button"
+              className="app-quick-action"
+              onClick={() => {
+                setQuickEntryOpen(true);
+                window.setTimeout(() => quickEntryUnitsRef.current?.focus(), 180);
+              }}
+              disabled={Boolean(data?.closure)}
+              aria-label={data?.closure ? "Месяц закрыт" : "Добавить запись бутылок"}
+            >
+              <span><Plus /></span>
+              <small>{data?.closure ? "Закрыт" : "Запись"}</small>
+            </button>
             <TabsTrigger value="invoices" className="app-tab">
               <ReceiptText />
               <span>Счета</span>
@@ -2137,25 +2203,28 @@ export default function RentalApp() {
           ) : data ? (
             <>
               <TabsContent value="summary" className="space-y-4">
-                <section className="summary-grid">
+                <section className="summary-grid summary-grid-modern">
+                  <article className="money-card">
+                    <span>Бутылок</span>
+                    <strong>{number(calculation.actualUnits)}</strong>
+                    <small>за выбранный месяц</small>
+                  </article>
+                  <article className="money-card">
+                    <span>Начислено</span>
+                    <strong>{money(calculation.totalKopecks)}</strong>
+                    <small>по условиям аренды</small>
+                  </article>
+                  <article className="money-card">
+                    <span>Топливо заказчика</span>
+                    <strong>{money(customerFuel)}</strong>
+                    <small>вычитается из аренды</small>
+                  </article>
                   <article className="money-card money-card-main">
-                    <span>К выставлению</span>
-                    <strong>{money(netRent)}</strong>
-                    <small>после учёта топлива заказчика</small>
-                  </article>
-                  <article className="money-card">
-                    <span>Выставлено</span>
-                    <strong>{money(totalInvoiced)}</strong>
-                  </article>
-                  <article className="money-card">
-                    <span>Остаток</span>
-                    <strong className={remainingToInvoice > 0 ? "text-amber-700" : "text-emerald-700"}>{money(remainingToInvoice)}</strong>
+                    <span>Осталось выставить</span>
+                    <strong>{money(remainingToInvoice)}</strong>
+                    <small>с учётом топлива и счетов</small>
                   </article>
                 </section>
-                <Button type="button" variant="outline" className="summary-details-button" onClick={() => setSettlementOpen(true)}>
-                  <Calculator />Расчёт подробнее
-                </Button>
-
                 <section className="dashboard-actions" aria-label="Быстрые действия">
                   <button type="button" onClick={() => openInvoice()}>
                     <span><ReceiptText /></span>
@@ -2165,16 +2234,16 @@ export default function RentalApp() {
                     <span><WalletCards /></span>
                     <strong>Расход</strong>
                   </button>
-                  <button type="button" onClick={() => offlineMode ? openDowntime() : void exportExcel()}>
+                  <button type="button" onClick={() => offlineMode ? setDowntimeListOpen(true) : void exportExcel()}>
                     <span>{offlineMode ? <CirclePause /> : <FileSpreadsheet />}</span>
                     <strong>{offlineMode ? "Простой" : "Выгрузить Excel"}</strong>
                   </button>
                 </section>
 
-                <section className="panel">
+                <section className="panel month-progress-compact">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <span className="eyebrow">Интенсивность эксплуатации</span>
+                      <span className="eyebrow">Объём месяца</span>
                       <div className="mt-1 flex items-baseline gap-2">
                         <strong className="text-3xl tracking-tight">{number(calculation.actualUnits)}</strong>
                         <span className="text-muted-foreground">из {number(calculation.includedUnits)} ед.</span>
@@ -2187,47 +2256,13 @@ export default function RentalApp() {
                     )}
                   </div>
                   <Progress value={progress} className="mt-4 h-3 bg-slate-100 [&_[data-slot=progress-indicator]]:bg-amber-500" />
-                  <div className="calculation-list mt-5">
-                    <div><span>Постоянная часть за полный месяц</span><strong>{money(calculation.baseFullKopecks)}</strong></div>
-                    {calculation.downtimeDays > 0 && <>
-                      <div><span>Простой автомобиля</span><strong>{calculation.downtimeDays} дн.</strong></div>
-                      {calculation.baseReductionKopecks > 0 && <div><span>Уменьшение за простой</span><strong>-{money(calculation.baseReductionKopecks)}</strong></div>}
-                    </>}
-                    <div><span>Постоянная часть Ф</span><strong>{money(calculation.baseKopecks)}</strong></div>
-                    <div><span>{number(calculation.actualUnits)} × {money(calculation.rateKopecks)}</span><strong>{money(calculation.intensityKopecks)}</strong></div>
-                    <div className="calculation-total"><span>Переменная часть</span><strong>{money(calculation.variableKopecks)}</strong></div>
+                  <div className="month-progress-footer">
+                    <span>{Math.round(progress)}% контрольного объёма</span>
+                    <Button type="button" variant="ghost" size="sm" onClick={() => setSettlementOpen(true)}>
+                      Расчёт <ChevronRight />
+                    </Button>
                   </div>
                 </section>
-
-                {offlineMode && (
-                  <section className="panel downtime-panel">
-                    <div className="section-heading">
-                      <div>
-                        <span className="eyebrow">Уменьшение аренды</span>
-                        <h2>Простой автомобиля</h2>
-                      </div>
-                      <Button type="button" variant="outline" size="sm" onClick={() => openDowntime()} disabled={Boolean(data.closure)}>
-                        <Plus />Добавить
-                      </Button>
-                    </div>
-                    <p className="downtime-explanation">Полные дни простоя уменьшают постоянную часть пропорционально календарным дням месяца.</p>
-                    {(data.downtimes ?? []).length === 0 ? (
-                      <p className="downtime-empty">Простоев за выбранный месяц нет.</p>
-                    ) : (
-                      <div className="downtime-list">
-                        {(data.downtimes ?? []).map((downtime) => (
-                          <article className="downtime-row" key={downtime.id}>
-                            <span><CirclePause />{downtimeLabel(downtime)}</span>
-                            <div>
-                              {!data.closure && <Button type="button" variant="ghost" size="icon" onClick={() => openDowntime(downtime)} aria-label="Редактировать простой"><Pencil /></Button>}
-                              {!data.closure && <Button type="button" variant="ghost" size="icon" onClick={() => askDeleteDowntime(downtime)} aria-label="Удалить простой"><Trash2 /></Button>}
-                            </div>
-                          </article>
-                        ))}
-                      </div>
-                    )}
-                  </section>
-                )}
 
                 <section className="panel cash-result">
                   <div>
@@ -2349,7 +2384,7 @@ export default function RentalApp() {
                     <div className="empty-state">
                       <CalendarDays />
                       <p>За эту неделю записей пока нет.</p>
-                      <Button type="button" variant="outline" onClick={() => entryUnitsRef.current?.focus()}>Добавить запись</Button>
+                      <Button type="button" variant="outline" onClick={() => setQuickEntryOpen(true)}>Добавить запись</Button>
                     </div>
                   ) : (
                     <div className="record-list">
@@ -2577,6 +2612,129 @@ export default function RentalApp() {
           </section>
         )}
       </main>
+
+      <Dialog open={downtimeListOpen} onOpenChange={setDowntimeListOpen}>
+        <DialogContent className="dialog-card downtime-list-dialog sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Простой автомобиля</DialogTitle>
+            <DialogDescription>Полные дни простоя уменьшают постоянную часть за выбранный месяц.</DialogDescription>
+          </DialogHeader>
+          <Button
+            type="button"
+            className="h-12 w-full"
+            disabled={Boolean(data?.closure)}
+            onClick={() => {
+              setDowntimeListOpen(false);
+              window.setTimeout(() => openDowntime(), 120);
+            }}
+          >
+            <Plus />Добавить простой
+          </Button>
+          {(data?.downtimes ?? []).length === 0 ? (
+            <div className="empty-state compact-empty-state">
+              <CirclePause />
+              <p>Простоев за выбранный месяц нет.</p>
+            </div>
+          ) : (
+            <div className="downtime-list">
+              {(data?.downtimes ?? []).map((downtime) => (
+                <article className="downtime-row" key={downtime.id}>
+                  <span><CirclePause />{downtimeLabel(downtime)}</span>
+                  {!data?.closure && (
+                    <div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => {
+                          setDowntimeListOpen(false);
+                          window.setTimeout(() => openDowntime(downtime), 120);
+                        }}
+                        aria-label="Редактировать простой"
+                      >
+                        <Pencil />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => {
+                          setDowntimeListOpen(false);
+                          window.setTimeout(() => askDeleteDowntime(downtime), 120);
+                        }}
+                        aria-label="Удалить простой"
+                      >
+                        <Trash2 />
+                      </Button>
+                    </div>
+                  )}
+                </article>
+              ))}
+            </div>
+          )}
+          {data?.closure && <p className="locked-note"><LockKeyhole />Месяц закрыт. Чтобы изменить простой, сначала откройте месяц.</p>}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={quickEntryOpen} onOpenChange={setQuickEntryOpen}>
+        <DialogContent
+          className="dialog-card quick-entry-dialog sm:max-w-md"
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            window.requestAnimationFrame(() => quickEntryUnitsRef.current?.focus());
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>Быстрая запись</DialogTitle>
+            <DialogDescription>Выберите день и укажите количество бутылок.</DialogDescription>
+          </DialogHeader>
+          {data?.closure ? (
+            <div className="locked-note">
+              <LockKeyhole className="size-5" />
+              Месяц закрыт — новые записи недоступны.
+            </div>
+          ) : (
+            <form onSubmit={saveEntry} className="dialog-form quick-entry-dialog-form">
+              <label>
+                <FieldLabel>Дата</FieldLabel>
+                <Input
+                  type="date"
+                  value={entryDate}
+                  min={monthBounds.start}
+                  max={monthBounds.end}
+                  onChange={(event) => selectEntryDate(event.target.value)}
+                  required
+                />
+              </label>
+              <label>
+                <div className="quick-dialog-label">
+                  <FieldLabel>Количество бутылок</FieldLabel>
+                  {selectedEntry && <span className="entry-existing-chip entry-existing-chip-light">Запись уже есть</span>}
+                </div>
+                <Input
+                  ref={quickEntryUnitsRef}
+                  type="number"
+                  min="0"
+                  step="1"
+                  inputMode="numeric"
+                  enterKeyHint="done"
+                  autoComplete="off"
+                  placeholder="Например, 145"
+                  value={entryUnits}
+                  onChange={(event) => setEntryUnits(event.target.value)}
+                  onFocus={(event) => event.currentTarget.select()}
+                  required
+                />
+              </label>
+              <Button type="submit" className="quick-dialog-save" disabled={busy || !entryUnits}>
+                {busy ? <LoaderCircle className="animate-spin" /> : selectedEntry ? <Pencil /> : <Plus />}
+                {selectedEntry ? "Обновить запись" : "Записать"}
+              </Button>
+              <p className="quick-dialog-hint">После сохранения дата автоматически перейдёт на следующий день.</p>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={settlementOpen} onOpenChange={setSettlementOpen}>
         <DialogContent className="dialog-card sm:max-w-md">
@@ -2869,6 +3027,22 @@ export default function RentalApp() {
             <DialogDescription>Здесь можно изменить постоянную часть, контрольный объём и ставку за единицу.</DialogDescription>
           </DialogHeader>
           <form onSubmit={saveSettings} className="dialog-form">
+            <div className="settings-section theme-settings-row">
+              <div>
+                <strong>Тёмная тема</strong>
+                <p>Можно переключать в любое время. Данные и расчёты не меняются.</p>
+              </div>
+              <div className="theme-settings-control">
+                <Sun aria-hidden="true" />
+                <Switch
+                  checked={theme === "dark"}
+                  onCheckedChange={(checked) => changeTheme(checked ? "dark" : "light")}
+                  aria-label="Тёмная тема"
+                />
+                <Moon aria-hidden="true" />
+              </div>
+            </div>
+
             <div className="settings-section">
               <strong>Условия аренды</strong>
               <label><FieldLabel>Постоянная часть за полный месяц, ₽</FieldLabel><Input type="number" min="0.01" step="0.01" inputMode="decimal" value={settingsDraft.baseKopecks / 100} onChange={(event) => setSettingsDraft((value) => ({ ...value, baseKopecks: Math.round(Number(event.target.value) * 100) }))} required /></label>
