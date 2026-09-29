@@ -33,6 +33,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { toast } from "sonner";
+import { calculateTaxYear, type TaxAdjustment, type TaxYearOptions } from "@/app/tax-calculation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -168,6 +169,9 @@ type DashboardData = {
   downtimes?: Downtime[];
   documentMeta?: DocumentMeta;
   auditLog?: AuditEvent[];
+  taxPayments?: Payment[];
+  taxAdjustments?: TaxAdjustment[];
+  taxOptions?: TaxYearOptions[];
 };
 
 type OfflineStore = {
@@ -182,6 +186,8 @@ type OfflineStore = {
   downtimes: Downtime[];
   documents: DocumentMeta[];
   auditLog: AuditEvent[];
+  taxAdjustments: TaxAdjustment[];
+  taxOptions: TaxYearOptions[];
 };
 
 type AndroidAppBridge = {
@@ -319,6 +325,8 @@ function emptyOfflineStore(): OfflineStore {
     downtimes: [],
     documents: [],
     auditLog: [],
+    taxAdjustments: [],
+    taxOptions: [],
   };
 }
 
@@ -351,6 +359,16 @@ function normalizeOfflineStore(value: unknown): OfflineStore {
     downtimes: Array.isArray(store.downtimes) ? store.downtimes : [],
     documents: Array.isArray(store.documents) ? store.documents : [],
     auditLog: Array.isArray(store.auditLog) ? store.auditLog.slice(0, 300) : [],
+    taxAdjustments: Array.isArray(store.taxAdjustments) ? store.taxAdjustments.filter((row) =>
+      row && Number.isSafeInteger(row.id) && validIsoDate(row.date) &&
+      Number.isSafeInteger(row.amountKopecks) && row.amountKopecks > 0 &&
+      (row.kind === "income" || row.kind === "tax_paid")
+    ) : [],
+    taxOptions: Array.isArray(store.taxOptions) ? store.taxOptions.filter((row) =>
+      row && Number.isInteger(row.year) && row.year >= 2020 && row.year <= 2100 &&
+      Number.isSafeInteger(row.deductionKopecks) && row.deductionKopecks >= 0 &&
+      typeof row.hasWorkers === "boolean"
+    ) : [],
   };
 }
 
@@ -417,6 +435,9 @@ function offlineDashboard(period: string): DashboardData {
     downtimes,
     documentMeta,
     auditLog: store.auditLog.filter((event) => event.period === period).slice(0, 100),
+    taxPayments: store.payments,
+    taxAdjustments: store.taxAdjustments,
+    taxOptions: store.taxOptions,
   };
 }
 
@@ -834,6 +855,25 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
       title: `Открыт ${monthLabel(period).toLowerCase()}`,
       detail: "Редактирование снова доступно",
     });
+  } else if (action === "save_tax_adjustment") {
+    const date = String(payload.date ?? "");
+    const amountKopecks = Number(payload.amountKopecks);
+    const kind = payload.kind;
+    if (!validIsoDate(date) || !Number.isSafeInteger(amountKopecks) || amountKopecks <= 0 ||
+      (kind !== "income" && kind !== "tax_paid")) throw new Error("Проверьте налоговую запись");
+    const id = Number(payload.id) || nextId(store.taxAdjustments);
+    store.taxAdjustments = store.taxAdjustments.filter((row) => row.id !== id);
+    store.taxAdjustments.push({ id, date, amountKopecks, kind, note: String(payload.note ?? "").trim().slice(0, 120) });
+  } else if (action === "delete_tax_adjustment") {
+    store.taxAdjustments = store.taxAdjustments.filter((row) => row.id !== Number(payload.id));
+  } else if (action === "save_tax_options") {
+    const year = Number(payload.year);
+    const deductionKopecks = Number(payload.deductionKopecks);
+    if (!Number.isInteger(year) || year < 2020 || year > 2100 ||
+      !Number.isSafeInteger(deductionKopecks) || deductionKopecks < 0 ||
+      typeof payload.hasWorkers !== "boolean") throw new Error("Проверьте налоговые настройки");
+    store.taxOptions = store.taxOptions.filter((row) => row.year !== year);
+    store.taxOptions.push({ year, deductionKopecks, hasWorkers: payload.hasWorkers });
   } else {
     throw new Error("Неизвестное действие");
   }
@@ -1122,6 +1162,13 @@ export default function RentalApp() {
   const [quickEntryOpen, setQuickEntryOpen] = useState(false);
   const [closeMonthOpen, setCloseMonthOpen] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
+  const [taxOpen, setTaxOpen] = useState(false);
+  const [taxKind, setTaxKind] = useState<TaxAdjustment["kind"]>("income");
+  const [taxDate, setTaxDate] = useState(today);
+  const [taxAmount, setTaxAmount] = useState("");
+  const [taxNote, setTaxNote] = useState("");
+  const [taxDeduction, setTaxDeduction] = useState("0");
+  const [taxHasWorkers, setTaxHasWorkers] = useState(false);
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [themeMode, setThemeMode] = useState<ThemeMode>("system");
@@ -1262,6 +1309,41 @@ export default function RentalApp() {
     setDocumentBasis(meta.basis);
     setOpeningBalance(String(meta.openingBalanceKopecks / 100));
   }, [data, month, today]);
+
+  const taxYear = Number(month.slice(0, 4));
+  const taxQuarter = Math.ceil(Number(month.slice(5, 7)) / 3);
+  const taxOptions = data?.taxOptions?.find((item) => item.year === taxYear)
+    ?? { year: taxYear, deductionKopecks: 0, hasWorkers: false };
+  const tax = calculateTaxYear(taxYear, taxQuarter, data?.taxPayments ?? [],
+    data?.taxAdjustments ?? [], taxOptions);
+
+  function openTax() {
+    setTaxDeduction(String(taxOptions.deductionKopecks / 100));
+    setTaxHasWorkers(taxOptions.hasWorkers);
+    setTaxDate(month === today.slice(0, 7) ? today : `${month}-01`);
+    setTaxKind("income");
+    setTaxAmount("");
+    setTaxNote("");
+    setTaxOpen(true);
+  }
+
+  async function saveTaxOptions(event: FormEvent) {
+    event.preventDefault();
+    const deductionKopecks = toSignedKopecks(taxDeduction);
+    if (deductionKopecks === null || deductionKopecks < 0) { toast.error("Проверьте сумму взносов"); return; }
+    await request({ action: "save_tax_options", year: taxYear, deductionKopecks, hasWorkers: taxHasWorkers }, "Расчёт налога обновлён");
+  }
+
+  async function saveTaxAdjustment(event: FormEvent) {
+    event.preventDefault();
+    const amountKopecks = toKopecks(taxAmount);
+    if (!amountKopecks || !validIsoDate(taxDate) || !taxDate.startsWith(String(taxYear))) {
+      toast.error("Проверьте сумму и дату в выбранном году"); return;
+    }
+    const ok = await request({ action: "save_tax_adjustment", date: taxDate,
+      amountKopecks, kind: taxKind, note: taxNote }, "Запись учтена");
+    if (ok) { setTaxAmount(""); setTaxNote(""); }
+  }
 
   useEffect(() => {
     if (!offlineMode || window.sessionStorage.getItem("arenda-ts-backup-reminder-shown")) return;
@@ -2522,6 +2604,12 @@ export default function RentalApp() {
                     Показать расчёт <ChevronRight />
                   </button>
                 </section>
+                {offlineMode && <section className="panel tax-summary">
+                  <div><span className="eyebrow">УСН 6% · {taxQuarter} квартал {taxYear}</span>
+                    <strong>{money(tax.outstandingKopecks)}</strong>
+                    <small>Ориентир к доплате с учётом отмеченных платежей</small></div>
+                  <Button type="button" variant="outline" onClick={openTax}>Открыть расчёт</Button>
+                </section>}
                 <section className="dashboard-actions" aria-label="Быстрые действия">
                   <button type="button" onClick={() => openInvoice()}>
                     <span><ReceiptText /></span>
@@ -3184,6 +3272,50 @@ export default function RentalApp() {
               <p className="quick-dialog-hint">После сохранения дата автоматически перейдёт на следующий день.</p>
             </form>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={taxOpen} onOpenChange={setTaxOpen}>
+        <DialogContent className="dialog-card tax-dialog sm:max-w-lg">
+          <DialogHeader><DialogTitle>УСН 6% · {taxYear}</DialogTitle>
+            <DialogDescription>Оплаты учитываются по дате поступления денег, даже если счёт выставлен за другой месяц.</DialogDescription>
+          </DialogHeader>
+          <div className="tax-dialog-scroll">
+            <div className="tax-figures">
+              <div><span>Аренда с начала года</span><strong>{money(tax.rentalKopecks)}</strong></div>
+              <div><span>Прочие доходы ИП на УСН</span><strong>{money(tax.otherKopecks)}</strong></div>
+              <div><span>Резерв 6% с поступлений квартала</span><strong>{money(tax.reserveKopecks)}</strong></div>
+              <div><span>УСН 6% с начала года</span><strong>{money(tax.grossKopecks)}</strong></div>
+              <div><span>Вычет по взносам</span><strong>−{money(tax.deductionKopecks)}</strong></div>
+              <div><span>Отмечено уплаченным</span><strong>−{money(tax.paidKopecks)}</strong></div>
+              <div className="tax-due"><span>Ориентир к доплате за {taxQuarter} квартал</span><strong>{money(tax.outstandingKopecks)}</strong></div>
+            </div>
+            <p className="help-note">Расчёт накопительно с 1 января по конец квартала. Отдельно предполагаемый взнос 1% сверх 300 000 ₽ дохода: {money(tax.extraInsuranceKopecks)}. Это взнос ИП, не дополнительный налог 6%.</p>
+            <form onSubmit={(event) => void saveTaxOptions(event)} className="dialog-form tax-form">
+              <strong>Уменьшение налога</strong>
+              <label><FieldLabel>Взносы для вычета в {taxYear} году, ₽</FieldLabel>
+                <Input inputMode="decimal" value={taxDeduction} onChange={(event) => setTaxDeduction(event.target.value)} /></label>
+              <label className="tax-checkbox"><input type="checkbox" checked={taxHasWorkers} onChange={(event) => setTaxHasWorkers(event.target.checked)} /> Есть выплаты работникам или исполнителям на этом ИП</label>
+              <p className="help-note">Укажите только взносы, которые применяете к УСН и ещё не использовали для патента. При выплатах физлицам вычет ограничен половиной налога. Фиксированные взносы за полный 2026 год — 57 390 ₽; их уплату учитывайте отдельно.</p>
+              <Button type="submit" variant="outline" disabled={busy}>Сохранить вычет</Button>
+            </form>
+            <form onSubmit={(event) => void saveTaxAdjustment(event)} className="dialog-form tax-form">
+              <strong>Другой доход или перечисленный налог</strong>
+              <Select value={taxKind} onValueChange={(value) => setTaxKind(value as TaxAdjustment["kind"])}>
+                <SelectTrigger aria-label="Тип записи"><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="income">Другой доход ИП на УСН</SelectItem><SelectItem value="tax_paid">Уплатил УСН</SelectItem></SelectContent>
+              </Select>
+              <div className="grid grid-cols-2 gap-3"><label><FieldLabel>Дата</FieldLabel><Input type="date" value={taxDate} onChange={(event) => setTaxDate(event.target.value)} required /></label>
+                <label><FieldLabel>Сумма, ₽</FieldLabel><Input inputMode="decimal" value={taxAmount} onChange={(event) => setTaxAmount(event.target.value)} required /></label></div>
+              <label><FieldLabel>Примечание</FieldLabel><Input value={taxNote} onChange={(event) => setTaxNote(event.target.value)} /></label>
+              <Button type="submit" disabled={busy}>Добавить запись</Button>
+            </form>
+            <div className="tax-records">{(data?.taxAdjustments ?? []).filter((row) => row.date.startsWith(String(taxYear)))
+              .sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).map((row) =>
+                <div key={row.id}><span>{dateLabel(row.date)} · {row.kind === "income" ? "Доход" : "УСН уплачен"}{row.note ? ` · ${row.note}` : ""}</span>
+                  <strong>{money(row.amountKopecks)}</strong>
+                  <Button type="button" variant="ghost" size="icon" aria-label="Удалить налоговую запись" onClick={() => void request({ action: "delete_tax_adjustment", id: row.id }, "Запись удалена")}><Trash2 /></Button></div>)}</div>
+          </div>
         </DialogContent>
       </Dialog>
 

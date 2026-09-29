@@ -3884,3 +3884,19 @@ html[data-theme="dark"] .month-tools-cash strong.negative {
     grid-column: auto;
   }
 }
+.tax-summary { display:flex; align-items:center; justify-content:space-between; gap:1rem; }
+.tax-summary > div { display:grid; gap:.2rem; }
+.tax-summary strong { font-size:1.55rem; font-variant-numeric:tabular-nums; }
+.tax-summary small { color:var(--muted-foreground); font-size:.85rem; }
+.tax-dialog-scroll { overflow-y:auto; max-height:min(70vh, 680px); padding-right:.25rem; }
+.tax-figures { display:grid; gap:.55rem; padding:.8rem 0; }
+.tax-figures > div, .tax-records > div { display:flex; align-items:center; justify-content:space-between; gap:.7rem; }
+.tax-figures strong, .tax-records strong { white-space:nowrap; font-variant-numeric:tabular-nums; }
+.tax-due { border-top:1px solid var(--border); padding-top:.7rem; font-weight:700; }
+.tax-form { border-top:1px solid var(--border); padding:1rem 0; }
+.tax-checkbox { display:flex!important; align-items:center; gap:.6rem; }
+.tax-checkbox input { width:1.15rem; height:1.15rem; flex:none; }
+.tax-records { display:grid; gap:.55rem; }
+.tax-records > div { border-top:1px solid var(--border); padding-top:.6rem; font-size:.87rem; }
+.tax-records span { flex:1; min-width:0; }
+@media(max-width:480px) { .tax-summary { align-items:flex-start; flex-direction:column; } }
