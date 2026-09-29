@@ -61,8 +61,8 @@ test("theme control lives in settings and destructive edits can be undone", () =
   assert.match(app, /className="settings-section theme-settings-row"/);
   assert.match(app, /value=\{themeMode\}/);
   assert.match(app, /value="system">Как на телефоне/);
-  assert.match(app, /label:\s*"Вернуть"/);
-  assert.match(app, /duration:\s*5_000/);
+  assert.match(app, /label:\s*"Отменить"/);
+  assert.match(app, /duration:\s*8_000/);
 });
 
 test("invoice texts open in a separate compact dialog", () => {

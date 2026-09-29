@@ -7,6 +7,7 @@ import {
   Calculator,
   CarFront,
   CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Copy,
@@ -35,7 +36,6 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -420,7 +420,7 @@ function offlineDashboard(period: string): DashboardData {
   };
 }
 
-function saveOfflineAction(payload: Record<string, unknown>) {
+export function saveOfflineAction(payload: Record<string, unknown>) {
   const store = readOfflineStore();
   const action = payload.action;
 
@@ -553,6 +553,41 @@ function saveOfflineAction(payload: Record<string, unknown>) {
         detail: money(invoice.amountKopecks),
       });
     }
+  } else if (action === "restore_invoice") {
+    const invoice = payload.invoice as Invoice | undefined;
+    const payments = payload.payments as Payment[] | undefined;
+    if (
+      !invoice || !Number.isSafeInteger(invoice.id) || invoice.id <= 0 ||
+      !/^\d{4}-\d{2}$/.test(invoice.period) ||
+      !validIsoDate(invoice.invoiceDate) ||
+      !invoice.invoiceNumber?.trim() ||
+      !["fixed", "variable", "other"].includes(invoice.kind) ||
+      !Number.isSafeInteger(invoice.amountKopecks) || invoice.amountKopecks <= 0 ||
+      !Array.isArray(payments) || payments.some((payment) => (
+        !Number.isSafeInteger(payment.id) || payment.id <= 0 ||
+        payment.invoiceId !== invoice.id ||
+        !validIsoDate(payment.paymentDate) ||
+        !Number.isSafeInteger(payment.amountKopecks) || payment.amountKopecks <= 0 ||
+        !["bank", "cash"].includes(payment.method)
+      ))
+    ) throw new Error("Не удалось восстановить счёт");
+    const restoredId = store.invoices.some((row) => row.id === invoice.id)
+      ? nextId(store.invoices)
+      : invoice.id;
+    store.invoices.push({ ...invoice, id: restoredId });
+    for (const payment of payments) {
+      store.payments.push({
+        ...payment,
+        invoiceId: restoredId,
+        id: store.payments.some((row) => row.id === payment.id) ? nextId(store.payments) : payment.id,
+      });
+    }
+    appendAudit(store, {
+      period: invoice.period,
+      entity: "invoice",
+      title: `Восстановлен счёт №${invoice.invoiceNumber}`,
+      detail: `${money(invoice.amountKopecks)} · ${number(payments.length)} оплат`,
+    });
   } else if (action === "create_payment" || action === "update_payment") {
     const invoiceId = Number(payload.invoiceId);
     const amountKopecks = Number(payload.amountKopecks);
@@ -1279,9 +1314,9 @@ export default function RentalApp() {
       return;
     }
     toast.success(message, {
-      duration: 5_000,
+      duration: 8_000,
       action: {
-        label: "Вернуть",
+        label: "Отменить",
         onClick: () => {
           void restore();
         },
@@ -1972,13 +2007,21 @@ export default function RentalApp() {
   }
 
   function askDeleteInvoice(invoice: Invoice) {
+    const linkedPayments = data?.payments.filter((payment) => payment.invoiceId === invoice.id) ?? [];
     setConfirm({
       title: `Удалить счёт №${invoice.invoiceNumber}?`,
       description: "Все связанные с ним оплаты тоже будут удалены.",
       actionLabel: "Удалить счёт",
       destructive: true,
       run: async () => {
-        await request({ action: "delete_invoice", id: invoice.id }, "Счёт удалён");
+        const ok = await request({ action: "delete_invoice", id: invoice.id }, "");
+        if (ok) {
+          showDeletedWithUndo("Счёт удалён", () => request({
+            action: "restore_invoice",
+            invoice,
+            payments: linkedPayments,
+          }, "Счёт и оплаты восстановлены"));
+        }
       },
     });
   }
@@ -2461,27 +2504,23 @@ export default function RentalApp() {
           ) : data ? (
             <>
               <TabsContent value="summary" className="space-y-4">
-                <section className="summary-grid summary-grid-modern">
-                  <article className="money-card money-card-units">
-                    <span>Бутылок</span>
-                    <strong>{number(calculation.actualUnits)}</strong>
-                    <small>за выбранный месяц</small>
-                  </article>
-                  <article className="money-card money-card-accrued">
-                    <span>Начислено</span>
-                    <strong>{money(calculation.totalKopecks)}</strong>
-                    <small>по условиям аренды</small>
-                  </article>
-                  <article className="money-card money-card-fuel">
-                    <span>Топливо заказчика</span>
-                    <strong>{money(customerFuel)}</strong>
-                    <small>вычитается из аренды</small>
-                  </article>
-                  <article className="money-card money-card-main">
+                <section className="settlement-hero" aria-label="Расчёт с заказчиком за месяц">
+                  <div className="settlement-hero-heading">
+                    <span>Расчёт с заказчиком · {monthLabel(month)}</span>
+                    {data.closure ? <LockKeyhole aria-label="Месяц закрыт" /> : null}
+                  </div>
+                  <div className="settlement-hero-result">
                     <span>Осталось выставить</span>
                     <strong>{money(remainingToInvoice)}</strong>
-                    <small>с учётом топлива и счетов</small>
-                  </article>
+                  </div>
+                  <div className="settlement-hero-breakdown">
+                    <div><span>Начислено</span><strong>{money(calculation.totalKopecks)}</strong></div>
+                    <div><span>Топливо заказчика</span><strong>−{money(customerFuel)}</strong></div>
+                    <div><span>Уже выставлено</span><strong>−{money(totalInvoiced)}</strong></div>
+                  </div>
+                  <button type="button" className="settlement-hero-link" onClick={() => setSettlementOpen(true)}>
+                    Показать расчёт <ChevronRight />
+                  </button>
                 </section>
                 <section className="dashboard-actions" aria-label="Быстрые действия">
                   <button type="button" onClick={() => openInvoice()}>
@@ -2496,12 +2535,6 @@ export default function RentalApp() {
                     <span>{offlineMode ? <CirclePause /> : <FileSpreadsheet />}</span>
                     <strong>{offlineMode ? "Простой" : "Выгрузить Excel"}</strong>
                   </button>
-                  {offlineMode && (
-                    <button type="button" onClick={() => setAuditOpen(true)}>
-                      <span><History /></span>
-                      <strong>История</strong>
-                    </button>
-                  )}
                 </section>
 
                 <section className="panel month-progress-compact">
@@ -2513,18 +2546,11 @@ export default function RentalApp() {
                         <span className="text-muted-foreground">из {number(calculation.includedUnits)} ед.</span>
                       </div>
                     </div>
-                    {data.closure ? (
-                      <Badge className="status-closed"><LockKeyhole />Закрыт</Badge>
-                    ) : (
-                      <Badge variant="outline" className="status-open">Открыт</Badge>
-                    )}
+                    <span className="month-progress-state">{data.closure ? "Месяц закрыт" : "Месяц открыт"}</span>
                   </div>
                   <Progress value={progress} className="mt-4 h-3 bg-slate-100 [&_[data-slot=progress-indicator]]:bg-amber-500" />
                   <div className="month-progress-footer">
                     <span>{unitsUntilControl > 0 ? `До ${number(calculation.includedUnits)} осталось ${number(unitsUntilControl)} ед.` : `Контрольный объём выполнен на ${Math.round(progress)}%`}</span>
-                    <Button type="button" variant="ghost" size="sm" onClick={() => setSettlementOpen(true)}>
-                      Расчёт <ChevronRight />
-                    </Button>
                   </div>
                   {!data.closure && missingMonthDays.length > 0 && (
                     <button
@@ -2542,29 +2568,40 @@ export default function RentalApp() {
                   )}
                 </section>
 
-                <section className="panel cash-result">
-                  <div>
-                    <span className="eyebrow">Денежный результат месяца</span>
-                    <strong className={cashResult < 0 ? "text-rose-700" : "text-emerald-700"}>{money(cashResult)}</strong>
-                    <p>Полученные оплаты минус собственные расходы. Топливо заказчика повторно не вычитается.</p>
+                <details className="panel month-tools">
+                  <summary>
+                    <span><strong>Отчёты и управление месяцем</strong><small>Денежный результат, Excel, история</small></span>
+                    <ChevronDown aria-hidden="true" />
+                  </summary>
+                  <div className="month-tools-body">
+                    <div className="month-tools-cash">
+                      <Banknote aria-hidden="true" />
+                      <div>
+                        <span>Оплаты минус собственные расходы</span>
+                        <strong className={cashResult < 0 ? "negative" : ""}>{money(cashResult)}</strong>
+                      </div>
+                    </div>
+                    <div className="month-tools-actions">
+                      {data.closure ? (
+                        <Button type="button" variant="outline" onClick={askReopenMonth}>
+                          <UnlockKeyhole />Открыть месяц
+                        </Button>
+                      ) : (
+                        <Button type="button" variant="outline" onClick={askCloseMonth}>
+                          <LockKeyhole />Закрыть месяц
+                        </Button>
+                      )}
+                      <Button type="button" variant="outline" onClick={exportExcel}>
+                        <Download />Скачать Excel
+                      </Button>
+                      {offlineMode && (
+                        <Button type="button" variant="outline" onClick={() => setAuditOpen(true)}>
+                          <History />История изменений
+                        </Button>
+                      )}
+                    </div>
                   </div>
-                  <Banknote className="size-8" />
-                </section>
-
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {data.closure ? (
-                    <Button type="button" variant="outline" onClick={askReopenMonth} className="h-12">
-                      <UnlockKeyhole />Открыть месяц
-                    </Button>
-                  ) : (
-                    <Button type="button" variant="outline" onClick={askCloseMonth} className="h-12">
-                      <LockKeyhole />Закрыть месяц
-                    </Button>
-                  )}
-                  <Button type="button" onClick={exportExcel} className="h-12">
-                    <Download />Скачать Excel
-                  </Button>
-                </div>
+                </details>
               </TabsContent>
 
               <TabsContent value="entries" className="space-y-4">
