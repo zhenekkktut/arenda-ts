@@ -2937,3 +2937,569 @@ html[data-theme="dark"] .theme-settings-row strong {
     padding: 0.85rem;
   }
 }
+
+/* Финансовая визуализация и контроль данных */
+.money-card,
+.money-card strong,
+.week-totals strong,
+.expense-total strong,
+.invoice-amounts strong,
+.finance-summary strong,
+.month-close-checklist strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.money-card:not(.money-card-main) {
+  position: relative;
+  overflow: hidden;
+}
+
+.money-card:not(.money-card-main)::before {
+  content: "";
+  position: absolute;
+  top: 0.85rem;
+  right: 0.85rem;
+  width: 0.48rem;
+  height: 0.48rem;
+  border-radius: 999px;
+  background: #2f8ff0;
+  box-shadow: 0 0 0 0.28rem rgba(47, 143, 240, 0.1);
+}
+
+.money-card-accrued:not(.money-card-main)::before {
+  background: #7c65df;
+  box-shadow: 0 0 0 0.28rem rgba(124, 101, 223, 0.1);
+}
+
+.money-card-fuel:not(.money-card-main)::before {
+  background: #f1aa32;
+  box-shadow: 0 0 0 0.28rem rgba(241, 170, 50, 0.12);
+}
+
+.dashboard-actions {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.dashboard-actions button:nth-child(4) > span {
+  color: #d56a72;
+  background: #fff0f1;
+}
+
+.missing-days-callout {
+  display: flex;
+  width: 100%;
+  min-height: 2.75rem;
+  cursor: pointer;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 0.35rem;
+  padding: 0.55rem 0.65rem;
+  border: 0;
+  border-radius: 0.85rem;
+  color: #a44b52;
+  background: #fff2f2;
+  font-size: 0.76rem;
+  font-weight: 720;
+  text-align: left;
+}
+
+.missing-days-callout svg {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+}
+
+.missing-days-callout svg:last-child {
+  margin-left: auto;
+}
+
+.week-day {
+  min-height: 6.3rem;
+  gap: 0.12rem;
+}
+
+.week-day-chart {
+  position: relative;
+  display: block;
+  width: 0.34rem;
+  height: 1.45rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e4eaf1;
+}
+
+.week-day-chart i {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: inherit;
+  background: linear-gradient(180deg, #59b8ff, #2b83dd);
+  transition: height 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.week-day-missing:not(.week-day-selected) {
+  border-color: #f1c8cb;
+  background: #fff7f7;
+}
+
+.week-day-missing:not(.week-day-selected) small {
+  color: #c15c64;
+}
+
+.week-day-selected .week-day-chart {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.week-day-selected .week-day-chart i {
+  background: #fff;
+}
+
+.week-missing-action {
+  display: flex;
+  min-height: 2.75rem;
+  cursor: pointer;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 0.7rem;
+  border: 0;
+  border-radius: 0.85rem;
+  color: #8b4a4f;
+  background: #fff2f2;
+  font-size: 0.75rem;
+}
+
+.week-missing-action strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  color: #b44f58;
+  font-weight: 770;
+}
+
+.week-missing-action svg {
+  width: 0.95rem;
+}
+
+.expense-visual {
+  display: grid;
+  grid-template-columns: 8.2rem minmax(0, 1fr);
+  align-items: center;
+  gap: 1rem;
+}
+
+.expense-donut {
+  display: grid;
+  width: 8.2rem;
+  height: 8.2rem;
+  place-items: center;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px rgba(16, 24, 40, 0.04);
+}
+
+.expense-donut > div {
+  display: grid;
+  width: 5.55rem;
+  height: 5.55rem;
+  place-items: center;
+  align-content: center;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 3px 12px rgba(16, 24, 40, 0.08);
+}
+
+.expense-donut span {
+  color: #8190a2;
+  font-size: 0.65rem;
+  font-weight: 740;
+  text-transform: uppercase;
+}
+
+.expense-donut strong {
+  max-width: 4.8rem;
+  overflow: hidden;
+  color: #172033;
+  font-size: 0.9rem;
+  font-weight: 820;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.expense-legend {
+  display: grid;
+  max-height: 9rem;
+  gap: 0.2rem;
+  overflow-y: auto;
+}
+
+.expense-legend > p {
+  margin: 0.45rem 0 0;
+  color: #7b8797;
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+.expense-legend button {
+  display: grid;
+  grid-template-columns: 0.5rem minmax(0, 1fr) auto;
+  min-height: 1.8rem;
+  cursor: pointer;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.15rem 0;
+  border: 0;
+  color: #546173;
+  background: transparent;
+  font-size: 0.72rem;
+  text-align: left;
+}
+
+.expense-legend button i {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+}
+
+.expense-legend button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.expense-legend button strong {
+  color: #243247;
+  font-weight: 760;
+  white-space: nowrap;
+}
+
+.expense-templates {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.expense-templates > span {
+  color: #7d899a;
+  font-size: 0.72rem;
+  font-weight: 740;
+}
+
+.expense-templates > div {
+  display: flex;
+  gap: 0.45rem;
+  overflow-x: auto;
+  padding-bottom: 0.1rem;
+  scrollbar-width: none;
+}
+
+.expense-templates > div::-webkit-scrollbar {
+  display: none;
+}
+
+.expense-templates button {
+  display: inline-flex;
+  min-height: 2.55rem;
+  cursor: pointer;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  color: #435166;
+  background: #fff;
+  font-size: 0.73rem;
+  font-weight: 720;
+}
+
+.expense-templates svg {
+  width: 1rem;
+  color: #d89a27;
+}
+
+.invoice-timeline {
+  position: relative;
+  padding-left: 0.72rem;
+}
+
+.invoice-timeline::before {
+  content: "";
+  position: absolute;
+  top: 1.2rem;
+  bottom: 1.2rem;
+  left: 0.08rem;
+  width: 2px;
+  border-radius: 999px;
+  background: #e2e8f0;
+}
+
+.invoice-card::before {
+  content: "";
+  position: absolute;
+  top: 1.35rem;
+  left: -0.98rem;
+  width: 0.68rem;
+  height: 0.68rem;
+  border: 0.16rem solid #fff;
+  border-radius: 999px;
+  background: #2f8ff0;
+  box-shadow: 0 0 0 1px #cbd8e5;
+}
+
+.invoice-card {
+  position: relative;
+}
+
+.invoice-card-paid::before { background: #2fa878; }
+.invoice-card-partial::before { background: #e4a22c; }
+.invoice-card-overdue::before { background: #dc626b; }
+
+.backup-status {
+  display: inline-flex;
+  margin-top: 0.7rem;
+  color: #227c5a;
+  font-size: 0.72rem;
+  font-weight: 740;
+}
+
+.backup-status-due {
+  color: #a56518;
+}
+
+.month-close-checklist {
+  display: grid;
+  gap: 0.38rem;
+}
+
+.month-close-checklist > div {
+  display: flex;
+  min-height: 2.7rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: 0.82rem;
+  background: #f4f7fa;
+}
+
+.month-close-checklist span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.45rem;
+  color: #66758a;
+  font-size: 0.76rem;
+}
+
+.month-close-checklist svg {
+  width: 1rem;
+  height: 1rem;
+  color: #3989d7;
+}
+
+.month-close-checklist strong {
+  color: #172033;
+  font-size: 0.83rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.month-close-checklist .check-warning {
+  background: #fff2f2;
+}
+
+.month-close-checklist .check-warning span,
+.month-close-checklist .check-warning svg,
+.month-close-checklist .check-warning strong {
+  color: #b65159;
+}
+
+.month-close-checklist .check-ok span,
+.month-close-checklist .check-ok svg,
+.month-close-checklist .check-ok strong {
+  color: #25845f;
+}
+
+.month-close-checklist .month-close-total {
+  background: #edf6ff;
+}
+
+.month-close-checklist .month-close-remaining {
+  background: #fff6df;
+}
+
+.close-missing-link {
+  display: flex;
+  width: 100%;
+  min-height: 2.7rem;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  border: 0;
+  border-radius: 0.85rem;
+  color: #b44f58;
+  background: transparent;
+  font-size: 0.76rem;
+  font-weight: 760;
+}
+
+.close-missing-link svg {
+  width: 1rem;
+}
+
+.audit-list {
+  display: grid;
+  max-height: 58dvh;
+  gap: 0.2rem;
+  overflow-y: auto;
+  padding-right: 0.15rem;
+}
+
+.audit-row {
+  display: grid;
+  grid-template-columns: 2.35rem minmax(0, 1fr);
+  gap: 0.65rem;
+  padding: 0.65rem 0;
+  border-bottom: 1px solid #edf0f4;
+}
+
+.audit-row:last-child {
+  border-bottom: 0;
+}
+
+.audit-icon {
+  display: grid;
+  width: 2.25rem;
+  height: 2.25rem;
+  place-items: center;
+  border-radius: 0.78rem;
+  color: #2e86dc;
+  background: #edf6ff;
+}
+
+.audit-icon svg {
+  width: 1.05rem;
+}
+
+.audit-row > div {
+  min-width: 0;
+}
+
+.audit-row strong {
+  display: block;
+  color: #243247;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.audit-row p {
+  margin: 0.16rem 0 0;
+  color: #69778a;
+  font-size: 0.74rem;
+}
+
+.audit-row time {
+  display: block;
+  margin-top: 0.22rem;
+  color: #9aa4b2;
+  font-size: 0.66rem;
+}
+
+.theme-mode-select {
+  width: 9.5rem !important;
+  min-height: 2.65rem !important;
+}
+
+html[data-theme="dark"] .dashboard-actions button:nth-child(4) > span {
+  color: #ff9ca2;
+  background: #40272e;
+}
+
+html[data-theme="dark"] .missing-days-callout,
+html[data-theme="dark"] .week-missing-action,
+html[data-theme="dark"] .week-day-missing:not(.week-day-selected),
+html[data-theme="dark"] .month-close-checklist .check-warning {
+  color: #ffabb1;
+  border-color: #5a343b;
+  background: #382329;
+}
+
+html[data-theme="dark"] .week-day-chart {
+  background: #303b4b;
+}
+
+html[data-theme="dark"] .expense-donut > div,
+html[data-theme="dark"] .expense-templates button {
+  color: #edf2f8;
+  border-color: #2c3747;
+  background: #151c28;
+}
+
+html[data-theme="dark"] .expense-donut strong,
+html[data-theme="dark"] .expense-legend button strong,
+html[data-theme="dark"] .month-close-checklist strong,
+html[data-theme="dark"] .audit-row strong {
+  color: #edf2f8;
+}
+
+html[data-theme="dark"] .expense-donut span,
+html[data-theme="dark"] .expense-legend button,
+html[data-theme="dark"] .expense-legend > p {
+  color: #9aa8ba;
+}
+
+html[data-theme="dark"] .invoice-timeline::before,
+html[data-theme="dark"] .audit-row {
+  border-color: #293445;
+  background-color: transparent;
+}
+
+html[data-theme="dark"] .invoice-card::before {
+  border-color: #0c111b;
+  box-shadow: 0 0 0 1px #435166;
+}
+
+html[data-theme="dark"] .month-close-checklist > div,
+html[data-theme="dark"] .audit-icon {
+  color: #cdd7e5;
+  background: #1e2836;
+}
+
+html[data-theme="dark"] .month-close-checklist .month-close-total {
+  background: #193048;
+}
+
+html[data-theme="dark"] .month-close-checklist .month-close-remaining {
+  background: #352e1d;
+}
+
+html[data-theme="dark"] .audit-row p,
+html[data-theme="dark"] .audit-row time {
+  color: #94a3b5;
+}
+
+@media (max-width: 390px) {
+  .dashboard-actions button {
+    min-height: 5.1rem;
+  }
+
+  .expense-visual {
+    grid-template-columns: 7.2rem minmax(0, 1fr);
+    gap: 0.75rem;
+  }
+
+  .expense-donut {
+    width: 7.2rem;
+    height: 7.2rem;
+  }
+
+  .expense-donut > div {
+    width: 4.85rem;
+    height: 4.85rem;
+  }
+
+  .week-day {
+    min-height: 5.95rem;
+  }
+}

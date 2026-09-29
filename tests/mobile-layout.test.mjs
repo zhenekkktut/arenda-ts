@@ -59,7 +59,8 @@ test("quick entry stays compact on Home and opens from the center action", () =>
 test("theme control lives in settings and destructive edits can be undone", () => {
   assert.doesNotMatch(app, /className="theme-button"/);
   assert.match(app, /className="settings-section theme-settings-row"/);
-  assert.match(app, /onCheckedChange=\{\(checked\) => changeTheme/);
+  assert.match(app, /value=\{themeMode\}/);
+  assert.match(app, /value="system">Как на телефоне/);
   assert.match(app, /label:\s*"Вернуть"/);
   assert.match(app, /duration:\s*5_000/);
 });
@@ -107,4 +108,36 @@ test("expense categories can be renamed, added, and deleted in the offline app",
   assert.doesNotMatch(app, /!category\.builtIn && \(/);
   assert.match(app, /expenseCategories\.map/);
   assert.match(app, /expenseCategoryName\(expense\.category\)/);
+});
+
+test("modern dashboard highlights missing days and protects month closing", () => {
+  assert.match(app, /const missingMonthDays = useMemo/);
+  assert.match(app, /className="missing-days-callout"/);
+  assert.match(app, /open=\{closeMonthOpen\}/);
+  assert.match(app, /Проверка перед закрытием/);
+  assert.match(app, /month-close-checklist/);
+  assert.match(styles, /\.missing-days-callout/);
+});
+
+test("weekly view includes visual bars and direct missing-day entry", () => {
+  assert.match(app, /className="week-day-chart"/);
+  assert.match(app, /day\.missing \? "week-day-missing"/);
+  assert.match(app, /className="week-missing-action"/);
+  assert.match(styles, /\.week-day-chart i\s*\{[\s\S]*?transition:\s*height/);
+});
+
+test("expenses include category visualization and quick templates", () => {
+  assert.match(app, /const expenseBreakdown = useMemo/);
+  assert.match(app, /className="expense-donut"/);
+  assert.match(app, /Топливо заказчика/);
+  assert.match(app, /openExpenseTemplate\("repair"\)/);
+  assert.match(styles, /\.expense-donut\s*\{/);
+});
+
+test("offline app stores audit history and reminds about backups", () => {
+  assert.match(app, /type AuditEvent/);
+  assert.match(app, /appendAudit\(store/);
+  assert.match(app, /История изменений/);
+  assert.match(app, /arenda-ts-last-backup-v1/);
+  assert.match(app, /Резервная копия старше недели/);
 });

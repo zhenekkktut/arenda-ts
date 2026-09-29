@@ -14,9 +14,10 @@ import {
   FileSpreadsheet,
   FileText,
   Fuel,
+  History,
   LoaderCircle,
   LockKeyhole,
-  Moon,
+  MonitorSmartphone,
   Plus,
   Pencil,
   CirclePause,
@@ -24,7 +25,6 @@ import {
   Smartphone,
   Settings,
   SlidersHorizontal,
-  Sun,
   Trash2,
   UnlockKeyhole,
   Upload,
@@ -37,7 +37,6 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
@@ -124,6 +123,17 @@ type ExpenseCategory = {
   builtIn: boolean;
 };
 
+type AuditEvent = {
+  id: number;
+  at: string;
+  period: string;
+  entity: "entry" | "invoice" | "payment" | "expense" | "downtime" | "month" | "settings";
+  title: string;
+  detail: string;
+};
+
+type ThemeMode = "light" | "dark" | "system";
+
 type Closure = {
   period: string;
   actualUnits: number;
@@ -157,10 +167,11 @@ type DashboardData = {
   settings?: DocumentSettings;
   downtimes?: Downtime[];
   documentMeta?: DocumentMeta;
+  auditLog?: AuditEvent[];
 };
 
 type OfflineStore = {
-  version: 4;
+  version: 5;
   entries: Entry[];
   invoices: Invoice[];
   payments: Payment[];
@@ -170,6 +181,7 @@ type OfflineStore = {
   settings: DocumentSettings;
   downtimes: Downtime[];
   documents: DocumentMeta[];
+  auditLog: AuditEvent[];
 };
 
 type AndroidAppBridge = {
@@ -219,6 +231,7 @@ const DEFAULT_EXPENSE_CATEGORIES: ExpenseCategory[] = [
   { id: "other", name: "Прочее", builtIn: true },
 ];
 const WEEKDAY_LABELS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+const EXPENSE_CHART_COLORS = ["#2f8ff0", "#7c65df", "#f1aa32", "#32a477", "#e16c71", "#6f7f92", "#3bb6c7", "#bb68bb"];
 
 function normalizeExpenseCategories(value: unknown, allowEmpty = false): ExpenseCategory[] {
   const supplied = Array.isArray(value) ? value : DEFAULT_EXPENSE_CATEGORIES;
@@ -252,6 +265,7 @@ function normalizeExpenseCategories(value: unknown, allowEmpty = false): Expense
 
 const OFFLINE_STORAGE_KEY = "arenda-ts-offline-v1";
 const THEME_STORAGE_KEY = "arenda-ts-theme-v1";
+const LAST_BACKUP_STORAGE_KEY = "arenda-ts-last-backup-v1";
 const DOCUMENT_TEXT_FIELDS = [
   "city", "contractNumber", "lessorFull", "lessorShort", "lessorSignerShort", "lessorInn",
   "lesseeFull", "lesseeShort", "lesseeInn", "lesseeKpp", "lesseeDirector",
@@ -278,9 +292,23 @@ function applyTheme(theme: "light" | "dark") {
   window.AndroidApp?.setTheme?.(theme);
 }
 
+function resolvedTheme(mode: ThemeMode): "light" | "dark" {
+  if (mode !== "system") return mode;
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function appendAudit(store: OfflineStore, event: Omit<AuditEvent, "id" | "at">) {
+  const audit: AuditEvent = {
+    id: nextId(store.auditLog),
+    at: new Date().toISOString(),
+    ...event,
+  };
+  store.auditLog = [audit, ...store.auditLog].slice(0, 300);
+}
+
 function emptyOfflineStore(): OfflineStore {
   return {
-    version: 4,
+    version: 5,
     entries: [],
     invoices: [],
     payments: [],
@@ -290,6 +318,7 @@ function emptyOfflineStore(): OfflineStore {
     settings: normalizeDocumentSettings(undefined),
     downtimes: [],
     documents: [],
+    auditLog: [],
   };
 }
 
@@ -311,7 +340,7 @@ function normalizeOfflineStore(value: unknown): OfflineStore {
     throw new Error("В резервной копии не хватает данных");
   }
   return {
-    version: 4,
+    version: 5,
     entries: store.entries,
     invoices: store.invoices,
     payments: store.payments,
@@ -321,6 +350,7 @@ function normalizeOfflineStore(value: unknown): OfflineStore {
     settings: normalizeDocumentSettings(store.settings),
     downtimes: Array.isArray(store.downtimes) ? store.downtimes : [],
     documents: Array.isArray(store.documents) ? store.documents : [],
+    auditLog: Array.isArray(store.auditLog) ? store.auditLog.slice(0, 300) : [],
   };
 }
 
@@ -386,6 +416,7 @@ function offlineDashboard(period: string): DashboardData {
     settings: store.settings,
     downtimes,
     documentMeta,
+    auditLog: store.auditLog.filter((event) => event.period === period).slice(0, 100),
   };
 }
 
@@ -405,15 +436,30 @@ function saveOfflineAction(payload: Record<string, unknown>) {
     const note = typeof payload.note === "string" ? payload.note.trim().slice(0, 300) : "";
     const existing = store.entries.find((entry) => entry.entryDate === entryDate);
     if (existing) {
+      const previousUnits = existing.units;
       existing.units = units;
       existing.note = note;
+      appendAudit(store, {
+        period: entryDate.slice(0, 7),
+        entity: "entry",
+        title: `Изменена запись за ${dateLabel(entryDate)}`,
+        detail: `${number(previousUnits)} → ${number(units)} ед.`,
+      });
     } else {
       store.entries.push({ id: nextId(store.entries), entryDate, units, note });
+      appendAudit(store, {
+        period: entryDate.slice(0, 7),
+        entity: "entry",
+        title: `Добавлена запись за ${dateLabel(entryDate)}`,
+        detail: `${number(units)} ед.`,
+      });
     }
   } else if (action === "import_entries") {
     if (!Array.isArray(payload.entries) || payload.entries.length === 0) {
       throw new Error("В файле нет записей для загрузки");
     }
+    let importedPeriod = "";
+    let importedUnits = 0;
     for (const item of payload.entries) {
       if (!item || typeof item !== "object") throw new Error("Проверьте строки файла");
       const row = item as Record<string, unknown>;
@@ -426,6 +472,8 @@ function saveOfflineAction(payload: Record<string, unknown>) {
         throw new Error(`Нельзя изменить закрытый месяц ${entryDate.slice(0, 7)}`);
       }
       const note = typeof row.note === "string" ? row.note.trim().slice(0, 300) : "";
+      importedPeriod ||= entryDate.slice(0, 7);
+      importedUnits += units;
       const existing = store.entries.find((entry) => entry.entryDate === entryDate);
       if (existing) {
         existing.units = units;
@@ -434,6 +482,12 @@ function saveOfflineAction(payload: Record<string, unknown>) {
         store.entries.push({ id: nextId(store.entries), entryDate, units, note });
       }
     }
+    appendAudit(store, {
+      period: importedPeriod,
+      entity: "entry",
+      title: "Импортированы ежедневные записи",
+      detail: `${number(payload.entries.length)} дн. · ${number(importedUnits)} ед.`,
+    });
   } else if (action === "delete_entry") {
     const id = Number(payload.id);
     const entry = store.entries.find((row) => row.id === id);
@@ -442,6 +496,12 @@ function saveOfflineAction(payload: Record<string, unknown>) {
       throw new Error("Месяц закрыт");
     }
     store.entries = store.entries.filter((row) => row.id !== id);
+    appendAudit(store, {
+      period: entry.entryDate.slice(0, 7),
+      entity: "entry",
+      title: `Удалена запись за ${dateLabel(entry.entryDate)}`,
+      detail: `${number(entry.units)} ед.`,
+    });
   } else if (action === "create_invoice" || action === "update_invoice") {
     const amountKopecks = Number(payload.amountKopecks);
     if (
@@ -458,6 +518,7 @@ function saveOfflineAction(payload: Record<string, unknown>) {
     const dueDate = payload.dueDate === "" || payload.dueDate == null ? null : String(payload.dueDate);
     if (dueDate !== null && !validIsoDate(dueDate)) throw new Error("Проверьте срок оплаты");
     const editId = action === "update_invoice" ? Number(payload.id) : null;
+    const previousInvoice = editId === null ? null : store.invoices.find((row) => row.id === editId) ?? null;
     if (editId !== null && !store.invoices.some((row) => row.id === editId)) throw new Error("Запись не найдена");
     const recordId = editId ?? nextId(store.invoices);
     if (editId !== null) store.invoices = store.invoices.filter((row) => row.id !== editId);
@@ -471,10 +532,27 @@ function saveOfflineAction(payload: Record<string, unknown>) {
       dueDate,
       note: typeof payload.note === "string" ? payload.note.trim().slice(0, 300) : "",
     });
+    appendAudit(store, {
+      period: String(payload.period),
+      entity: "invoice",
+      title: editId === null ? `Добавлен счёт №${payload.invoiceNumber}` : `Изменён счёт №${payload.invoiceNumber}`,
+      detail: previousInvoice
+        ? `${money(previousInvoice.amountKopecks)} → ${money(amountKopecks)}`
+        : money(amountKopecks),
+    });
   } else if (action === "delete_invoice") {
     const id = Number(payload.id);
+    const invoice = store.invoices.find((row) => row.id === id);
     store.invoices = store.invoices.filter((invoice) => invoice.id !== id);
     store.payments = store.payments.filter((payment) => payment.invoiceId !== id);
+    if (invoice) {
+      appendAudit(store, {
+        period: invoice.period,
+        entity: "invoice",
+        title: `Удалён счёт №${invoice.invoiceNumber}`,
+        detail: money(invoice.amountKopecks),
+      });
+    }
   } else if (action === "create_payment" || action === "update_payment") {
     const invoiceId = Number(payload.invoiceId);
     const amountKopecks = Number(payload.amountKopecks);
@@ -488,6 +566,7 @@ function saveOfflineAction(payload: Record<string, unknown>) {
       throw new Error("Проверьте данные оплаты");
     }
     const editId = action === "update_payment" ? Number(payload.id) : null;
+    const previousPayment = editId === null ? null : store.payments.find((row) => row.id === editId) ?? null;
     if (editId !== null && !store.payments.some((row) => row.id === editId)) throw new Error("Запись не найдена");
     const recordId = editId ?? nextId(store.payments);
     if (editId !== null) store.payments = store.payments.filter((row) => row.id !== editId);
@@ -500,9 +579,28 @@ function saveOfflineAction(payload: Record<string, unknown>) {
       documentNumber: typeof payload.documentNumber === "string" ? payload.documentNumber.trim().slice(0, 80) : "",
       note: typeof payload.note === "string" ? payload.note.trim().slice(0, 300) : "",
     });
+    const invoice = store.invoices.find((row) => row.id === invoiceId);
+    appendAudit(store, {
+      period: invoice?.period ?? String(payload.paymentDate).slice(0, 7),
+      entity: "payment",
+      title: editId === null ? `Добавлена оплата по счёту №${invoice?.invoiceNumber ?? "—"}` : `Изменена оплата по счёту №${invoice?.invoiceNumber ?? "—"}`,
+      detail: previousPayment
+        ? `${money(previousPayment.amountKopecks)} → ${money(amountKopecks)}`
+        : money(amountKopecks),
+    });
   } else if (action === "delete_payment") {
     const id = Number(payload.id);
+    const payment = store.payments.find((row) => row.id === id);
+    const invoice = payment ? store.invoices.find((row) => row.id === payment.invoiceId) : null;
     store.payments = store.payments.filter((payment) => payment.id !== id);
+    if (payment) {
+      appendAudit(store, {
+        period: invoice?.period ?? payment.paymentDate.slice(0, 7),
+        entity: "payment",
+        title: `Удалена оплата по счёту №${invoice?.invoiceNumber ?? "—"}`,
+        detail: money(payment.amountKopecks),
+      });
+    }
   } else if (action === "create_expense" || action === "update_expense") {
     const amountKopecks = Number(payload.amountKopecks);
     const category = String(payload.category ?? "");
@@ -516,6 +614,7 @@ function saveOfflineAction(payload: Record<string, unknown>) {
       throw new Error("Проверьте данные расхода");
     }
     const editId = action === "update_expense" ? Number(payload.id) : null;
+    const previousExpense = editId === null ? null : store.expenses.find((row) => row.id === editId) ?? null;
     if (editId !== null && !store.expenses.some((row) => row.id === editId)) throw new Error("Запись не найдена");
     const recordId = editId ?? nextId(store.expenses);
     if (editId !== null) store.expenses = store.expenses.filter((row) => row.id !== editId);
@@ -529,9 +628,28 @@ function saveOfflineAction(payload: Record<string, unknown>) {
       documentNumber: typeof payload.documentNumber === "string" ? payload.documentNumber.trim().slice(0, 80) : "",
       note: typeof payload.note === "string" ? payload.note.trim().slice(0, 300) : "",
     });
+    const categoryName = store.expenseCategories.find((item) => item.id === category)?.name ?? "Расход";
+    appendAudit(store, {
+      period: String(payload.expenseDate).slice(0, 7),
+      entity: "expense",
+      title: editId === null ? `Добавлен расход «${categoryName}»` : `Изменён расход «${categoryName}»`,
+      detail: previousExpense
+        ? `${money(previousExpense.amountKopecks)} → ${money(amountKopecks)}`
+        : money(amountKopecks),
+    });
   } else if (action === "delete_expense") {
     const id = Number(payload.id);
+    const expense = store.expenses.find((row) => row.id === id);
     store.expenses = store.expenses.filter((expense) => expense.id !== id);
+    if (expense) {
+      const categoryName = store.expenseCategories.find((item) => item.id === expense.category)?.name ?? "Расход";
+      appendAudit(store, {
+        period: expense.expenseDate.slice(0, 7),
+        entity: "expense",
+        title: `Удалён расход «${categoryName}»`,
+        detail: money(expense.amountKopecks),
+      });
+    }
   } else if (action === "save_expense_categories") {
     if (!Array.isArray(payload.categories)) throw new Error("Проверьте список категорий");
     const categories = normalizeExpenseCategories(payload.categories, true);
@@ -544,6 +662,12 @@ function saveOfflineAction(payload: Record<string, unknown>) {
         : { ...expense, category: fallbackCategory.id, payer: "self" }
     ));
     store.expenseCategories = categories;
+    appendAudit(store, {
+      period: localIsoDate().slice(0, 7),
+      entity: "settings",
+      title: "Изменены категории расходов",
+      detail: `${number(categories.length)} категорий`,
+    });
   } else if (action === "save_settings") {
     const value = payload.settings;
     if (!value || typeof value !== "object") throw new Error("Проверьте настройки договора");
@@ -570,6 +694,12 @@ function saveOfflineAction(payload: Record<string, unknown>) {
       includedUnits,
       rateKopecks,
     };
+    appendAudit(store, {
+      period: localIsoDate().slice(0, 7),
+      entity: "settings",
+      title: "Изменены настройки расчёта",
+      detail: `${money(baseKopecks)} · ${number(includedUnits)} ед. · ${money(rateKopecks)}/ед.`,
+    });
   } else if (action === "save_document_meta") {
     const period = String(payload.period ?? "");
     const openingBalanceKopecks = Number(payload.openingBalanceKopecks);
@@ -620,6 +750,12 @@ function saveOfflineAction(payload: Record<string, unknown>) {
       reason: String(payload.reason ?? "Простой автомобиля").trim().slice(0, 160),
       note: String(payload.note ?? "").trim().slice(0, 300),
     });
+    appendAudit(store, {
+      period: startDate.slice(0, 7),
+      entity: "downtime",
+      title: editId === null ? "Добавлен простой" : "Изменён простой",
+      detail: startDate === endDate ? dateLabel(startDate) : `${dateLabel(startDate)} — ${dateLabel(endDate)}`,
+    });
   } else if (action === "delete_downtime") {
     const id = Number(payload.id);
     const downtime = store.downtimes.find((row) => row.id === id);
@@ -630,6 +766,14 @@ function saveOfflineAction(payload: Record<string, unknown>) {
     });
     if (locked) throw new Error("Простой относится к закрытому месяцу");
     store.downtimes = store.downtimes.filter((row) => row.id !== id);
+    appendAudit(store, {
+      period: downtime.startDate.slice(0, 7),
+      entity: "downtime",
+      title: "Удалён простой",
+      detail: downtime.startDate === downtime.endDate
+        ? dateLabel(downtime.startDate)
+        : `${dateLabel(downtime.startDate)} — ${dateLabel(downtime.endDate)}`,
+    });
   } else if (action === "close_month") {
     const period = String(payload.period ?? "");
     if (!/^\d{4}-\d{2}$/.test(period)) throw new Error("Неверно указан месяц");
@@ -640,9 +784,21 @@ function saveOfflineAction(payload: Record<string, unknown>) {
       closedAt: new Date().toISOString(),
     };
     store.closures = [...store.closures.filter((row) => row.period !== period), closure];
+    appendAudit(store, {
+      period,
+      entity: "month",
+      title: `Закрыт ${monthLabel(period).toLowerCase()}`,
+      detail: `${number(calculation.actualUnits)} ед. · ${money(calculation.totalKopecks)}`,
+    });
   } else if (action === "reopen_month") {
     const period = String(payload.period ?? "");
     store.closures = store.closures.filter((closure) => closure.period !== period);
+    appendAudit(store, {
+      period,
+      entity: "month",
+      title: `Открыт ${monthLabel(period).toLowerCase()}`,
+      detail: "Редактирование снова доступно",
+    });
   } else {
     throw new Error("Неизвестное действие");
   }
@@ -929,8 +1085,12 @@ export default function RentalApp() {
   const [textInvoice, setTextInvoice] = useState<Invoice | null>(null);
   const [settlementOpen, setSettlementOpen] = useState(false);
   const [quickEntryOpen, setQuickEntryOpen] = useState(false);
+  const [closeMonthOpen, setCloseMonthOpen] = useState(false);
+  const [auditOpen, setAuditOpen] = useState(false);
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [themeMode, setThemeMode] = useState<ThemeMode>("system");
+  const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
 
   const [entryDate, setEntryDate] = useState(today);
   const entryUnitsRef = useRef<HTMLInputElement>(null);
@@ -1040,11 +1200,22 @@ export default function RentalApp() {
 
   useEffect(() => {
     const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
-    const nextTheme = savedTheme === "dark" ? "dark" : "light";
-    applyTheme(nextTheme);
-    const timer = window.setTimeout(() => setTheme(nextTheme), 0);
-    return () => window.clearTimeout(timer);
+    const nextMode: ThemeMode = savedTheme === "dark" || savedTheme === "light" ? savedTheme : "system";
+    setThemeMode(nextMode);
+    setLastBackupAt(window.localStorage.getItem(LAST_BACKUP_STORAGE_KEY));
   }, []);
+
+  useEffect(() => {
+    const media = window.matchMedia?.("(prefers-color-scheme: dark)");
+    const syncTheme = () => {
+      const nextTheme = resolvedTheme(themeMode);
+      setTheme(nextTheme);
+      applyTheme(nextTheme);
+    };
+    syncTheme();
+    media?.addEventListener?.("change", syncTheme);
+    return () => media?.removeEventListener?.("change", syncTheme);
+  }, [themeMode]);
 
   useEffect(() => {
     if (!data) return;
@@ -1056,6 +1227,21 @@ export default function RentalApp() {
     setDocumentBasis(meta.basis);
     setOpeningBalance(String(meta.openingBalanceKopecks / 100));
   }, [data, month, today]);
+
+  useEffect(() => {
+    if (!offlineMode || window.sessionStorage.getItem("arenda-ts-backup-reminder-shown")) return;
+    const last = lastBackupAt ? new Date(lastBackupAt).getTime() : 0;
+    const backupDue = !last || Date.now() - last > 7 * 86_400_000;
+    if (!backupDue) return;
+    window.sessionStorage.setItem("arenda-ts-backup-reminder-shown", "1");
+    const timer = window.setTimeout(() => {
+      toast.info(last ? "Резервная копия старше недели" : "Создайте первую резервную копию", {
+        duration: 7_000,
+        action: { label: "Сохранить", onClick: exportBackup },
+      });
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [lastBackupAt, offlineMode]);
 
   const request = useCallback(
     async (payload: Record<string, unknown>, success: string) => {
@@ -1165,26 +1351,65 @@ export default function RentalApp() {
     [expenseCategories],
   );
   const expenseCategoryName = (category: string) => expenseCategoryNames.get(category) ?? "Другая категория";
+  const expenseBreakdown = useMemo(() => expenseCategories
+    .map((category, index) => ({
+      ...category,
+      color: EXPENSE_CHART_COLORS[index % EXPENSE_CHART_COLORS.length],
+      amountKopecks: (data?.expenses ?? [])
+        .filter((expense) => expense.category === category.id)
+        .reduce((sum, expense) => sum + expense.amountKopecks, 0),
+    }))
+    .filter((category) => category.amountKopecks > 0), [data?.expenses, expenseCategories]);
+  let expenseDonutOffset = 0;
+  const expenseDonutBackground = totalExpenses > 0
+    ? `conic-gradient(${expenseBreakdown.map((category) => {
+      const start = expenseDonutOffset;
+      expenseDonutOffset += (category.amountKopecks / totalExpenses) * 100;
+      return `${category.color} ${start.toFixed(2)}% ${expenseDonutOffset.toFixed(2)}%`;
+    }).join(", ")})`
+    : "conic-gradient(#e7ecf2 0 100%)";
+  const monthBounds = periodBounds(month);
+  const missingCutoff = month === today.slice(0, 7) ? today : monthBounds.end;
   const currentWeekStart = weekStart(entryDate);
   const currentWeekDays = useMemo(() => {
     const entriesByDate = new Map((data?.entries ?? []).map((entry) => [entry.entryDate, entry]));
     return Array.from({ length: 7 }, (_, index) => {
       const date = addIsoDays(currentWeekStart, index);
+      const inMonth = date.slice(0, 7) === month;
+      const entry = entriesByDate.get(date);
+      const isSunday = new Date(`${date}T12:00:00Z`).getUTCDay() === 0;
       return {
         date,
-        inMonth: date.slice(0, 7) === month,
-        entry: entriesByDate.get(date),
+        inMonth,
+        entry,
+        missing: inMonth && date <= missingCutoff && !isSunday && !entry,
       };
     });
-  }, [currentWeekStart, data?.entries, month]);
+  }, [currentWeekStart, data?.entries, missingCutoff, month]);
   const weekUnits = currentWeekDays.reduce((sum, day) => sum + (day.entry?.units ?? 0), 0);
   const weekAmountKopecks = weekUnits * documentSettings.rateKopecks;
+  const maxWeekUnits = Math.max(1, ...currentWeekDays.map((day) => day.entry?.units ?? 0));
+  const missingWeekDays = currentWeekDays.filter((day) => day.missing);
   const weekEntries = currentWeekDays
     .flatMap((day) => day.entry ? [day.entry] : [])
     .sort((a, b) => b.entryDate.localeCompare(a.entryDate));
-  const monthBounds = periodBounds(month);
+  const missingMonthDays = useMemo(() => {
+    const entries = new Set((data?.entries ?? []).map((entry) => entry.entryDate));
+    const missing: string[] = [];
+    for (let date = monthBounds.start; date <= missingCutoff; date = addIsoDays(date, 1)) {
+      const isSunday = new Date(`${date}T12:00:00Z`).getUTCDay() === 0;
+      if (!isSunday && !entries.has(date)) missing.push(date);
+    }
+    return missing;
+  }, [data?.entries, missingCutoff, monthBounds.start]);
   const canGoToPreviousWeek = addIsoDays(entryDate, -7) >= monthBounds.start;
   const canGoToNextWeek = addIsoDays(entryDate, 7) <= monthBounds.end;
+  const unitsUntilControl = Math.max(0, calculation.includedUnits - calculation.actualUnits);
+  const auditEvents = data?.auditLog ?? [];
+  const lastBackupLabel = lastBackupAt
+    ? `Последняя копия: ${new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long" }).format(new Date(lastBackupAt))}`
+    : "Резервная копия ещё не создавалась";
+  const backupDue = !lastBackupAt || Date.now() - new Date(lastBackupAt).getTime() > 7 * 86_400_000;
 
   function selectEntryDate(nextDate: string) {
     const existing = data?.entries.find((entry) => entry.entryDate === nextDate);
@@ -1199,22 +1424,15 @@ export default function RentalApp() {
     selectEntryDate(nextDate);
   }
 
-  function changeTheme(nextTheme: "light" | "dark") {
-    setTheme(nextTheme);
-    window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
-    applyTheme(nextTheme);
+  function changeTheme(nextMode: ThemeMode) {
+    setThemeMode(nextMode);
+    window.localStorage.setItem(THEME_STORAGE_KEY, nextMode);
   }
 
-  async function saveEntry(event: FormEvent) {
-    event.preventDefault();
-    const units = Number(entryUnits);
-    if (!Number.isInteger(units) || units < 0) {
-      toast.error("Введите количество целым числом");
-      return;
-    }
+  async function saveEntryValue(units: number) {
     const ok = await request(
       { action: "save_entry", entryDate, units, note: entryNote },
-      `Записано: ${number(units)} бутылок`,
+      selectedEntry ? `Обновлено: ${number(units)} бутылок` : `Записано: ${number(units)} бутылок`,
     );
     if (ok) {
       navigator.vibrate?.(12);
@@ -1227,6 +1445,25 @@ export default function RentalApp() {
         else entryUnitsRef.current?.focus();
       });
     }
+  }
+
+  async function saveEntry(event: FormEvent) {
+    event.preventDefault();
+    const units = Number(entryUnits);
+    if (!Number.isInteger(units) || units < 0) {
+      toast.error("Введите количество целым числом");
+      return;
+    }
+    if (units > 500) {
+      setConfirm({
+        title: `Записать ${number(units)} бутылок?`,
+        description: "Количество заметно выше обычного. Проверьте цифру перед сохранением.",
+        actionLabel: "Всё верно",
+        run: () => saveEntryValue(units),
+      });
+      return;
+    }
+    await saveEntryValue(units);
   }
 
   async function readImportFile(event: ChangeEvent<HTMLInputElement>) {
@@ -1458,6 +1695,22 @@ export default function RentalApp() {
     setExpensePayer("self");
     setExpenseCategory(initialCategory);
     setExpenseAmount(initialCategory === "base_lease" ? "20000" : "");
+    setExpenseMethod("bank");
+    setExpenseDocument("");
+    setExpenseNote("");
+    setExpenseOpen(true);
+  }
+
+  function openExpenseTemplate(category: string, payer: "self" | "customer" = "self") {
+    if (!expenseCategories.some((item) => item.id === category)) {
+      openExpense();
+      return;
+    }
+    setEditingExpenseId(null);
+    setExpenseDate(month === today.slice(0, 7) ? today : `${month}-01`);
+    setExpensePayer(payer);
+    setExpenseCategory(category);
+    setExpenseAmount("");
     setExpenseMethod("bank");
     setExpenseDocument("");
     setExpenseNote("");
@@ -1778,14 +2031,15 @@ export default function RentalApp() {
   }
 
   function askCloseMonth() {
-    setConfirm({
-      title: `Закрыть ${monthLabel(month).toLowerCase()}?`,
-      description: `Итог аренды будет зафиксирован: ${money(calculation.totalKopecks)}. Записи интенсивности нельзя будет менять до повторного открытия месяца.`,
-      actionLabel: "Закрыть месяц",
-      run: async () => {
-        await request({ action: "close_month", period: month }, "Месяц закрыт");
-      },
-    });
+    setCloseMonthOpen(true);
+  }
+
+  async function closeMonth() {
+    const ok = await request({ action: "close_month", period: month }, "Месяц закрыт");
+    if (ok) {
+      navigator.vibrate?.([18, 45, 18]);
+      setCloseMonthOpen(false);
+    }
   }
 
   function askReopenMonth() {
@@ -1956,6 +2210,10 @@ export default function RentalApp() {
       } else {
         saveBrowserFile(new Blob([json], { type: "application/json;charset=utf-8" }), fileName);
       }
+      const savedAt = new Date().toISOString();
+      window.localStorage.setItem(LAST_BACKUP_STORAGE_KEY, savedAt);
+      setLastBackupAt(savedAt);
+      navigator.vibrate?.(12);
       toast.success("Резервная копия подготовлена");
     } catch {
       toast.error("Не удалось создать резервную копию");
@@ -2204,17 +2462,17 @@ export default function RentalApp() {
             <>
               <TabsContent value="summary" className="space-y-4">
                 <section className="summary-grid summary-grid-modern">
-                  <article className="money-card">
+                  <article className="money-card money-card-units">
                     <span>Бутылок</span>
                     <strong>{number(calculation.actualUnits)}</strong>
                     <small>за выбранный месяц</small>
                   </article>
-                  <article className="money-card">
+                  <article className="money-card money-card-accrued">
                     <span>Начислено</span>
                     <strong>{money(calculation.totalKopecks)}</strong>
                     <small>по условиям аренды</small>
                   </article>
-                  <article className="money-card">
+                  <article className="money-card money-card-fuel">
                     <span>Топливо заказчика</span>
                     <strong>{money(customerFuel)}</strong>
                     <small>вычитается из аренды</small>
@@ -2238,6 +2496,12 @@ export default function RentalApp() {
                     <span>{offlineMode ? <CirclePause /> : <FileSpreadsheet />}</span>
                     <strong>{offlineMode ? "Простой" : "Выгрузить Excel"}</strong>
                   </button>
+                  {offlineMode && (
+                    <button type="button" onClick={() => setAuditOpen(true)}>
+                      <span><History /></span>
+                      <strong>История</strong>
+                    </button>
+                  )}
                 </section>
 
                 <section className="panel month-progress-compact">
@@ -2257,11 +2521,25 @@ export default function RentalApp() {
                   </div>
                   <Progress value={progress} className="mt-4 h-3 bg-slate-100 [&_[data-slot=progress-indicator]]:bg-amber-500" />
                   <div className="month-progress-footer">
-                    <span>{Math.round(progress)}% контрольного объёма</span>
+                    <span>{unitsUntilControl > 0 ? `До ${number(calculation.includedUnits)} осталось ${number(unitsUntilControl)} ед.` : `Контрольный объём выполнен на ${Math.round(progress)}%`}</span>
                     <Button type="button" variant="ghost" size="sm" onClick={() => setSettlementOpen(true)}>
                       Расчёт <ChevronRight />
                     </Button>
                   </div>
+                  {!data.closure && missingMonthDays.length > 0 && (
+                    <button
+                      type="button"
+                      className="missing-days-callout"
+                      onClick={() => {
+                        setTab("entries");
+                        selectEntryDate(missingMonthDays[0]);
+                      }}
+                    >
+                      <CalendarDays />
+                      <span>Без записи: {number(missingMonthDays.length)} рабочих дней</span>
+                      <ChevronRight />
+                    </button>
+                  )}
                 </section>
 
                 <section className="panel cash-result">
@@ -2334,7 +2612,11 @@ export default function RentalApp() {
                       <button
                         key={day.date}
                         type="button"
-                        className={day.date === entryDate ? "week-day week-day-selected" : "week-day"}
+                        className={[
+                          "week-day",
+                          day.date === entryDate ? "week-day-selected" : "",
+                          day.missing ? "week-day-missing" : "",
+                        ].filter(Boolean).join(" ")}
                         disabled={!day.inMonth}
                         onClick={() => selectEntryDate(day.date)}
                         aria-pressed={day.date === entryDate}
@@ -2342,7 +2624,10 @@ export default function RentalApp() {
                       >
                         <span>{WEEKDAY_LABELS[index]}</span>
                         <strong>{Number(day.date.slice(-2))}</strong>
-                        <small>{day.entry ? number(day.entry.units) : "—"}</small>
+                        <span className="week-day-chart" aria-hidden="true">
+                          <i style={{ height: day.entry ? `${Math.max(12, (day.entry.units / maxWeekUnits) * 100)}%` : "0%" }} />
+                        </span>
+                        <small>{day.entry ? number(day.entry.units) : day.missing ? "нет" : "—"}</small>
                       </button>
                     ))}
                   </div>
@@ -2351,6 +2636,19 @@ export default function RentalApp() {
                     <div><span>Бутылок за неделю</span><strong>{number(weekUnits)}</strong></div>
                     <div><span>По {number(documentSettings.rateKopecks / 100)} ₽ за единицу</span><strong>{money(weekAmountKopecks)}</strong></div>
                   </div>
+                  {missingWeekDays.length > 0 && !data.closure && (
+                    <button
+                      type="button"
+                      className="week-missing-action"
+                      onClick={() => {
+                        selectEntryDate(missingWeekDays[0].date);
+                        setQuickEntryOpen(true);
+                      }}
+                    >
+                      <span>Нужно заполнить: {number(missingWeekDays.length)}</span>
+                      <strong>Внести запись <ChevronRight /></strong>
+                    </button>
+                  )}
                 </section>
 
                 <section className="panel">
@@ -2440,13 +2738,13 @@ export default function RentalApp() {
                     <p>История счетов за этот месяц пуста.</p>
                   </section>
                 ) : (
-                  <div className="space-y-3">
+                  <div className="space-y-3 invoice-timeline">
                     {data.invoices.map((invoice) => {
                       const invoicePayments = data.payments.filter((payment) => payment.invoiceId === invoice.id);
                       const paid = paidByInvoice.get(invoice.id) ?? 0;
                       const status = statusFor(invoice, paid);
                       return (
-                        <article className="panel invoice-card" key={invoice.id}>
+                        <article className={`panel invoice-card invoice-card-${status.tone}`} key={invoice.id}>
                           <div className="flex items-start justify-between gap-3">
                             <div>
                               <div className="flex flex-wrap items-center gap-2">
@@ -2536,6 +2834,26 @@ export default function RentalApp() {
                     </Button>
                   ))}
                 </div>
+                <section className="panel expense-visual" aria-label="Структура расходов за месяц">
+                  <div className="expense-donut" style={{ background: expenseDonutBackground }}>
+                    <div>
+                      <span>Всего</span>
+                      <strong>{money(totalExpenses)}</strong>
+                    </div>
+                  </div>
+                  <div className="expense-legend">
+                    <span className="eyebrow">Структура расходов</span>
+                    {expenseBreakdown.length === 0 ? (
+                      <p>Добавьте первый расход — здесь появится распределение.</p>
+                    ) : expenseBreakdown.map((category) => (
+                      <button type="button" key={category.id} onClick={() => setExpenseFilter(category.id)}>
+                        <i style={{ background: category.color }} />
+                        <span>{category.name}</span>
+                        <strong>{money(category.amountKopecks)}</strong>
+                      </button>
+                    ))}
+                  </div>
+                </section>
                 <section className="panel expense-total">
                   <div>
                     <span className="eyebrow">{expenseFilter === "all" ? "Расходы за месяц" : `${expenseCategoryName(expenseFilter)} за месяц`}</span>
@@ -2543,6 +2861,20 @@ export default function RentalApp() {
                   </div>
                   <WalletCards />
                 </section>
+                <div className="expense-templates" aria-label="Быстрое добавление расхода">
+                  <span>Быстро добавить</span>
+                  <div>
+                    {expenseCategories.some((category) => category.id === "fuel") && (
+                      <button type="button" onClick={() => openExpenseTemplate("fuel", "customer")}><Fuel />Топливо заказчика</button>
+                    )}
+                    {expenseCategories.some((category) => category.id === "fuel") && (
+                      <button type="button" onClick={() => openExpenseTemplate("fuel", "self")}><Fuel />Моё топливо</button>
+                    )}
+                    {expenseCategories.some((category) => category.id === "repair") && (
+                      <button type="button" onClick={() => openExpenseTemplate("repair")}><Wrench />Ремонт</button>
+                    )}
+                  </div>
+                </div>
                 <Button type="button" onClick={openExpense} className="h-12 w-full sm:w-auto">
                   <Plus />Добавить расход
                 </Button>
@@ -2593,6 +2925,9 @@ export default function RentalApp() {
               <span className="eyebrow">Хранение данных</span>
               <strong>Всё сохранено на этом телефоне</strong>
               <p>Приложение работает без интернета. Иногда сохраняйте копию, чтобы не потерять записи при поломке или замене телефона.</p>
+              <span className={backupDue ? "backup-status backup-status-due" : "backup-status"}>
+                {backupDue ? "● " : "✓ "}{lastBackupLabel}
+              </span>
             </div>
             <div className="offline-storage-actions">
               <Button type="button" variant="outline" onClick={exportBackup}>
@@ -2612,6 +2947,85 @@ export default function RentalApp() {
           </section>
         )}
       </main>
+
+      <Dialog open={closeMonthOpen} onOpenChange={setCloseMonthOpen}>
+        <DialogContent className="dialog-card close-month-dialog sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Проверка перед закрытием</DialogTitle>
+            <DialogDescription>{monthLabel(month)}. После закрытия ежедневные записи и простой будут защищены от случайных изменений.</DialogDescription>
+          </DialogHeader>
+          <div className="month-close-checklist">
+            <div><span><CalendarDays />Учётные дни</span><strong>{number(data?.entries.length ?? 0)}</strong></div>
+            <div className={missingMonthDays.length ? "check-warning" : "check-ok"}>
+              <span>{missingMonthDays.length ? <CalendarDays /> : <CheckCircle2 />}Дни без записи</span>
+              <strong>{number(missingMonthDays.length)}</strong>
+            </div>
+            <div><span><CarFront />Учётные единицы</span><strong>{number(calculation.actualUnits)}</strong></div>
+            <div><span><CirclePause />Дни простоя</span><strong>{number(calculation.downtimeDays)}</strong></div>
+            <div><span><Fuel />Топливо заказчика</span><strong>{money(customerFuel)}</strong></div>
+            <div><span><ReceiptText />Уже выставлено</span><strong>{money(totalInvoiced)}</strong></div>
+            <div className="month-close-total"><span><Banknote />Начислено по договору</span><strong>{money(calculation.totalKopecks)}</strong></div>
+            <div className="month-close-total month-close-remaining"><span><ReceiptText />Осталось выставить</span><strong>{money(remainingToInvoice)}</strong></div>
+          </div>
+          {missingMonthDays.length > 0 && (
+            <button
+              type="button"
+              className="close-missing-link"
+              onClick={() => {
+                setCloseMonthOpen(false);
+                setTab("entries");
+                selectEntryDate(missingMonthDays[0]);
+              }}
+            >
+              Проверить незаполненные дни <ChevronRight />
+            </button>
+          )}
+          <p className="help-note">Закрытие не создаёт счёт автоматически. Оно фиксирует расчёт и открывает выставление переменной части.</p>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setCloseMonthOpen(false)}>Отмена</Button>
+            <Button type="button" disabled={busy} onClick={() => void closeMonth()}>
+              {busy ? <LoaderCircle className="animate-spin" /> : <LockKeyhole />}
+              Закрыть месяц
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={auditOpen} onOpenChange={setAuditOpen}>
+        <DialogContent className="dialog-card audit-dialog sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>История изменений</DialogTitle>
+            <DialogDescription>Все основные действия за {monthLabel(month).toLowerCase()}.</DialogDescription>
+          </DialogHeader>
+          {auditEvents.length === 0 ? (
+            <div className="empty-state compact-empty-state">
+              <History />
+              <p>Изменений за этот месяц пока нет.</p>
+            </div>
+          ) : (
+            <div className="audit-list">
+              {auditEvents.map((event) => (
+                <article key={event.id} className={`audit-row audit-${event.entity}`}>
+                  <span className="audit-icon" aria-hidden="true">
+                    {event.entity === "entry" ? <CalendarDays />
+                      : event.entity === "invoice" ? <ReceiptText />
+                        : event.entity === "payment" ? <Banknote />
+                          : event.entity === "expense" ? <WalletCards />
+                            : event.entity === "downtime" ? <CirclePause />
+                              : event.entity === "month" ? <LockKeyhole />
+                                : <Settings />}
+                  </span>
+                  <div>
+                    <strong>{event.title}</strong>
+                    <p>{event.detail}</p>
+                    <time>{new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(event.at))}</time>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={downtimeListOpen} onOpenChange={setDowntimeListOpen}>
         <DialogContent className="dialog-card downtime-list-dialog sm:max-w-md">
@@ -3029,17 +3443,19 @@ export default function RentalApp() {
           <form onSubmit={saveSettings} className="dialog-form">
             <div className="settings-section theme-settings-row">
               <div>
-                <strong>Тёмная тема</strong>
-                <p>Можно переключать в любое время. Данные и расчёты не меняются.</p>
+                <strong>Оформление</strong>
+                <p>Светлое, тёмное или как в настройках телефона.</p>
               </div>
               <div className="theme-settings-control">
-                <Sun aria-hidden="true" />
-                <Switch
-                  checked={theme === "dark"}
-                  onCheckedChange={(checked) => changeTheme(checked ? "dark" : "light")}
-                  aria-label="Тёмная тема"
-                />
-                <Moon aria-hidden="true" />
+                <MonitorSmartphone aria-hidden="true" />
+                <Select value={themeMode} onValueChange={(value) => changeTheme(value as ThemeMode)}>
+                  <SelectTrigger className="theme-mode-select" aria-label="Тема приложения"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="system">Как на телефоне</SelectItem>
+                    <SelectItem value="light">Светлая</SelectItem>
+                    <SelectItem value="dark">Тёмная</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             </div>
 
