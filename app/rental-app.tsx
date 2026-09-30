@@ -1175,7 +1175,6 @@ export default function RentalApp() {
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
 
   const [entryDate, setEntryDate] = useState(today);
-  const entryUnitsRef = useRef<HTMLInputElement>(null);
   const quickEntryUnitsRef = useRef<HTMLInputElement>(null);
   const [editingEntry, setEditingEntry] = useState<Entry | null>(null);
   const [editUnits, setEditUnits] = useState("");
@@ -1587,10 +1586,7 @@ export default function RentalApp() {
       setEntryUnits("");
       setEntryNote("");
       if (followingDate.slice(0, 7) === month) selectEntryDate(followingDate);
-      window.requestAnimationFrame(() => {
-        if (quickEntryOpen) quickEntryUnitsRef.current?.focus();
-        else entryUnitsRef.current?.focus();
-      });
+      window.requestAnimationFrame(() => quickEntryUnitsRef.current?.focus());
     }
   }
 
@@ -2504,65 +2500,6 @@ export default function RentalApp() {
             aria-label="Месяц"
           />
         </section>
-
-        {data && !loading && !loadError && tab === "summary" && (
-          <section className="panel quick-entry quick-entry-primary">
-            {data.closure ? (
-              <div className="locked-note">
-                <LockKeyhole className="size-5" />
-                Месяц закрыт — новые записи недоступны.
-              </div>
-            ) : (
-              <form onSubmit={saveEntry} className="fast-entry-form">
-                <div className="fast-entry-meta">
-                  <strong className="quick-entry-title">Быстрая запись</strong>
-                  {selectedEntry && <span className="entry-existing-chip">Запись есть</span>}
-                </div>
-
-                <div className="fast-entry-date-row">
-                  <label className="fast-entry-date-control">
-                    <FieldLabel>Дата</FieldLabel>
-                    <Input
-                      className="fast-entry-date-input"
-                      type="date"
-                      value={entryDate}
-                      min={monthBounds.start}
-                      max={monthBounds.end}
-                      onChange={(event) => selectEntryDate(event.target.value)}
-                      aria-label="Дата доставки"
-                      required
-                    />
-                  </label>
-                </div>
-
-                <div className="fast-entry-quantity">
-                  <FieldLabel>Количество бутылок</FieldLabel>
-                  <div className="fast-entry-row">
-                    <Input
-                      ref={entryUnitsRef}
-                      type="number"
-                      min="0"
-                      step="1"
-                      inputMode="numeric"
-                      enterKeyHint="done"
-                      autoComplete="off"
-                      placeholder="Сколько бутылок"
-                      aria-label="Количество бутылок"
-                      value={entryUnits}
-                      onChange={(event) => setEntryUnits(event.target.value)}
-                      onFocus={(event) => event.currentTarget.select()}
-                      required
-                    />
-                    <Button type="submit" disabled={busy || !entryUnits}>
-                      {busy ? <LoaderCircle className="animate-spin" /> : selectedEntry ? <Pencil /> : <Plus />}
-                      {selectedEntry ? "Обновить" : "Записать"}
-                    </Button>
-                  </div>
-                </div>
-              </form>
-            )}
-          </section>
-        )}
 
         <Tabs
           value={tab}
