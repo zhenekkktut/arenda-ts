@@ -1360,6 +1360,31 @@ export default function RentalApp() {
     return () => window.clearTimeout(timer);
   }, [lastBackupAt, offlineMode]);
 
+  useEffect(() => {
+    if (!quickEntryOpen) return;
+    const viewport = window.visualViewport;
+    const root = document.documentElement;
+    const updateVisibleArea = () => {
+      const height = viewport?.height ?? window.innerHeight;
+      const bottom = Math.max(0, window.innerHeight - height - (viewport?.offsetTop ?? 0));
+      root.style.setProperty("--app-visible-height", `${Math.round(height)}px`);
+      root.style.setProperty("--app-keyboard-offset", `${Math.round(bottom)}px`);
+      root.dataset.entryKeyboardOpen = bottom > 100 ? "true" : "false";
+    };
+    updateVisibleArea();
+    viewport?.addEventListener("resize", updateVisibleArea);
+    viewport?.addEventListener("scroll", updateVisibleArea);
+    window.addEventListener("resize", updateVisibleArea);
+    return () => {
+      viewport?.removeEventListener("resize", updateVisibleArea);
+      viewport?.removeEventListener("scroll", updateVisibleArea);
+      window.removeEventListener("resize", updateVisibleArea);
+      root.style.removeProperty("--app-visible-height");
+      root.style.removeProperty("--app-keyboard-offset");
+      delete root.dataset.entryKeyboardOpen;
+    };
+  }, [quickEntryOpen]);
+
   const request = useCallback(
     async (payload: Record<string, unknown>, success: string) => {
       setBusy(true);
@@ -1533,6 +1558,11 @@ export default function RentalApp() {
     setEntryDate(nextDate);
     setEntryUnits(existing ? String(existing.units) : "");
     setEntryNote(existing?.note ?? "");
+  }
+
+  function openEntryForDate(nextDate: string) {
+    selectEntryDate(nextDate);
+    setQuickEntryOpen(true);
   }
 
   function moveEntryWeek(offset: -1 | 1) {
@@ -2743,7 +2773,7 @@ export default function RentalApp() {
                           day.missing ? "week-day-missing" : "",
                         ].filter(Boolean).join(" ")}
                         disabled={!day.inMonth}
-                        onClick={() => selectEntryDate(day.date)}
+                        onClick={() => openEntryForDate(day.date)}
                         aria-pressed={day.date === entryDate}
                         aria-label={`${WEEKDAY_LABELS[index]}, ${dateLabel(day.date)}${day.entry ? `, ${day.entry.units} бутылок` : ", записи нет"}`}
                       >
@@ -2765,10 +2795,7 @@ export default function RentalApp() {
                     <button
                       type="button"
                       className="week-missing-action"
-                      onClick={() => {
-                        selectEntryDate(missingWeekDays[0].date);
-                        setQuickEntryOpen(true);
-                      }}
+                      onClick={() => openEntryForDate(missingWeekDays[0].date)}
                     >
                       <span>Нужно заполнить: {number(missingWeekDays.length)}</span>
                       <strong>Внести запись <ChevronRight /></strong>

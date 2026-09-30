@@ -1951,6 +1951,24 @@ button[data-slot="button"] {
     transform: none !important;
   }
 
+  [data-slot="dialog-content"].quick-entry-dialog {
+    inset: auto 0 var(--app-keyboard-offset, 0px) !important;
+    max-height: calc(var(--app-visible-height, 100dvh) - 0.5rem);
+    scroll-padding-bottom: 4rem;
+  }
+
+  .quick-entry-dialog-form .quick-dialog-save {
+    position: sticky;
+    z-index: 2;
+    bottom: 0;
+    box-shadow: 0 0 0 0.5rem var(--card);
+  }
+
+  html[data-entry-keyboard-open="true"] .quick-entry-dialog [data-slot="dialog-description"],
+  html[data-entry-keyboard-open="true"] .quick-dialog-hint {
+    display: none;
+  }
+
   [data-slot="dialog-content"]::before,
   [data-slot="alert-dialog-content"]::before {
     content: "";
