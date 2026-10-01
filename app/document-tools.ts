@@ -288,7 +288,8 @@ const officialCss = `
   .reconciliation-page { font-size: 9.5pt; }
   .total { font-weight: bold; }
   .signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px -8px 0; font-size: 9pt; page-break-inside: avoid; }
-  .signature-line { margin-top: 18px; white-space: nowrap; }
+  .signature-header { min-height: 44px; }
+  .signature-line { margin-top: 12px; white-space: nowrap; }
   .signature-date { margin-top: 6px; }
   .blank { border-bottom: 1px solid #777; display: inline-block; min-width: 165px; }
   .no-break { white-space: nowrap; }
@@ -322,7 +323,7 @@ function amountWords(kopecks: number) {
 }
 
 function signatures(settings: DocumentSettings) {
-  return `<div class="signatures"><div><b>Арендодатель</b><br>${escapeHtml(settings.lessorShort)}<div class="signature-line">________________ / ${escapeHtml(settings.lessorSignerShort)} /</div><div class="signature-date">Дата подписи: __________________</div></div><div><b>Арендатор</b><br>${escapeHtml(settings.lesseeShort)}<br>Генеральный директор ${escapeHtml(settings.lesseeDirectorShort)}<div class="signature-line">________________ / ${escapeHtml(settings.lesseeDirectorShort)} /</div><div class="signature-date">Дата подписи: __________________</div></div></div>`;
+  return `<div class="signatures"><div><div class="signature-header"><b>Арендодатель</b><br>${escapeHtml(settings.lessorShort)}</div><div class="signature-line">________________ / ${escapeHtml(settings.lessorSignerShort)} /</div><div class="signature-date">Дата подписи: __________________</div></div><div><div class="signature-header"><b>Арендатор</b><br>${escapeHtml(settings.lesseeShort)}<br>Генеральный директор ${escapeHtml(settings.lesseeDirectorShort)}</div><div class="signature-line">________________ / ${escapeHtml(settings.lesseeDirectorShort)} /</div><div class="signature-date">Дата подписи: __________________</div></div></div>`;
 }
 
 function rentActBody(input: OfficialDocumentInput) {

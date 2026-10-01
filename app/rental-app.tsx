@@ -3823,7 +3823,7 @@ export default function RentalApp() {
                 <label><FieldLabel>ИНН арендатора</FieldLabel><Input value={settingsDraft.lesseeInn} onChange={(event) => setSettingsDraft((value) => ({ ...value, lesseeInn: event.target.value }))} required /></label>
                 <label><FieldLabel>КПП</FieldLabel><Input value={settingsDraft.lesseeKpp} onChange={(event) => setSettingsDraft((value) => ({ ...value, lesseeKpp: event.target.value }))} required /></label>
               </div>
-              <label><FieldLabel>Генеральный директор</FieldLabel><Input value={settingsDraft.lesseeDirector} onChange={(event) => setSettingsDraft((value) => ({ ...value, lesseeDirector: event.target.value }))} required /></label>
+              <label><FieldLabel>Генеральный директор для текста «в лице…» (кого?)</FieldLabel><Input value={settingsDraft.lesseeDirector} onChange={(event) => setSettingsDraft((value) => ({ ...value, lesseeDirector: event.target.value }))} placeholder="Иванова Ивана Ивановича" required /></label>
               <label><FieldLabel>Расшифровка подписи директора</FieldLabel><Input value={settingsDraft.lesseeDirectorShort} onChange={(event) => setSettingsDraft((value) => ({ ...value, lesseeDirectorShort: event.target.value }))} required /></label>
               <div className="grid grid-cols-2 gap-3">
                 <label><FieldLabel>Год автомобиля</FieldLabel><Input value={settingsDraft.vehicleYear} onChange={(event) => setSettingsDraft((value) => ({ ...value, vehicleYear: event.target.value }))} required /></label>

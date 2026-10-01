@@ -78,7 +78,7 @@ test("partial ownership excludes days before the lease begins", () => {
 });
 
 test("August reference act and reconciliation use invoice 27 and exclude fuel offsets", () => {
-  const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS };
+  const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS, lesseeDirector: "Иванова Ивана Ивановича" };
   const calculation = tools.calculateRental(
     "2026-08",
     [{ entryDate: "2026-08-01", units: 2_800 }],
@@ -111,6 +111,9 @@ test("August reference act and reconciliation use invoice 27 and exclude fuel of
   assert.match(act, /112[\s ]000,00/);
   assert.match(act, /112[\s ]000 \(Сто двенадцать тысяч\) рублей 00 копеек/);
   assert.match(act, /Переменная часть: И - Ф, если результат положительный/);
+  assert.match(act, /в лице генерального директора Иванова Ивана Ивановича/);
+  assert.match(reconciliation, /в лице генерального директора Иванова Ивана Ивановича/);
+  assert.equal((act.match(/class="signature-header"/g) ?? []).length, 2);
   assert.match(act, /32[\s ]000,00 руб/);
   assert.match(act, /Подтверждённого технического простоя не было; P = 0 дней/);
   assert.doesNotMatch(act, /Зачёт расходов на топливо/);
