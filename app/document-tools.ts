@@ -372,9 +372,31 @@ function rentActBody(input: OfficialDocumentInput) {
   ${signatures(s)}`;
 }
 
+export function sharedBottlePeriodParts(
+  first: Pick<InvoiceLike, "kind" | "bottleStartDate" | "bottleEndDate">,
+  second: Pick<InvoiceLike, "kind" | "bottleStartDate" | "bottleEndDate">,
+) {
+  return Boolean(first.bottleStartDate && first.bottleEndDate && second.bottleStartDate && second.bottleEndDate &&
+    first.bottleStartDate <= second.bottleEndDate && first.bottleEndDate >= second.bottleStartDate &&
+    ((first.kind === "fixed" && second.kind === "variable") ||
+      (first.kind === "variable" && second.kind === "fixed")));
+}
+
+export function fuelInvoiceForDate(invoices: InvoiceLike[], date: string) {
+  const matching = invoices.filter((invoice) => invoice.bottleStartDate && invoice.bottleEndDate &&
+    invoice.bottleStartDate <= date && invoice.bottleEndDate >= date);
+  if (matching.length === 1) return matching[0].id;
+  if (matching.length === 2 && sharedBottlePeriodParts(matching[0], matching[1])) {
+    // Вычет относится к постоянной части; общий блок дней показывает его один раз.
+    return matching.find((invoice) => invoice.kind === "fixed")!.id;
+  }
+  return undefined;
+}
+
 export function reconciliationSummary(input: OfficialDocumentInput) {
   const asOf = input.meta.asOfDate || input.meta.documentDate;
-  const invoiceIds = new Set(input.invoices.map((invoice) => invoice.id));
+  const invoiceIds = new Set(input.invoices.filter((invoice) =>
+    !invoice.period || invoice.period === input.meta.period).map((invoice) => invoice.id));
   const payments = input.payments.filter((payment) => invoiceIds.has(payment.invoiceId) && payment.paymentDate <= asOf);
   const paidKopecks = payments.reduce((sum, payment) => sum + payment.amountKopecks, 0);
   const bounds = periodBounds(input.meta.period);
@@ -391,7 +413,8 @@ function reconciliationPages(input: OfficialDocumentInput) {
   const { settings: s, meta: m, calculation: c } = input;
   const b = periodBounds(m.period);
   const { payments, paidKopecks, customerFuelKopecks, opening, balance, asOf } = reconciliationSummary(input);
-  const invoices = input.invoices.filter((invoice) => !invoice.period || invoice.period === m.period)
+  const invoices = input.invoices.filter((invoice) => (!invoice.period || invoice.period === m.period) &&
+    (!invoice.invoiceDate || invoice.invoiceDate <= asOf))
     .sort((a, b) => (a.bottleStartDate ?? a.invoiceDate ?? "").localeCompare(b.bottleStartDate ?? b.invoiceDate ?? "") || a.id - b.id);
   const fuelByDate = new Map<string, number>();
   for (const expense of input.expenses ?? []) {
@@ -404,9 +427,8 @@ function reconciliationPages(input: OfficialDocumentInput) {
     invoice.bottleStartDate <= invoice.bottleEndDate);
   const invoiceForFuel = new Map<string, number>();
   for (const date of fuelByDate.keys()) {
-    const matching = invoices.filter((invoice) => validRange(invoice) &&
-      invoice.bottleStartDate! <= date && invoice.bottleEndDate! >= date);
-    if (matching.length === 1) invoiceForFuel.set(date, matching[0].id);
+    const invoiceId = fuelInvoiceForDate(invoices.filter(validRange), date);
+    if (invoiceId !== undefined) invoiceForFuel.set(date, invoiceId);
   }
   const entriesByDate = new Map<string, number>();
   for (const entry of input.entries ?? []) {
@@ -424,16 +446,22 @@ function reconciliationPages(input: OfficialDocumentInput) {
   const invoiceRows: string[] = [];
   const dailyRows: string[] = [];
   let hasLegacyInvoice = false;
-  let invoicedUnits = 0;
-  for (const invoice of invoices) {
-    const range = validRange(invoice);
+  const invoicedDates = new Set<string>();
+  const invoiceGroups: InvoiceLike[][] = [];
+  const invoiceDates = (invoice: InvoiceLike) => {
     const dates: string[] = [];
-    if (range) {
+    if (validRange(invoice)) {
       for (let date = parseIso(invoice.bottleStartDate!); isoUtc(date) <= invoice.bottleEndDate!;
         date = new Date(date.getTime() + 86_400_000)) dates.push(isoUtc(date));
-    } else hasLegacyInvoice = true;
+    }
+    return dates;
+  };
+  for (const invoice of invoices) {
+    const range = validRange(invoice);
+    const dates = invoiceDates(invoice);
+    if (!range) hasLegacyInvoice = true;
     const units = dates.reduce((sum, date) => sum + (entriesByDate.get(date) ?? 0), 0);
-    invoicedUnits += units;
+    dates.forEach((date) => invoicedDates.add(date));
     const fuel = dates.reduce((sum, date) => sum +
       (invoiceForFuel.get(date) === invoice.id ? fuelByDate.get(date) ?? 0 : 0), 0);
     const charged = invoice.amountKopecks ?? 0;
@@ -445,25 +473,49 @@ function reconciliationPages(input: OfficialDocumentInput) {
       <td class="value">${rubles(fuel)}</td><td class="value">${rubles(charged - fuel)}</td>
       <td class="value">${rubles(paid)}</td><td class="value">${rubles(charged - fuel - paid)}</td></tr>`);
     if (!range) continue;
+    const connectedGroups = invoiceGroups.filter((group) => group.some((item) => sharedBottlePeriodParts(item, invoice)));
+    if (!connectedGroups.length) invoiceGroups.push([invoice]);
+    else {
+      const merged = [...connectedGroups.flat(), invoice];
+      for (const group of connectedGroups) invoiceGroups.splice(invoiceGroups.indexOf(group), 1);
+      invoiceGroups.push(merged);
+    }
+  }
+  invoiceGroups.sort((first, second) => first[0].bottleStartDate!.localeCompare(second[0].bottleStartDate!));
+  for (const group of invoiceGroups) {
+    const dates = [...new Set(group.flatMap(invoiceDates))].sort();
+    const groupIds = new Set(group.map((item) => item.id));
+    const refs = group.map((item) => `№ ${escapeHtml(item.invoiceNumber)}`).join(", ");
+    const units = dates.reduce((sum, date) => sum + (entriesByDate.get(date) ?? 0), 0);
+    const charged = group.reduce((sum, item) => sum + (item.amountKopecks ?? 0), 0);
+    const fuel = dates.reduce((sum, date) => sum +
+      (groupIds.has(invoiceForFuel.get(date) ?? -1) ? fuelByDate.get(date) ?? 0 : 0), 0);
     for (const date of dates) {
       const dayUnits = entriesByDate.get(date) ?? 0;
-      const dayFuel = invoiceForFuel.get(date) === invoice.id ? fuelByDate.get(date) ?? 0 : 0;
-      dailyRows.push(`<tr><td>${date === dates[0] ? `№ ${escapeHtml(invoice.invoiceNumber)} · ${shortDate(invoice.bottleStartDate!)}–${shortDate(invoice.bottleEndDate!)}` : ""}</td>
+      const dayFuel = groupIds.has(invoiceForFuel.get(date) ?? -1) ? fuelByDate.get(date) ?? 0 : 0;
+      dailyRows.push(`<tr><td>${date === dates[0] ? `${refs} · ${shortDate(dates[0])}–${shortDate(dates[dates.length - 1])}` : ""}</td>
         <td>${shortDate(date)}</td><td class="value">${integer(dayUnits)}</td>
         <td class="value">${dayFuel ? rubles(dayFuel) : "—"}</td><td class="value">${rubles(dayUnits * s.rateKopecks - dayFuel)}</td></tr>`);
     }
     const calculated = units * s.rateKopecks;
-    if (calculated !== charged) dailyRows.push(`<tr><td colspan="4">Разница между расчётом по бутылям и суммой счёта № ${escapeHtml(invoice.invoiceNumber)}</td>
+    if (calculated !== charged) dailyRows.push(`<tr><td colspan="4">Разница между расчётом по бутылям и суммой ${group.length === 1 ? "счёта" : "счетов"} ${refs}</td>
       <td class="value">${rubles(charged - calculated)}</td></tr>`);
-    dailyRows.push(`<tr class="total"><td>Итого счёт № ${escapeHtml(invoice.invoiceNumber)}</td><td></td>
+    dailyRows.push(`<tr class="total"><td>Итого ${group.length === 1 ? "счёт" : "счета"} ${refs}</td><td></td>
       <td class="value">${integer(units)}</td><td class="value">${rubles(fuel)}</td>
       <td class="value">${rubles(charged - fuel)}</td></tr>`);
   }
+  const invoicedUnits = [...invoicedDates].reduce((sum, date) => sum + (entriesByDate.get(date) ?? 0), 0);
   const unassignedFuel = [...fuelByDate].filter(([date]) => !invoiceForFuel.has(date));
   const unassignedFuelTotal = unassignedFuel.reduce((sum, [, amount]) => sum + amount, 0);
   for (const [date, amount] of unassignedFuel) dailyRows.push(`<tr><td>Без периода счёта</td><td>${shortDate(date)}</td>
     <td class="value">—</td><td class="value">${rubles(amount)}</td><td class="value">−${rubles(amount)}</td></tr>`);
   const totalInvoiced = invoices.reduce((sum, invoice) => sum + (invoice.amountKopecks ?? 0), 0);
+  const visibleInvoiceIds = new Set(invoices.map((invoice) => invoice.id));
+  const advances = payments.filter((payment) => !visibleInvoiceIds.has(payment.invoiceId))
+    .reduce((sum, payment) => sum + payment.amountKopecks, 0);
+  if (advances) invoiceRows.push(`<tr><td colspan="3">Аванс до даты выставления счёта</td>
+    <td class="value">—</td><td class="value">—</td><td class="value">—</td>
+    <td class="value">${rubles(advances)}</td><td class="value">−${rubles(advances)}</td></tr>`);
   if (unassignedFuelTotal) invoiceRows.push(`<tr><td colspan="3">Топливо вне периодов счетов</td>
     <td class="value">—</td><td class="value">${rubles(unassignedFuelTotal)}</td>
     <td class="value">−${rubles(unassignedFuelTotal)}</td><td class="value">—</td>
@@ -492,6 +544,7 @@ function reconciliationPages(input: OfficialDocumentInput) {
   ${rows.map(([label, value], i) => `<tr class="${i === 4 ? "total" : ""}"><td>${escapeHtml(label)}</td><td class="value">${escapeHtml(value)}</td></tr>`).join("")}</tbody></table>
   <p><b>2.</b> Расшифровка выставленных счетов. Количество бутылей и вычет топлива по датам приведены на следующих страницах.</p>
   ${invoiceTable(invoiceRows.slice(0, 8))}
+  ${invoiceGroups.some((group) => group.length > 1) ? "<p>Дни счетов постоянной и переменной части расшифрованы общим блоком. Вычет топлива за общие дни отнесён к постоянной части.</p>" : ""}
   ${hasLegacyInvoice ? "<p>У ранее сохранённых счетов без дат период бутылей не указан; эти даты можно добавить при редактировании счёта.</p>" : ""}
   ${unassignedFuel.length ? "<p>Вычет топлива за даты вне указанных периодов счетов показан отдельно на следующей странице.</p>" : ""}
   ${fuelDocuments.length ? `<p>Основания вычета топлива по датам: ${escapeHtml(fuelDocuments.join("; "))}.</p>` : ""}

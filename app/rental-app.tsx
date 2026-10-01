@@ -71,8 +71,10 @@ import {
   calculateRental,
   defaultDocumentMeta,
   DEFAULT_DOCUMENT_SETTINGS,
+  fuelInvoiceForDate,
   periodBounds,
   reconciliationSummary,
+  sharedBottlePeriodParts,
   type DocumentCalculation,
   type DocumentMeta,
   type DocumentSettings,
@@ -583,7 +585,8 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
     }
     if (bottleStartDate && store.invoices.some((invoice) => invoice.id !== editId &&
       invoice.period === payload.period && invoice.bottleStartDate && invoice.bottleEndDate &&
-      invoice.bottleStartDate <= bottleEndDate && invoice.bottleEndDate >= bottleStartDate)) {
+      invoice.bottleStartDate <= bottleEndDate && invoice.bottleEndDate >= bottleStartDate &&
+      !sharedBottlePeriodParts(invoice, { kind: String(payload.kind), bottleStartDate, bottleEndDate }))) {
       throw new Error("Периоды бутылей по счетам не должны пересекаться");
     }
     const recordId = editId ?? nextId(store.invoices);
@@ -1577,10 +1580,9 @@ export default function RentalApp() {
     const allocated = new Map<number, number>();
     for (const expense of data?.expenses ?? []) {
       if (expense.category !== "fuel" || expense.payer !== "customer") continue;
-      const matching = (data?.invoices ?? []).filter((invoice) => invoice.bottleStartDate && invoice.bottleEndDate &&
-        invoice.bottleStartDate <= expense.expenseDate && invoice.bottleEndDate >= expense.expenseDate);
-      if (matching.length === 1) allocated.set(matching[0].id,
-        (allocated.get(matching[0].id) ?? 0) + expense.amountKopecks);
+      const invoiceId = fuelInvoiceForDate(data?.invoices ?? [], expense.expenseDate);
+      if (invoiceId !== undefined) allocated.set(invoiceId,
+        (allocated.get(invoiceId) ?? 0) + expense.amountKopecks);
     }
     return allocated;
   }, [data?.expenses, data?.invoices]);

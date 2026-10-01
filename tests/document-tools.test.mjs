@@ -167,6 +167,61 @@ test("reconciliation traces each invoice to days and shows fuel deductions on th
   assert.equal((reconciliation.match(/class="page"/g) ?? []).length, 2);
 });
 
+test("fixed and variable invoices share days and deduct customer fuel once", () => {
+  const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS };
+  const entries = [1000, 900, 900].map((units, index) => ({ entryDate: `2026-08-0${index + 1}`, units }));
+  const invoices = [
+    { id: 1, invoiceNumber: "F", period: "2026-08", invoiceDate: "2026-08-04", kind: "fixed",
+      bottleStartDate: "2026-08-01", bottleEndDate: "2026-08-03", amountKopecks: 8_000_000 },
+    { id: 2, invoiceNumber: "V", period: "2026-08", invoiceDate: "2026-08-04", kind: "variable",
+      bottleStartDate: "2026-08-01", bottleEndDate: "2026-08-03", amountKopecks: 3_200_000 },
+  ];
+  const input = { settings, meta: tools.defaultDocumentMeta("2026-08", 1, "2026-09-15"), entries,
+    calculation: tools.calculateRental("2026-08", entries, [], settings), downtimes: [], invoices,
+    expenses: [{ expenseDate: "2026-08-02", category: "fuel", payer: "customer", amountKopecks: 250_000 }],
+    payments: [{ invoiceId: 1, paymentDate: "2026-08-05", amountKopecks: 7_000_000 },
+      { invoiceId: 2, paymentDate: "2026-08-05", amountKopecks: 3_200_000 }],
+  };
+  const html = tools.buildReconciliationHtml(input);
+  const daily = html.split('class="reconciliation-daily"')[1];
+  assert.equal(tools.fuelInvoiceForDate(invoices, "2026-08-02"), 1);
+  assert.equal((daily.match(/02\.08\.2026<\/td>/g) ?? []).length, 1);
+  assert.match(daily, /Итого счета № F, № V/);
+  assert.match(daily, /2[\s ]800<\/td><td class="value">2[\s ]500,00<\/td>\s*<td class="value">109[\s ]500,00/);
+  assert.doesNotMatch(daily, /5[\s ]600/);
+  assert.equal(tools.reconciliationSummary(input).balance, 750_000);
+  const splitInvoices = [
+    { ...invoices[0], id: 1, invoiceNumber: "F1", bottleEndDate: "2026-08-01", amountKopecks: 4_000_000 },
+    { ...invoices[0], id: 3, invoiceNumber: "F2", bottleStartDate: "2026-08-02", amountKopecks: 4_000_000 },
+    invoices[1],
+  ];
+  const splitHtml = tools.buildReconciliationHtml({ ...input, invoices: splitInvoices });
+  const splitDaily = splitHtml.split('class="reconciliation-daily"')[1];
+  assert.equal(tools.fuelInvoiceForDate(splitInvoices, "2026-08-02"), 3);
+  assert.equal((splitDaily.match(/02\.08\.2026<\/td>/g) ?? []).length, 1);
+  assert.match(splitDaily, /2[\s ]800<\/td><td class="value">2[\s ]500,00<\/td>\s*<td class="value">109[\s ]500,00/);
+});
+
+test("reconciliation excludes invoices issued after the selected date", () => {
+  const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS };
+  const entries = [{ entryDate: "2026-08-01", units: 320 }];
+  const input = { settings, meta: { ...tools.defaultDocumentMeta("2026-08", 1, "2026-09-15"), asOfDate: "2026-08-10" },
+    calculation: tools.calculateRental("2026-08", entries, [], settings), entries, downtimes: [],
+    invoices: [
+      { id: 1, invoiceNumber: "EARLY", invoiceDate: "2026-08-04", period: "2026-08", amountKopecks: 1_280_000,
+        bottleStartDate: "2026-08-01", bottleEndDate: "2026-08-03" },
+      { id: 2, invoiceNumber: "FUTURE", invoiceDate: "2026-08-16", period: "2026-08", amountKopecks: 4_720_000,
+        bottleStartDate: "2026-08-04", bottleEndDate: "2026-08-15" },
+    ], expenses: [],
+    payments: [{ invoiceId: 1, paymentDate: "2026-08-05", amountKopecks: 1_000_000 },
+      { invoiceId: 2, paymentDate: "2026-08-09", amountKopecks: 500_000 }],
+  };
+  assert.match(tools.buildReconciliationHtml(input), /EARLY/);
+  assert.doesNotMatch(tools.buildReconciliationHtml(input), /FUTURE/);
+  assert.match(tools.buildReconciliationHtml(input), /Аванс до даты выставления счёта/);
+  assert.equal(tools.reconciliationSummary(input).paidKopecks, 1_500_000);
+});
+
 test("reconciliation uses period-linked payments received no later than the selected date", () => {
   const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS };
   const input = { settings, meta: { ...tools.defaultDocumentMeta("2026-08", 1, "2026-09-15"), asOfDate: "2026-09-15" },
