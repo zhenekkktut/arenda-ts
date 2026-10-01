@@ -26,6 +26,20 @@ test("old phone records survive migration and one bank payment is allocated with
     assert.equal(read().payments.reduce((sum, p) => sum + p.amountKopecks, 0), 3_500_000);
     assert.equal(new Set(read().payments.map((p) => p.groupId)).size, 1);
     assert.equal(read().settings.contractNumber, "002-АР/2026");
+    assert.equal(read().invoices[0].bottleStartDate, undefined);
+    saveOfflineAction({ action: "update_invoice", id: 1, period: "2026-08", invoiceNumber: "27",
+      invoiceDate: "2026-09-08", kind: "fixed", amountKopecks: 5_000_000, dueDate: "", note: "старый счёт" });
+    assert.equal(read().invoices.find((invoice) => invoice.id === 1).note, "старый счёт");
+    assert.equal(read().invoices.find((invoice) => invoice.id === 1).bottleStartDate, undefined);
+    saveOfflineAction({ action: "create_invoice", period: "2026-08", invoiceNumber: "29",
+      invoiceDate: "2026-08-06", kind: "fixed", amountKopecks: 1_200_000,
+      bottleStartDate: "2026-08-04", bottleEndDate: "2026-08-06", dueDate: "", note: "" });
+    assert.equal(read().invoices.find((invoice) => invoice.invoiceNumber === "29").bottleEndDate, "2026-08-06");
+    assert.throws(() => saveOfflineAction({ action: "create_invoice", period: "2026-08", invoiceNumber: "30",
+      invoiceDate: "2026-08-07", kind: "fixed", amountKopecks: 100_000,
+      bottleStartDate: "2026-08-06", bottleEndDate: "2026-08-07", dueDate: "", note: "" }),
+    /не должны пересекаться/);
+    assert.equal(read().invoices.length, 3);
     assert.throws(() => saveOfflineAction({ action: "create_payment_split", paymentDate: "2026-09-10",
       amountKopecks: 4_000_000, method: "bank", allocations: [
         { invoiceId: 1, amountKopecks: 2_000_000 }, { invoiceId: 2, amountKopecks: 1_500_000 }] }));

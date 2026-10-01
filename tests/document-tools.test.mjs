@@ -77,7 +77,7 @@ test("partial ownership excludes days before the lease begins", () => {
   assert.equal(calculation.baseKopecks, Math.round(8_000_000 * 16 / 31));
 });
 
-test("August reference act and reconciliation use invoice 27 and exclude fuel offsets", () => {
+test("rent act keeps the contract amount while reconciliation deducts customer fuel", () => {
   const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS, lesseeDirector: "Иванова Ивана Ивановича" };
   const calculation = tools.calculateRental(
     "2026-08",
@@ -117,13 +117,54 @@ test("August reference act and reconciliation use invoice 27 and exclude fuel of
   assert.match(act, /32[\s ]000,00 руб/);
   assert.match(act, /Подтверждённого технического простоя не было; P = 0 дней/);
   assert.doesNotMatch(act, /Зачёт расходов на топливо/);
-  assert.doesNotMatch(reconciliation, /Зачёт расходов на топливо/);
-  assert.match(reconciliation, /счёт № 27 от 08\.09\.2026/);
+  assert.match(reconciliation, /Вычет топлива, оплаченного заказчиком/);
+  assert.match(reconciliation, /№ 27/);
+  assert.match(reconciliation, /08\.09\.2026/);
   assert.match(reconciliation, /35[\s ]000,00/);
-  assert.match(reconciliation, /77[\s ]000,00/);
-  assert.match(reconciliation, /Семьдесят семь тысяч/);
-  assert.equal(tools.reconciliationSummary(input).balance, 7_700_000);
-  assert.equal((packageHtml.match(/class="page"/g) ?? []).length, 2);
+  assert.match(reconciliation, /73[\s ]000,00/);
+  assert.match(reconciliation, /Семьдесят три тысячи/);
+  assert.equal(tools.reconciliationSummary(input).customerFuelKopecks, 400_000);
+  assert.equal(tools.reconciliationSummary(input).balance, 7_300_000);
+  assert.equal((packageHtml.match(/class="page"/g) ?? []).length, 3);
+});
+
+test("reconciliation traces each invoice to days and shows fuel deductions on their dates", () => {
+  const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS };
+  const counts = [100, 110, 110, ...Array(10).fill(100), 90, 90, ...Array(5).fill(80), 100, ...Array(10).fill(80)];
+  const entries = counts.map((units, index) => ({ entryDate: `2026-08-${String(index + 1).padStart(2, "0")}`, units }));
+  const invoices = [
+    { id: 31, period: "2026-08", invoiceNumber: "31", invoiceDate: "2026-08-04", bottleStartDate: "2026-08-01", bottleEndDate: "2026-08-03", amountKopecks: 1_280_000 },
+    { id: 32, period: "2026-08", invoiceNumber: "32", invoiceDate: "2026-08-16", bottleStartDate: "2026-08-04", bottleEndDate: "2026-08-15", amountKopecks: 4_720_000 },
+    { id: 33, period: "2026-08", invoiceNumber: "33", invoiceDate: "2026-08-22", bottleStartDate: "2026-08-16", bottleEndDate: "2026-08-21", amountKopecks: 2_000_000 },
+    { id: 34, period: "2026-08", invoiceNumber: "34", invoiceDate: "2026-09-01", bottleStartDate: "2026-08-22", bottleEndDate: "2026-08-31", amountKopecks: 3_200_000 },
+  ];
+  const input = {
+    settings, meta: { ...tools.defaultDocumentMeta("2026-08", 1, "2026-09-15"), asOfDate: "2026-09-15" },
+    calculation: tools.calculateRental("2026-08", entries, [], settings), downtimes: [], entries, invoices,
+    expenses: [
+      { expenseDate: "2026-08-07", category: "fuel", payer: "customer", amountKopecks: 250_000 },
+      { expenseDate: "2026-08-12", category: "fuel", payer: "customer", amountKopecks: 300_000 },
+      { expenseDate: "2026-08-13", category: "fuel", payer: "customer", amountKopecks: 200_000 },
+    ],
+    payments: [
+      { invoiceId: 31, paymentDate: "2026-08-05", amountKopecks: 1_280_000, documentNumber: "" },
+      { invoiceId: 32, paymentDate: "2026-08-18", amountKopecks: 3_000_000, documentNumber: "" },
+      { invoiceId: 33, paymentDate: "2026-08-25", amountKopecks: 2_000_000, documentNumber: "" },
+    ],
+  };
+  const act = tools.buildRentActHtml(input);
+  const reconciliation = tools.buildReconciliationHtml(input);
+  assert.equal(input.calculation.totalKopecks, 11_200_000);
+  assert.equal(tools.reconciliationSummary(input).balance, 4_170_000);
+  assert.match(act, /112[\s ]000,00/);
+  assert.match(reconciliation, /07\.08\.2026<\/td><td class="value">100<\/td>\s*<td class="value">2[\s ]500,00<\/td><td class="value">1[\s ]500,00/);
+  assert.match(reconciliation, /12\.08\.2026<\/td><td class="value">100<\/td>\s*<td class="value">3[\s ]000,00<\/td><td class="value">1[\s ]000,00/);
+  assert.match(reconciliation, /13\.08\.2026<\/td><td class="value">100<\/td>\s*<td class="value">2[\s ]000,00<\/td><td class="value">2[\s ]000,00/);
+  assert.match(reconciliation, /39[\s ]700,00/);
+  assert.match(reconciliation, /41[\s ]700,00/);
+  assert.doesNotMatch(reconciliation, /По данным<br>Арендодателя/);
+  assert.doesNotMatch(reconciliation, /Повторно эти суммы не начисляются/);
+  assert.equal((reconciliation.match(/class="page"/g) ?? []).length, 2);
 });
 
 test("reconciliation uses period-linked payments received no later than the selected date", () => {
