@@ -28,6 +28,7 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.Toast;
+import org.json.JSONObject;
 
 import java.io.OutputStream;
 
@@ -53,6 +54,7 @@ public class MainActivity extends Activity {
     private String pendingPdfFileName;
     private WebView pdfWebView;
     private boolean pdfInProgress;
+    private String activeArchiveId;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -237,6 +239,7 @@ public class MainActivity extends Activity {
                 pendingPdfHtml = null;
                 pendingPdfFileName = null;
                 pdfInProgress = false;
+                activeArchiveId = null;
             }
             return;
         }
@@ -322,16 +325,38 @@ public class MainActivity extends Activity {
             String pdfFileName = safeFileName(fileName == null ? "document.pdf" : fileName);
             if (!pdfFileName.toLowerCase().endsWith(".pdf")) pdfFileName += ".pdf";
             final String finalPdfFileName = pdfFileName;
-            runOnUiThread(() -> beginPdfSave(html, finalPdfFileName));
+            runOnUiThread(() -> beginPdfSave(html, finalPdfFileName, null));
+        }
+
+        @JavascriptInterface
+        public void saveArchivedHtmlAsPdf(String html, String fileName, String archiveId) {
+            if (html == null || html.trim().isEmpty()) return;
+            final String safeName = safeFileName(fileName);
+            runOnUiThread(() -> beginPdfSave(html, safeName, archiveId));
+        }
+
+        @JavascriptInterface
+        public void openArchivedPdf(String uri) {
+            runOnUiThread(() -> { if (isLocalDocumentUri(uri)) openPdf(Uri.parse(uri)); });
+        }
+
+        @JavascriptInterface
+        public void shareArchivedPdf(String uri) {
+            runOnUiThread(() -> { if (isLocalDocumentUri(uri)) sharePdf(Uri.parse(uri)); });
         }
     }
 
-    private void beginPdfSave(String html, String pdfFileName) {
+    private boolean isLocalDocumentUri(String uri) {
+        return uri != null && uri.startsWith("content://") && !uri.contains("\n");
+    }
+
+    private void beginPdfSave(String html, String pdfFileName, String archiveId) {
         if (pdfInProgress) {
             Toast.makeText(this, R.string.pdf_in_progress, Toast.LENGTH_SHORT).show();
             return;
         }
         pdfInProgress = true;
+        activeArchiveId = archiveId;
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
@@ -345,6 +370,7 @@ public class MainActivity extends Activity {
                 renderHtmlToPdf(html, pdfFileName, destination, true);
             } catch (Exception error) {
                 pdfInProgress = false;
+                activeArchiveId = null;
                 Toast.makeText(this, R.string.file_save_error, Toast.LENGTH_LONG).show();
             }
             return;
@@ -362,6 +388,7 @@ public class MainActivity extends Activity {
             pendingPdfHtml = null;
             pendingPdfFileName = null;
             pdfInProgress = false;
+            activeArchiveId = null;
             Toast.makeText(this, R.string.file_save_error, Toast.LENGTH_LONG).show();
         }
     }
@@ -479,10 +506,19 @@ public class MainActivity extends Activity {
             pdfWebView = null;
         }
         pdfInProgress = false;
+        String archiveId = activeArchiveId;
+        activeArchiveId = null;
 
         if (!success) {
             Toast.makeText(this, R.string.file_save_error, Toast.LENGTH_LONG).show();
             return;
+        }
+
+        if (archiveId != null && webView != null) {
+            webView.evaluateJavascript(
+                "window.onArchivePdfSaved?.(" + JSONObject.quote(archiveId) + "," +
+                    JSONObject.quote(destination.toString()) + ")", null
+            );
         }
 
         String folder = mediaStoreDestination ? "Загрузки/Аренда ТС" : "выбранная папка";

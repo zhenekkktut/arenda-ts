@@ -2,9 +2,12 @@ export type DocumentSettings = {
   city: string;
   contractNumber: string;
   contractDate: string;
+  rentalStart: string;
+  rentalEnd: string;
   lessorFull: string;
   lessorShort: string;
   lessorSignerShort: string;
+  lessorDative: string;
   lessorInn: string;
   lesseeFull: string;
   lesseeShort: string;
@@ -13,8 +16,10 @@ export type DocumentSettings = {
   lesseeDirector: string;
   lesseeDirectorShort: string;
   vehicleModel: string;
+  vehicleYear: string;
   vehicleVin: string;
   vehiclePlate: string;
+  vatLabel: string;
   baseKopecks: number;
   includedUnits: number;
   rateKopecks: number;
@@ -25,6 +30,7 @@ export type Downtime = {
   startDate: string;
   endDate: string;
   reason: string;
+  basis?: string;
   note: string;
 };
 
@@ -35,6 +41,8 @@ export type DocumentMeta = {
   documentDate: string;
   basis: string;
   openingBalanceKopecks: number;
+  asOfDate?: string;
+  adjustments?: string;
 };
 
 export type DocumentCalculation = {
@@ -49,11 +57,12 @@ export type DocumentCalculation = {
   variableKopecks: number;
   totalKopecks: number;
   calendarDays: number;
+  ownershipDays: number;
   downtimeDays: number;
   payableDays: number;
 };
 
-type EntryLike = { entryDate: string; units: number };
+type EntryLike = { entryDate: string; units: number; note?: string };
 type PaymentLike = {
   invoiceId: number;
   paymentDate: string;
@@ -61,7 +70,7 @@ type PaymentLike = {
   method: "bank" | "cash";
   documentNumber: string;
 };
-type InvoiceLike = { id: number; invoiceNumber: string };
+type InvoiceLike = { id: number; invoiceNumber: string; invoiceDate?: string; period?: string; kind?: string; actNumber?: string; amountKopecks?: number; note?: string };
 type ExpenseLike = {
   expenseDate: string;
   category: string;
@@ -73,21 +82,26 @@ type ExpenseLike = {
 
 export const DEFAULT_DOCUMENT_SETTINGS: DocumentSettings = {
   city: "Выборг",
-  contractNumber: "[НОМЕР ДОГОВОРА]",
-  contractDate: "2026-01-01",
-  lessorFull: "Индивидуальный предприниматель [ФИО]",
-  lessorShort: "ИП [ФИО]",
-  lessorSignerShort: "[ФИО]",
-  lessorInn: "[ИНН]",
-  lesseeFull: "ООО «[НАИМЕНОВАНИЕ]»",
-  lesseeShort: "ООО «[НАИМЕНОВАНИЕ]»",
-  lesseeInn: "[ИНН]",
-  lesseeKpp: "[КПП]",
-  lesseeDirector: "[ФИО ДИРЕКТОРА]",
-  lesseeDirectorShort: "[ФИО]",
-  vehicleModel: "[АВТОМОБИЛЬ]",
-  vehicleVin: "[VIN]",
-  vehiclePlate: "[ГОСНОМЕР]",
+  contractNumber: "002-АР/2026",
+  contractDate: "2026-08-01",
+  rentalStart: "2026-08-01",
+  rentalEnd: "2027-07-31",
+  lessorFull: "",
+  lessorShort: "",
+  lessorSignerShort: "",
+  lessorDative: "",
+  lessorInn: "",
+  lesseeFull: "",
+  lesseeShort: "",
+  lesseeInn: "",
+  lesseeKpp: "",
+  lesseeDirector: "",
+  lesseeDirectorShort: "",
+  vehicleModel: "Fiat Ducato",
+  vehicleYear: "2001",
+  vehicleVin: "",
+  vehiclePlate: "",
+  vatLabel: "Без НДС",
   baseKopecks: 8_000_000,
   includedUnits: 2_000,
   rateKopecks: 4_000,
@@ -150,11 +164,15 @@ export function calculateRental(
     }
   }
 
+  const possessionStart = settings.rentalStart && settings.rentalStart > bounds.start ? settings.rentalStart : bounds.start;
+  const possessionEnd = settings.rentalEnd && settings.rentalEnd < bounds.end ? settings.rentalEnd : bounds.end;
   const actualUnits = entries
-    .filter((entry) => entry.entryDate >= bounds.start && entry.entryDate <= bounds.end)
+    .filter((entry) => entry.entryDate >= possessionStart && entry.entryDate <= possessionEnd)
     .reduce((sum, entry) => sum + entry.units, 0);
-  const downtimeDays = unavailable.size;
-  const payableDays = Math.max(0, bounds.days - downtimeDays);
+  const ownershipDays = possessionStart > possessionEnd ? 0
+    : Math.round((parseIso(possessionEnd).getTime() - parseIso(possessionStart).getTime()) / 86_400_000) + 1;
+  const relevantDowntimeDays = [...unavailable].filter((day) => day >= possessionStart && day <= possessionEnd).length;
+  const payableDays = Math.max(0, ownershipDays - relevantDowntimeDays);
   // Пункты 2.3–2.4 договора: полные дни подтверждённого простоя всегда
   // исключаются из оплачиваемых дней. Итог месяца — большая из сумм Ф и И.
   const baseKopecks = Math.round(settings.baseKopecks * payableDays / bounds.days);
@@ -174,7 +192,8 @@ export function calculateRental(
     variableKopecks,
     totalKopecks: Math.max(baseKopecks, intensityKopecks),
     calendarDays: bounds.days,
-    downtimeDays,
+    downtimeDays: relevantDowntimeDays,
+    ownershipDays,
     payableDays,
   };
 }
@@ -186,7 +205,7 @@ export function periodLabel(period: string) {
 
 export function longDate(value: string) {
   const [year, month, day] = value.split("-").map(Number);
-  return `${day} ${monthNamesGenitive[month - 1]} ${year} года`;
+  return `${String(day).padStart(2, "0")} ${monthNamesGenitive[month - 1]} ${year} года`;
 }
 
 function escapeHtml(value: unknown) {
@@ -248,154 +267,181 @@ export function moneyWords(kopecks: number) {
   return `${text.charAt(0).toUpperCase()}${text.slice(1)} ${plural(whole, "рубль", "рубля", "рублей")} ${String(fractions).padStart(2, "0")} ${plural(fractions, "копейка", "копейки", "копеек")}`;
 }
 
+// Фиксированные формы: заполненные образцы на страницах 7 и 8 пакета от 01.10.2026.
 const officialCss = `
-  @page { size: A4; margin: 15mm 17mm 15mm; }
+  @page { size: A4; margin: 0; }
   * { box-sizing: border-box; }
-  body { margin: 0; color: #000; background: #fff; font-family: "Noto Serif", "Times New Roman", serif; font-size: 10.6pt; line-height: 1.3; }
-  .page { width: 100%; }
-  .page + .page { page-break-before: always; break-before: page; }
-  h1 { margin: 0 0 3mm; text-align: center; font-size: 14pt; line-height: 1.2; text-transform: uppercase; }
-  .number, .city { margin: 0 0 2.5mm; text-align: center; }
-  p { margin: 0 0 2.2mm; text-align: justify; }
-  .contract { margin-bottom: 2.5mm; }
-  table { width: 100%; margin: 3mm 0; border-collapse: collapse; font-size: 9.7pt; }
-  th, td { padding: 2.1mm 2mm; border: 0.25mm solid #999; vertical-align: top; }
-  th { background: #eee; text-align: left; font-weight: 700; }
-  td.money, th.money { width: 31%; text-align: right; white-space: nowrap; }
-  .reconciliation th, .reconciliation td { padding: 1.7mm 1.5mm; font-size: 8.7pt; }
-  .reconciliation .date { width: 15%; white-space: nowrap; }
-  .reconciliation .sum { width: 15%; text-align: right; white-space: nowrap; }
-  .total td { font-weight: 700; }
-  .words { margin-top: 3mm; font-weight: 700; }
-  .signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 12mm; margin-top: 10mm; page-break-inside: avoid; }
-  .signature-title { font-weight: 700; }
-  .signature-line { margin-top: 13mm; white-space: nowrap; }
-  .signature-date { margin-top: 5mm; }
-  .muted { font-size: 9pt; }
-  .nowrap { white-space: nowrap; }
-  @media screen {
-    html, body { width: 794px; min-width: 794px; }
-    .page { width: 794px; height: 1123px; padding: 57px 64px; overflow: hidden; }
-  }
+  html, body { margin: 0; padding: 0; background: white; color: black; }
+  body { font-family: "Noto Serif", "DejaVu Serif", "Times New Roman", serif; font-size: 10pt; line-height: 1.19; }
+  .page { width: 794px; height: 1123px; overflow: hidden; padding: 60px 67px 48px; page-break-after: always; }
+  .page:last-child { page-break-after: auto; }
+  h1 { margin: 0; text-align: center; font-size: 14pt; line-height: 1.18; font-weight: 700; }
+  h2 { margin: 0 0 4px; text-align: center; font-size: 11.4pt; }
+  p { margin: 0 0 6px; text-align: justify; }
+  .number, .city, .subtitle { text-align: center; margin: 0 0 5px; }
+  .city { margin: 1px 0 7px; }
+  table { border-collapse: collapse; width: 100%; margin: 7px -8px 7px; width: calc(100% + 16px); font-size: 9.2pt; }
+  th, td { border: 1px solid #b4b4b4; padding: 4px 6px; vertical-align: middle; }
+  th { background: #e9e9e9; text-align: left; }
+  .value { width: 31%; text-align: right; white-space: nowrap; }
+  .reconciliation .value { width: 25%; }
+  .reconciliation-page { font-size: 9.5pt; }
+  .total { font-weight: bold; }
+  .signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px -8px 0; font-size: 9pt; page-break-inside: avoid; }
+  .signature-line { margin-top: 18px; white-space: nowrap; }
+  .signature-date { margin-top: 6px; }
+  .blank { border-bottom: 1px solid #777; display: inline-block; min-width: 165px; }
+  .no-break { white-space: nowrap; }
+  .compact { font-size: 10pt; }
 `;
 
 function wrapDocument(title: string, pages: string[]) {
   return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=794, initial-scale=1"><title>${escapeHtml(title)}</title><style>${officialCss}</style></head><body>${pages.map((page) => `<section class="page">${page}</section>`).join("")}</body></html>`;
 }
 
-type OfficialDocumentInput = {
+export type OfficialDocumentInput = {
   settings: DocumentSettings;
   meta: DocumentMeta;
   calculation: DocumentCalculation;
   downtimes: Downtime[];
   invoices: InvoiceLike[];
   payments: PaymentLike[];
-  expenses: ExpenseLike[];
+  expenses?: ExpenseLike[];
+  entries?: EntryLike[];
 };
 
-function parties(settings: DocumentSettings) {
-  return `${escapeHtml(settings.lessorFull)}, ИНН ${escapeHtml(settings.lessorInn)} (Арендодатель), и ${escapeHtml(settings.lesseeFull)}, ИНН ${escapeHtml(settings.lesseeInn)}, КПП ${escapeHtml(settings.lesseeKpp)}, в лице генерального директора ${escapeHtml(settings.lesseeDirector)}, действующего на основании Устава (Арендатор)`;
+function shortDate(value: string) {
+  const [year, month, day] = value.split("-");
+  return `${day}.${month}.${year}`;
+}
+
+function amountWords(kopecks: number) {
+  const words = moneyWords(kopecks);
+  const match = words.match(/^(.*?) (рубль|рубля|рублей) (\d\d) (копейка|копейки|копеек)$/);
+  return match ? `${integer(Math.floor(kopecks / 100))} (${match[1]}) ${match[2]} ${match[3]} ${match[4]}` : words;
 }
 
 function signatures(settings: DocumentSettings) {
-  return `<div class="signatures"><div><div class="signature-title">Арендодатель</div><div>${escapeHtml(settings.lessorShort)}</div><div class="signature-line">____________ / ${escapeHtml(settings.lessorSignerShort)} /</div><div class="signature-date">Дата подписи: ____________</div></div><div><div class="signature-title">Арендатор</div><div>Генеральный директор ${escapeHtml(settings.lesseeShort)}</div><div class="signature-line">____________ / ${escapeHtml(settings.lesseeDirectorShort)} /</div><div class="signature-date">Дата подписи: ____________</div></div></div>`;
+  return `<div class="signatures"><div><b>Арендодатель</b><br>${escapeHtml(settings.lessorShort)}<div class="signature-line">________________ / ${escapeHtml(settings.lessorSignerShort)} /</div><div class="signature-date">Дата подписи: __________________</div></div><div><b>Арендатор</b><br>${escapeHtml(settings.lesseeShort)}<br>Генеральный директор ${escapeHtml(settings.lesseeDirectorShort)}<div class="signature-line">________________ / ${escapeHtml(settings.lesseeDirectorShort)} /</div><div class="signature-date">Дата подписи: __________________</div></div></div>`;
 }
 
 function rentActBody(input: OfficialDocumentInput) {
-  const { settings, meta, calculation } = input;
-  const bounds = periodBounds(meta.period);
-  const baseLabel = `Постоянная часть Ф = ${rubles(calculation.baseFullKopecks)} × ${calculation.payableDays} / ${calculation.calendarDays} дней`;
-  const intensityLabel = `Показатель интенсивности И = ${rubles(calculation.rateKopecks)} × ${integer(calculation.actualUnits)} ед.`;
-  const downtimeText = calculation.downtimeDays > 0
-    ? ` Исключено ${calculation.downtimeDays} ${plural(calculation.downtimeDays, "календарный день", "календарных дня", "календарных дней")} простоя автомобиля.`
-    : "";
-
-  return `
-    <h1>Акт аренды и расчёт арендной платы</h1>
-    <p class="number">№ ${escapeHtml(meta.actNumber)} от ${escapeHtml(longDate(meta.documentDate))}</p>
-    <p class="city">г. ${escapeHtml(settings.city)}</p>
-    <p class="contract">Договор аренды транспортного средства без экипажа № ${escapeHtml(settings.contractNumber)} от ${escapeHtml(longDate(settings.contractDate))}.</p>
-    <p>${parties(settings)}, составили настоящий акт о нижеследующем.</p>
-    <p>1. В период с ${escapeHtml(longDate(bounds.start))} по ${escapeHtml(longDate(bounds.end))} автомобиль ${escapeHtml(settings.vehicleModel)}, VIN ${escapeHtml(settings.vehicleVin)}, государственный регистрационный знак ${escapeHtml(settings.vehiclePlate)}, находился во временном владении и пользовании Арендатора на условиях аренды без экипажа.</p>
-    <p>2. Стороны подтверждают показатель использования автомобиля за указанный период: <strong>${integer(calculation.actualUnits)} полных бутылей объёмом 18,9-19 литров</strong>, учитываемых по договору. Оплачиваемый период составляет ${calculation.payableDays} ${plural(calculation.payableDays, "календарный день", "календарных дня", "календарных дней")} из ${calculation.calendarDays} дней месяца.${downtimeText}</p>
-    <p>Основание расчёта количества: ${escapeHtml(meta.basis || "ежедневный реестр показателей использования автомобиля")}.</p>
-    <p>3. Арендная плата за ${escapeHtml(periodLabel(meta.period))}:</p>
-    <table><thead><tr><th>Состав арендной платы</th><th class="money">Сумма, руб.</th></tr></thead><tbody>
-      <tr><td>${baseLabel}</td><td class="money">${rubles(calculation.baseKopecks)}</td></tr>
-      <tr><td>${intensityLabel}</td><td class="money">${rubles(calculation.intensityKopecks)}</td></tr>
-      <tr><td>Переменная часть: И − Ф, если результат положительный</td><td class="money">${rubles(calculation.variableKopecks)}</td></tr>
-      <tr class="total"><td>Итого: большая из сумм Ф и И, без НДС</td><td class="money">${rubles(calculation.totalKopecks)}</td></tr>
-    </tbody></table>
-    <p class="words">Всего начислено: ${rubles(calculation.totalKopecks)} (${escapeHtml(moneyWords(calculation.totalKopecks))}), без НДС.</p>
-    <p>4. Сведения об оплате, зачётах и остатке задолженности за указанный период оформляются отдельным актом сверки взаимных расчётов № ${escapeHtml(meta.reconciliationNumber)} от ${escapeHtml(longDate(meta.documentDate))}.</p>
-    <p>5. Подписи сторон подтверждают период аренды, показатель использования автомобиля и размер начисленной платы. Настоящий акт не удостоверяет оплату аренды и не прекращает неисполненные денежные обязательства.</p>
-    <p>6. Акт составлен в двух экземплярах, по одному для каждой стороны.</p>
-    ${signatures(settings)}
-  `;
+  const { settings: s, meta: m, calculation: c } = input;
+  const b = periodBounds(m.period);
+  const possessionStart = s.rentalStart > b.start ? s.rentalStart : b.start;
+  const possessionEnd = s.rentalEnd < b.end ? s.rentalEnd : b.end;
+  const downtime = c.downtimeDays === 0
+    ? "Подтверждённого технического простоя не было; P = 0 дней."
+    : `${input.downtimes.filter((d) => d.startDate <= b.end && d.endDate >= b.start).map((d) => `${shortDate(d.startDate)}–${shortDate(d.endDate)}: ${d.reason}; основание: ${d.basis || "не указано"}${d.note ? `; ${d.note}` : ""}`).join("; ")}; P = ${c.downtimeDays} дней.`;
+  const rows = [
+    ["Календарных дней месяца D", `${c.calendarDays} ${plural(c.calendarDays, "день", "дня", "дней")}`],
+    ["Дней владения автомобилем в расчётном месяце A", `${c.ownershipDays} ${plural(c.ownershipDays, "день", "дня", "дней")}`],
+    ["Полных дней подтверждённого простоя P", `${c.downtimeDays} дней`],
+    ["Оплачиваемых дней d = A - P", `${c.payableDays} ${plural(c.payableDays, "день", "дня", "дней")}`],
+    ["Учтено единиц интенсивности N, штук", integer(c.actualUnits)],
+    [`Постоянная часть Ф = ${integer(s.baseKopecks / 100)} × d / D`, `${rubles(c.baseKopecks)} руб.`],
+    [`Показатель интенсивности И = ${integer(s.rateKopecks / 100)} × N`, `${rubles(c.intensityKopecks)} руб.`],
+    ["Переменная часть: И - Ф, если результат положительный", `${rubles(c.variableKopecks)} руб.`],
+    ["Итого: большая из сумм Ф и И", `${rubles(c.totalKopecks)} руб.`],
+    ["НДС: «Без НДС» либо ставка и сумма внутри итога", s.vatLabel],
+  ];
+  return `<h1>ЕЖЕМЕСЯЧНЫЙ АКТ-РАСЧЁТ</h1>
+  <h2>арендной платы за ${escapeHtml(periodLabel(m.period))}</h2>
+  <p class="number">№${escapeHtml(m.actNumber)}　Дата составления: ${escapeHtml(shortDate(m.documentDate))}</p>
+  <p class="city">г. ${escapeHtml(s.city)}</p>
+  <p>Договор № ${escapeHtml(s.contractNumber)} от ${escapeHtml(longDate(s.contractDate))}. Период аренды: с ${shortDate(possessionStart)} по ${shortDate(possessionEnd)}.</p>
+  <p>Арендодатель: ${escapeHtml(s.lessorFull.replace(/^Индивидуальный предприниматель /, "ИП "))}, ИНН ${escapeHtml(s.lessorInn)}.<br>
+  Арендатор: ${escapeHtml(s.lesseeFull)}, ИНН ${escapeHtml(s.lesseeInn)}, КПП ${escapeHtml(s.lesseeKpp)}, в лице генерального директора ${escapeHtml(s.lesseeDirector)}.</p>
+  <p>Автомобиль: ${escapeHtml(s.vehicleModel)}, VIN ${escapeHtml(s.vehicleVin)}, госномер ${escapeHtml(s.vehiclePlate)}.</p>
+  <p>За указанный период автомобиль находился во владении и пользовании Арендатора по договору аренды без экипажа. Стороны определили арендную плату следующим образом:</p>
+  <table><thead><tr><th>Показатель</th><th class="value">Значение</th></tr></thead><tbody>
+  ${rows.map(([label, value], i) => `<tr class="${i === 8 ? "total" : ""}"><td>${escapeHtml(label)}</td><td class="value">${escapeHtml(value)}</td></tr>`).join("")}</tbody></table>
+  <p>Сумма прописью: <b>${escapeHtml(amountWords(c.totalKopecks))}, ${escapeHtml(s.vatLabel === "Без НДС" ? "без НДС" : s.vatLabel)}.</b></p>
+  <p>Основание количества учётных единиц:<br>Ежедневные ведомости учёта эксплуатации автомобиля ${escapeHtml(s.vehicleModel)} за период с ${shortDate(b.start)} по ${shortDate(b.end)}; итоговое количество: ${integer(c.actualUnits)} учётных единиц.</p>
+  <p>Основание и период технического простоя либо отметка «простоя не было»:<br>${escapeHtml(downtime)}</p>
+  <p>Подписи подтверждают период владения и пользования автомобилем, показатель интенсивности эксплуатации, дни простоя и начисленную арендную плату. Сведения об оплате в акт-расчёт не включаются. Состояние расчётов при необходимости подтверждается отдельным актом сверки. Срок оплаты определяется договором.</p>
+  <p>Замечания и согласованные корректировки: ${escapeHtml(m.adjustments?.trim() || "отсутствуют")}.</p>
+  ${signatures(s)}`;
 }
 
-function reconciliationData(input: OfficialDocumentInput) {
-  const rows: { date: string; text: string; debit: number; credit: number; balance: number }[] = [];
-  let balance = input.meta.openingBalanceKopecks;
-  if (balance !== 0) rows.push({ date: periodBounds(input.meta.period).start, text: "Сальдо на начало периода", debit: Math.max(0, balance), credit: Math.max(0, -balance), balance });
-  balance += input.calculation.totalKopecks;
-  rows.push({
-    date: input.meta.documentDate,
-    text: `Акт аренды № ${input.meta.actNumber}. Арендная плата за ${periodLabel(input.meta.period)}`,
-    debit: input.calculation.totalKopecks,
-    credit: 0,
-    balance,
-  });
-  for (const payment of [...input.payments].sort((a, b) => a.paymentDate.localeCompare(b.paymentDate))) {
-    const invoice = input.invoices.find((item) => item.id === payment.invoiceId);
-    balance -= payment.amountKopecks;
-    const document = payment.documentNumber ? `, документ ${payment.documentNumber}` : "";
-    rows.push({ date: payment.paymentDate, text: `Оплата${invoice ? ` по счёту № ${invoice.invoiceNumber}` : ""} (${payment.method === "bank" ? "безналичные" : "наличные"}${document})`, debit: 0, credit: payment.amountKopecks, balance });
-  }
-  for (const expense of input.expenses.filter((item) => item.category === "fuel" && item.payer === "customer").sort((a, b) => a.expenseDate.localeCompare(b.expenseDate))) {
-    balance -= expense.amountKopecks;
-    const details = [expense.documentNumber && `документ ${expense.documentNumber}`, expense.note].filter(Boolean).join(", ");
-    rows.push({ date: expense.expenseDate, text: `Зачёт расходов на топливо, оплаченных Арендатором${details ? ` (${details})` : ""}`, debit: 0, credit: expense.amountKopecks, balance });
-  }
-  return { rows, balance };
+export function reconciliationSummary(input: OfficialDocumentInput) {
+  const asOf = input.meta.asOfDate || input.meta.documentDate;
+  const invoiceIds = new Set(input.invoices.map((invoice) => invoice.id));
+  const payments = input.payments.filter((payment) => invoiceIds.has(payment.invoiceId) && payment.paymentDate <= asOf);
+  const paidKopecks = payments.reduce((sum, payment) => sum + payment.amountKopecks, 0);
+  const opening = input.meta.openingBalanceKopecks;
+  return { payments, paidKopecks, opening, balance: opening + input.calculation.totalKopecks - paidKopecks, asOf };
 }
 
 function reconciliationBody(input: OfficialDocumentInput) {
-  const { settings, meta, calculation } = input;
-  const { rows, balance } = reconciliationData(input);
-  const totalDebit = Math.max(0, meta.openingBalanceKopecks) + calculation.totalKopecks;
-  const totalCredit = Math.max(0, -meta.openingBalanceKopecks) + input.payments.reduce((sum, item) => sum + item.amountKopecks, 0) + input.expenses.filter((item) => item.category === "fuel" && item.payer === "customer").reduce((sum, item) => sum + item.amountKopecks, 0);
-  const conclusion = balance > 0
-    ? `задолженность Арендатора в пользу Арендодателя составляет ${rubles(balance)} руб. (${moneyWords(balance)})`
-    : balance < 0
-      ? `аванс Арендатора составляет ${rubles(Math.abs(balance))} руб. (${moneyWords(Math.abs(balance))})`
-      : "задолженность между сторонами отсутствует";
-
-  return `
-    <h1>Акт сверки взаимных расчётов</h1>
-    <p class="number">№ ${escapeHtml(meta.reconciliationNumber)} от ${escapeHtml(longDate(meta.documentDate))}</p>
-    <p class="city">г. ${escapeHtml(settings.city)}</p>
-    <p class="contract">по договору аренды транспортного средства без экипажа № ${escapeHtml(settings.contractNumber)} от ${escapeHtml(longDate(settings.contractDate))}</p>
-    <p>${parties(settings)}, составили настоящий акт сверки взаимных расчётов за ${escapeHtml(periodLabel(meta.period))}.</p>
-    <table class="reconciliation"><thead><tr><th class="date">Дата</th><th>Документ и операция</th><th class="sum">Начислено, руб.</th><th class="sum">Оплачено / зачтено, руб.</th><th class="sum">Сальдо, руб.</th></tr></thead><tbody>
-      ${rows.map((row) => `<tr><td class="date">${escapeHtml(row.date.split("-").reverse().join("."))}</td><td>${escapeHtml(row.text)}</td><td class="sum">${row.debit ? rubles(row.debit) : ""}</td><td class="sum">${row.credit ? rubles(row.credit) : ""}</td><td class="sum">${rubles(row.balance)}</td></tr>`).join("")}
-      <tr class="total"><td colspan="2">Итого за период</td><td class="sum">${rubles(totalDebit)}</td><td class="sum">${rubles(totalCredit)}</td><td class="sum">${rubles(balance)}</td></tr>
-    </tbody></table>
-    <p class="words">По состоянию на ${escapeHtml(longDate(meta.documentDate))} ${escapeHtml(conclusion)}.</p>
-    <p>Стороны подтверждают приведённые сведения о начислениях, оплатах и согласованных зачётах. При наличии расхождений сторона, обнаружившая их, направляет другой стороне подтверждающие документы.</p>
-    <p>Акт составлен в двух экземплярах, по одному для каждой стороны.</p>
-    ${signatures(settings)}
-  `;
+  const { settings: s, meta: m, calculation: c } = input;
+  const b = periodBounds(m.period);
+  const { payments, paidKopecks, opening, balance, asOf } = reconciliationSummary(input);
+  const invoiceRefs = [...new Set(payments.map((payment) => input.invoices.find((invoice) => invoice.id === payment.invoiceId))
+    .filter((invoice): invoice is InvoiceLike => Boolean(invoice)))];
+  const refs = invoiceRefs.length
+    ? ` (основание: ${invoiceRefs.map((i) => `счёт № ${i.invoiceNumber} от ${i.invoiceDate ? shortDate(i.invoiceDate) : "____________"}`).join(", ")})`
+    : "";
+  const rows = [
+    ["Задолженность на начало периода", rubles(opening)],
+    [`Начислено за ${monthNames[Number(m.period.slice(5)) - 1]} по акту-расчёту № ${m.actNumber} от ${shortDate(m.documentDate)}, ${s.vatLabel === "Без НДС" ? "без НДС" : s.vatLabel}`, rubles(c.totalKopecks)],
+    [`Оплачено в счёт аренды за ${monthNames[Number(m.period.slice(5)) - 1]}${refs}`, rubles(paidKopecks)],
+    [`Задолженность Арендатора на ${shortDate(asOf)}`, rubles(balance)],
+  ];
+  const paymentDocuments = payments.map((p) => p.documentNumber).filter(Boolean).join(", ");
+  return `<div class="reconciliation-page"><h1>АКТ СВЕРКИ ВЗАИМНЫХ РАСЧЁТОВ</h1>
+  <p class="number">№${escapeHtml(m.reconciliationNumber)}　Дата составления: ${shortDate(m.documentDate)}</p>
+  <p class="subtitle">по аренде за ${escapeHtml(periodLabel(m.period))}, по состоянию на ${shortDate(asOf)}</p>
+  <p class="city">г. ${escapeHtml(s.city)}</p>
+  <p>Договор аренды транспортного средства без экипажа № ${escapeHtml(s.contractNumber)} от ${escapeHtml(longDate(s.contractDate))}.</p>
+  <p>${escapeHtml(s.lessorFull)}, ИНН ${escapeHtml(s.lessorInn)} (Арендодатель), и ${escapeHtml(s.lesseeFull)}, ИНН ${escapeHtml(s.lesseeInn)}, КПП ${escapeHtml(s.lesseeKpp)}, в лице генерального директора ${escapeHtml(s.lesseeDirector)}, действующего на основании Устава (Арендатор), составили настоящий документ о нижеследующем.</p>
+  <p><b>1.</b> Сверка проведена по начислению арендной платы за период с ${shortDate(b.start)} по ${shortDate(b.end)} и платежам, отнесённым к этому периоду и полученным по состоянию на ${shortDate(asOf)}. Автомобиль: ${escapeHtml(s.vehicleModel)}, VIN ${escapeHtml(s.vehicleVin)}, государственный регистрационный знак ${escapeHtml(s.vehiclePlate)}.</p>
+  <table class="reconciliation"><thead><tr><th>Показатель</th><th class="value">По данным<br>Арендодателя, руб.</th><th class="value">По данным<br>Арендатора, руб.</th></tr></thead><tbody>
+  ${rows.map(([label, value], i) => `<tr class="${i === 3 ? "total" : ""}"><td>${escapeHtml(label)}</td><td class="value">${escapeHtml(value)}</td><td class="value">${escapeHtml(value)}</td></tr>`).join("")}</tbody></table>
+  <p>Реквизиты платёжного документа и/или банковской выписки, подтверждающих оплату ${rubles(paidKopecks)} руб.:<br>${paymentDocuments ? escapeHtml(paymentDocuments) : "________________________________________________________________________________"}<br>________________________________________________________________________________</p>
+  <p><b>2.</b> Подписанием настоящего акта Стороны подтверждают результаты сверки. ${escapeHtml(s.lesseeShort)} признаёт задолженность по арендной плате за ${escapeHtml(periodLabel(m.period))} перед ${escapeHtml(s.lessorDative)} в размере <b>${escapeHtml(amountWords(balance))}</b> по состоянию на ${shortDate(asOf)}.</p>
+  <p><b>3.</b> Настоящий акт не изменяет установленные договором сроки оплаты, не предоставляет отсрочку или рассрочку и не создаёт повторного начисления. Платежи после ${shortDate(asOf)} уменьшают задолженность без переоформления акта-расчёта арендной платы. При необходимости Стороны составляют новую сверку на более позднюю дату.</p>
+  <p><b>4.</b> Расчёты по иным обязательствам Сторон, неустойки и другие требования в настоящую сверку не включены, если они прямо не указаны выше.</p>
+  <p><b>5.</b> Документ составлен в двух экземплярах, по одному для каждой Стороны.</p>
+  ${signatures(s)}</div>`;
 }
 
 export function buildRentActHtml(input: OfficialDocumentInput) {
-  return wrapDocument(`Акт аренды № ${input.meta.actNumber}`, [rentActBody(input)]);
+  return wrapDocument(`Акт-расчёт № ${input.meta.actNumber}`, [rentActBody(input)]);
 }
-
 export function buildReconciliationHtml(input: OfficialDocumentInput) {
   return wrapDocument(`Акт сверки № ${input.meta.reconciliationNumber}`, [reconciliationBody(input)]);
 }
-
 export function buildDocumentPackageHtml(input: OfficialDocumentInput) {
-  return wrapDocument(`Документы по аренде за ${periodLabel(input.meta.period)}`, [rentActBody(input), reconciliationBody(input)]);
+  return wrapDocument(`Документы за ${periodLabel(input.meta.period)}`, [rentActBody(input), reconciliationBody(input)]);
+}
+
+export function buildDailyStatementHtml(input: OfficialDocumentInput) {
+  const b = periodBounds(input.meta.period);
+  const entries = (input.entries ?? []).filter((e) => e.entryDate >= b.start && e.entryDate <= b.end &&
+    e.entryDate >= input.settings.rentalStart && e.entryDate <= input.settings.rentalEnd)
+    .sort((a, b) => a.entryDate.localeCompare(b.entryDate));
+  const body = `<h1>Ежедневная ведомость учёта эксплуатации автомобиля ${escapeHtml(input.settings.vehicleModel)}</h1>
+    <p class="subtitle">за период с ${shortDate(b.start)} по ${shortDate(b.end)}</p>
+    <p>Договор № ${escapeHtml(input.settings.contractNumber)} от ${escapeHtml(longDate(input.settings.contractDate))}. Автомобиль: ${escapeHtml(input.settings.vehicleModel)}, VIN ${escapeHtml(input.settings.vehicleVin)}, госномер ${escapeHtml(input.settings.vehiclePlate)}.</p>
+    <table><thead><tr><th>Дата</th><th>Количество учётных единиц</th><th>Примечание</th></tr></thead><tbody>
+    ${entries.map((e) => `<tr><td>${shortDate(e.entryDate)}</td><td>${integer(e.units)}</td><td>${escapeHtml(e.note)}</td></tr>`).join("")}
+    <tr class="total"><td>Итого</td><td>${integer(input.calculation.actualUnits)}</td><td>учётных единиц</td></tr></tbody></table>`;
+  return wrapDocument("Ежедневная ведомость", [body]);
+}
+
+export function buildInternalLedgerHtml(input: OfficialDocumentInput) {
+  const { invoices, payments, calculation, settings: s, meta: m } = input;
+  const rows = invoices.map((i, idx) => {
+    const paid = payments.filter((p) => p.invoiceId === i.id).reduce((sum, p) => sum + p.amountKopecks, 0);
+    return `<tr><td>${idx + 1}</td><td>${escapeHtml(periodLabel(i.period ?? m.period))}</td><td>${escapeHtml(i.kind === "variable" ? "переменная часть" : i.kind === "fixed" ? "постоянная часть" : "другое")}</td><td>№ ${escapeHtml(i.invoiceNumber)}<br>${i.invoiceDate ? shortDate(i.invoiceDate) : ""}</td><td>${rubles(i.amountKopecks ?? 0)}</td><td>${i.actNumber ? `№ ${escapeHtml(i.actNumber)}` : "—"}</td><td>${escapeHtml(payments.filter((p) => p.invoiceId === i.id).map((p) => `${shortDate(p.paymentDate)} — ${rubles(p.amountKopecks)}`).join("; "))}</td><td>${rubles((i.amountKopecks ?? 0) - paid)}</td><td>${escapeHtml(i.note)}</td></tr>`;
+  });
+  const pages = [];
+  for (let start = 0; start < Math.max(rows.length, 1); start += 14) {
+    pages.push(`<h1>Реестр начислений и выставленных счетов по договору аренды № ${escapeHtml(s.contractNumber)}</h1>
+      <p class="subtitle">${escapeHtml(periodLabel(m.period))} · внутренний документ</p>
+      <p>Начислено по акту-расчёту № ${escapeHtml(m.actNumber)}: ${rubles(calculation.totalKopecks)} руб. Счета: ${rubles(invoices.reduce((sum, i) => sum + (i.amountKopecks ?? 0), 0))} руб. Оплаты: ${rubles(payments.reduce((sum, p) => sum + p.amountKopecks, 0))} руб. Остаток за период: ${rubles(calculation.totalKopecks - payments.reduce((sum, p) => sum + p.amountKopecks, 0))} руб.</p>
+      <table class="compact"><thead><tr><th>№</th><th>Период</th><th>Вид</th><th>Счёт</th><th>Сумма</th><th>Акт</th><th>Платежи</th><th>Остаток</th><th>Примечание</th></tr></thead><tbody>${rows.slice(start, start + 14).join("")}</tbody></table>`);
+  }
+  return wrapDocument("Внутренний реестр", pages);
 }

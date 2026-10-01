@@ -65,7 +65,19 @@ test("downtime always reduces F while the total remains the greater of F and I",
   assert.equal(aboveLimit.totalKopecks, 11_200_000);
 });
 
-test("official documents separate accrual from payments and fuel offsets", () => {
+test("partial ownership excludes days before the lease begins", () => {
+  const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS, rentalStart: "2026-08-16" };
+  const calculation = tools.calculateRental("2026-08", [
+    { entryDate: "2026-08-01", units: 100 }, { entryDate: "2026-08-16", units: 300 },
+  ], [], settings);
+  assert.equal(calculation.calendarDays, 31);
+  assert.equal(calculation.ownershipDays, 16);
+  assert.equal(calculation.payableDays, 16);
+  assert.equal(calculation.actualUnits, 300);
+  assert.equal(calculation.baseKopecks, Math.round(8_000_000 * 16 / 31));
+});
+
+test("August reference act and reconciliation use invoice 27 and exclude fuel offsets", () => {
   const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS };
   const calculation = tools.calculateRental(
     "2026-08",
@@ -79,15 +91,16 @@ test("official documents separate accrual from payments and fuel offsets", () =>
     reconciliationNumber: "1",
     documentDate: "2026-09-15",
     basis: "Ежедневный реестр",
-    openingBalanceKopecks: 1_000_000,
+    asOfDate: "2026-09-15",
+    openingBalanceKopecks: 0,
   };
   const input = {
     settings,
     meta,
     calculation,
     downtimes: [],
-    invoices: [{ id: 1, invoiceNumber: "15" }],
-    payments: [{ invoiceId: 1, paymentDate: "2026-08-20", amountKopecks: 3_000_000, method: "bank", documentNumber: "77" }],
+    invoices: [{ id: 1, invoiceNumber: "27", invoiceDate: "2026-09-08", period: "2026-08", amountKopecks: 3_500_000 }],
+    payments: [{ invoiceId: 1, paymentDate: "2026-09-10", amountKopecks: 3_500_000, method: "bank", documentNumber: "" }],
     expenses: [{ expenseDate: "2026-08-22", category: "fuel", payer: "customer", amountKopecks: 400_000, documentNumber: "ППР", note: "" }],
   };
 
@@ -96,11 +109,33 @@ test("official documents separate accrual from payments and fuel offsets", () =>
   const packageHtml = tools.buildDocumentPackageHtml(input);
 
   assert.match(act, /112[\s ]000,00/);
-  assert.match(act, /Сто двенадцать тысяч рублей 00 копеек/);
+  assert.match(act, /112[\s ]000 \(Сто двенадцать тысяч\) рублей 00 копеек/);
+  assert.match(act, /Переменная часть: И - Ф, если результат положительный/);
+  assert.match(act, /32[\s ]000,00 руб/);
+  assert.match(act, /Подтверждённого технического простоя не было; P = 0 дней/);
   assert.doesNotMatch(act, /Зачёт расходов на топливо/);
-  assert.match(reconciliation, /Зачёт расходов на топливо/);
-  assert.match(reconciliation, /88[\s ]000,00/);
+  assert.doesNotMatch(reconciliation, /Зачёт расходов на топливо/);
+  assert.match(reconciliation, /счёт № 27 от 08\.09\.2026/);
+  assert.match(reconciliation, /35[\s ]000,00/);
+  assert.match(reconciliation, /77[\s ]000,00/);
+  assert.match(reconciliation, /Семьдесят семь тысяч/);
+  assert.equal(tools.reconciliationSummary(input).balance, 7_700_000);
   assert.equal((packageHtml.match(/class="page"/g) ?? []).length, 2);
+});
+
+test("reconciliation uses period-linked payments received no later than the selected date", () => {
+  const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS };
+  const input = { settings, meta: { ...tools.defaultDocumentMeta("2026-08", 1, "2026-09-15"), asOfDate: "2026-09-15" },
+    calculation: tools.calculateRental("2026-08", [{ entryDate: "2026-08-01", units: 2800 }], [], settings),
+    downtimes: [], entries: [], expenses: [],
+    invoices: [{ id: 1, invoiceNumber: "27", period: "2026-08" }, { id: 2, invoiceNumber: "28", period: "2026-09" }],
+    payments: [{ invoiceId: 1, paymentDate: "2026-09-10", amountKopecks: 2_000_000, method: "bank", documentNumber: "" },
+      { invoiceId: 1, paymentDate: "2026-09-16", amountKopecks: 1_500_000, method: "bank", documentNumber: "" },
+      { invoiceId: 2, paymentDate: "2026-09-10", amountKopecks: 5_000_000, method: "bank", documentNumber: "" }],
+  };
+  const currentPeriod = { ...input, invoices: input.invoices.filter((i) => i.period === "2026-08") };
+  assert.equal(tools.reconciliationSummary(currentPeriod).paidKopecks, 2_000_000);
+  assert.equal(tools.reconciliationSummary(currentPeriod).balance, 9_200_000);
 });
 
 test("user-entered document text is escaped", () => {

@@ -3918,3 +3918,25 @@ html[data-theme="dark"] .month-tools-cash strong.negative {
 .tax-records > div { border-top:1px solid var(--border); padding-top:.6rem; font-size:.87rem; }
 .tax-records span { flex:1; min-width:0; }
 @media(max-width:480px) { .tax-summary { align-items:flex-start; flex-direction:column; } }
+
+/* Локальные документы и просмотр листа A4 */
+.document-workspace { display: grid; gap: 1rem; }
+.document-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+.document-fields label { display: grid; gap: .35rem; min-width: 0; }
+.document-fields input { min-width: 0; }
+.document-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.document-actions button { white-space: normal; min-height: 2.75rem; }
+.document-archive { border-top: 1px solid var(--border); padding-top: .8rem; }
+.document-archive summary { cursor: pointer; font-weight: 700; }
+.document-archive-row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; border-top: 1px solid var(--border); padding: .7rem 0; }
+.document-archive-row > div { display: grid; gap: .15rem; flex: 1 1 12rem; }
+.document-archive-row small { color: var(--muted-foreground); }
+.document-preview-dialog { width: min(96vw, 850px) !important; max-width: 850px !important; max-height: 94dvh !important; }
+.document-preview-frame { overflow: auto; max-height: min(64dvh, 830px); background: #ddd; border: 1px solid #bbb; }
+.document-preview-frame iframe { display: block; width: 794px; height: 1123px; border: 0; background: white; transform-origin: top left; }
+@media (max-width: 560px) {
+  .document-fields { grid-template-columns: 1fr 1fr; }
+  .document-preview-frame { height: 440px; overflow: hidden; }
+  .document-preview-frame iframe { transform: scale(.4); }
+  .document-actions button { flex: 1 1 100%; }
+}
