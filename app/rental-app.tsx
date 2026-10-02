@@ -465,9 +465,10 @@ export function offlineDashboard(period: string): DashboardData {
   const downtimes = store.downtimes
     .filter((downtime) => downtime.startDate <= to && downtime.endDate >= from)
     .sort((a, b) => b.startDate.localeCompare(a.startDate) || b.id - a.id);
-  const documentMeta = store.documents.find((document) => document.period === period)
-    ?? defaultDocumentMeta(period, store.documents.length + 1, localIsoDate());
-  documentMeta.openingBalanceKopecks = automaticOpeningBalance(store, period);
+  const savedMeta = store.documents.find((document) => document.period === period);
+  const documentMeta = { ...(savedMeta ?? defaultDocumentMeta(period, store.documents.length + 1, localIsoDate())),
+    openingBalanceKopecks: savedMeta && Number.isSafeInteger(savedMeta.openingBalanceKopecks)
+      ? savedMeta.openingBalanceKopecks : automaticOpeningBalance(store, period) };
 
   return {
     entries,
@@ -1360,6 +1361,7 @@ export default function RentalApp() {
   const [documentDate, setDocumentDate] = useState(today);
   const [asOfDate, setAsOfDate] = useState(today);
   const [documentAdjustments, setDocumentAdjustments] = useState("");
+  const [documentOpeningBalance, setDocumentOpeningBalance] = useState("0");
 
   const [downtimeListOpen, setDowntimeListOpen] = useState(false);
   const [downtimeOpen, setDowntimeOpen] = useState(false);
@@ -1449,6 +1451,7 @@ export default function RentalApp() {
     setDocumentDate(meta.documentDate);
     setAsOfDate(meta.asOfDate ?? meta.documentDate);
     setDocumentAdjustments(meta.adjustments ?? "");
+    setDocumentOpeningBalance(String(meta.openingBalanceKopecks / 100));
   }, [data, month, today]);
 
   useEffect(() => {
@@ -2245,8 +2248,10 @@ export default function RentalApp() {
   }
 
   function currentDocumentMeta() {
-    if (!actNumber.trim() || !validIsoDate(documentDate) || !validIsoDate(asOfDate)) {
-      toast.error("Заполните номер и дату документов");
+    const openingBalanceKopecks = documentOpeningBalance.trim() ? toSignedKopecks(documentOpeningBalance) : null;
+    if (!actNumber.trim() || !validIsoDate(documentDate) || !validIsoDate(asOfDate) ||
+        openingBalanceKopecks === null || !Number.isSafeInteger(openingBalanceKopecks)) {
+      toast.error("Заполните номер, дату и начальный долг документов");
       return null;
     }
     return {
@@ -2255,7 +2260,7 @@ export default function RentalApp() {
       reconciliationNumber: actNumber.trim(),
       documentDate,
       basis: data?.documentMeta?.basis ?? "",
-      openingBalanceKopecks: data?.documentMeta?.openingBalanceKopecks ?? 0,
+      openingBalanceKopecks,
       asOfDate,
       adjustments: documentAdjustments.trim(),
     } satisfies DocumentMeta;
@@ -2919,14 +2924,15 @@ export default function RentalApp() {
                     <label className="col-span-2"><FieldLabel>№ обоих актов</FieldLabel><Input value={actNumber} onChange={(e) => setActNumber(e.target.value)} /></label>
                     <label><FieldLabel>Дата составления</FieldLabel><Input type="date" value={documentDate} onChange={(e) => setDocumentDate(e.target.value)} /></label>
                     <label><FieldLabel>Сверка по состоянию на</FieldLabel><Input type="date" value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} /></label>
+                    <label className="col-span-2"><FieldLabel>Долг на начало периода, ₽</FieldLabel><Input type="number" step="0.01" inputMode="decimal" value={documentOpeningBalance} onChange={(e) => setDocumentOpeningBalance(e.target.value)} /></label>
                   </div>
                   <Button type="button" variant="outline" onClick={() => { setDocumentDate(today); setAsOfDate(today); }}>Составить на сегодня</Button>
                   {(data.invoices.some((invoice) => invoice.invoiceDate > asOfDate) ||
-                    [...data.payments, ...(data.openingPayments ?? [])].some((payment) => payment.paymentDate > asOfDate) ||
+                    [...data.payments, ...((toSignedKopecks(documentOpeningBalance) ?? 0) > 0 ? data.openingPayments ?? [] : [])].some((payment) => payment.paymentDate > asOfDate) ||
                     data.expenses.some((expense) => expense.category === "fuel" && expense.payer === "customer" && expense.expenseDate > asOfDate)) &&
                     <p className="help-note">В сверку на {dateLabel(asOfDate)} не войдут более поздние счета, оплаты и вычеты топлива. Для полного расчёта выберите нужную дату или нажмите «Составить на сегодня».</p>}
                   <label className="document-note"><FieldLabel>Замечания и согласованные корректировки</FieldLabel><Input value={documentAdjustments} onChange={(e) => setDocumentAdjustments(e.target.value)} placeholder="Если нет — останется «отсутствуют»" /></label>
-                  <p className="help-note">Задолженность на начало периода: {money(data.documentMeta?.openingBalanceKopecks ?? 0)}. Оплаты учитываются по дате поступления и связи со счётом выбранного месяца.</p>
+                  <p className="help-note">При нулевом начальном долге оплаты за предыдущие месяцы в этот акт не входят. Оплаты выбранного месяца учитываются по связи со счётом и дате поступления.</p>
                   <p className="help-note">Календарных дней: {calculation.calendarDays}. Владение: {calculation.ownershipDays}. Простой: {calculation.downtimeDays}. Оплачиваемых дней: {calculation.payableDays}. N: {number(calculation.actualUnits)}. Ф: {money(calculation.baseKopecks)}. И: {money(calculation.intensityKopecks)}. Переменная часть: {money(calculation.variableKopecks)}. Итого: {money(calculation.totalKopecks)}.</p>
                   {missingMonthDays.length > 0 && <p className="help-note text-amber-700">Дни без записи: {number(missingMonthDays.length)}. Проверьте календарь до подписания акта.</p>}
                   {data.invoices.some((invoice) => (paidByInvoice.get(invoice.id) ?? 0) < invoice.amountKopecks) &&

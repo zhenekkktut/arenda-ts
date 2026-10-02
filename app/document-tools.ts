@@ -402,14 +402,14 @@ export function reconciliationSummary(input: OfficialDocumentInput) {
   const payments = input.payments.filter((payment) => invoiceIds.has(payment.invoiceId) && payment.paymentDate <= asOf);
   const paidKopecks = payments.reduce((sum, payment) => sum + payment.amountKopecks, 0);
   const bounds = periodBounds(input.meta.period);
+  const opening = input.meta.openingBalanceKopecks;
   const openingPayments = (input.openingPayments ?? []).filter((payment) =>
-    !invoiceIds.has(payment.invoiceId) && payment.paymentDate >= bounds.start && payment.paymentDate <= asOf);
+    opening > 0 && !invoiceIds.has(payment.invoiceId) && payment.paymentDate >= bounds.start && payment.paymentDate <= asOf);
   const openingPaidKopecks = openingPayments.reduce((sum, payment) => sum + payment.amountKopecks, 0);
   const customerFuelKopecks = (input.expenses ?? [])
     .filter((expense) => expense.category === "fuel" && expense.payer === "customer" &&
       expense.expenseDate >= bounds.start && expense.expenseDate <= bounds.end && expense.expenseDate <= asOf)
     .reduce((sum, expense) => sum + expense.amountKopecks, 0);
-  const opening = input.meta.openingBalanceKopecks;
   return { payments, paidKopecks, openingPayments, openingPaidKopecks, customerFuelKopecks, opening,
     balance: opening + input.calculation.totalKopecks - customerFuelKopecks - paidKopecks - openingPaidKopecks, asOf };
 }

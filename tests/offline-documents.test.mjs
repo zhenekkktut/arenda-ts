@@ -96,7 +96,7 @@ test("old net invoices deduct fuel before invoicing and later payments settle th
   globalThis.window = { localStorage: { getItem: (key) => key === "arenda-ts-offline-v1" ? stored : null,
     setItem: (key, value) => { if (key === "arenda-ts-offline-v1") stored = value; } } };
   try {
-    const { offlineDashboard } = await server.ssrLoadModule(path.resolve("app/rental-app.tsx"));
+    const { offlineDashboard, saveOfflineAction } = await server.ssrLoadModule(path.resolve("app/rental-app.tsx"));
     for (const period of ["2026-08", "2026-09"]) {
       const data = offlineDashboard(period);
       const calculation = tools.calculateRental(period, data.entries, data.downtimes, data.settings);
@@ -124,5 +124,28 @@ test("old net invoices deduct fuel before invoicing and later payments settle th
     assert.equal(migrated.invoices[0].amountKopecks, 3500000);
     assert.equal(migrated.invoices[0].bottleStartDate, undefined);
     assert.equal(migrated.entries.length, 2);
+    store.documents = [tools.defaultDocumentMeta("2026-09", 2, "2026-09-16")];
+    stored = JSON.stringify(store);
+    const original = stored;
+    const zeroOpeningData = offlineDashboard("2026-09");
+    assert.equal(zeroOpeningData.documentMeta.openingBalanceKopecks, 0);
+    assert.equal(stored, original, "Dashboard must not change the saved phone data");
+    const zeroInput = { ...zeroOpeningData,
+      calculation: tools.calculateRental("2026-09", zeroOpeningData.entries, zeroOpeningData.downtimes, zeroOpeningData.settings),
+      meta: { ...zeroOpeningData.documentMeta, documentDate: "2026-10-02", asOfDate: "2026-10-02" } };
+    const zeroSummary = tools.reconciliationSummary(zeroInput);
+    assert.equal(zeroSummary.opening, 0);
+    assert.equal(zeroSummary.openingPaidKopecks, 0);
+    assert.equal(zeroSummary.paidKopecks, 3120000);
+    assert.equal(zeroSummary.balance, 4182000);
+    const zeroHtml = tools.buildReconciliationHtml(zeroInput);
+    assert.match(zeroHtml, /Поступившие платежи<\/td><td class="value">−31[\s ]200,00/);
+    assert.doesNotMatch(zeroHtml, /143[\s ]200|погашение задолженности за предыдущие месяцы/);
+    saveOfflineAction({ action: "save_document_meta", ...zeroInput.meta });
+    assert.equal(offlineDashboard("2026-09").documentMeta.openingBalanceKopecks, 0);
+    const saved = JSON.parse(stored);
+    assert.deepEqual(saved.payments, store.payments);
+    assert.deepEqual(saved.invoices, store.invoices);
+    assert.deepEqual(saved.entries, store.entries);
   } finally { delete globalThis.window; await server.close(); }
 });

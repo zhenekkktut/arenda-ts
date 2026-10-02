@@ -45,6 +45,8 @@ jobs:
     steps:
       - name: Получить исходный код
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Установить Java
         uses: actions/setup-java@v4
@@ -89,14 +91,16 @@ jobs:
           api-level: 29
           arch: x86_64
           disable-animations: true
-          script: gradle -p android :app:connectedDebugAndroidTest --no-daemon --stacktrace
+          script: bash tests/run-android-pdf-tests.sh
 
       - name: Сохранить отчёт проверки PDF
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: android-pdf-test-report
-          path: android/app/build/reports/androidTests/connected/
+          path: |
+            android/app/build/reports/androidTests/connected/
+            android-pdf-test-output/
 
       - name: Сохранить результат сборки
         uses: actions/upload-artifact@v4

@@ -72,11 +72,21 @@ public class PdfExportTest {
         }
         assertNull(failure.get());
         assertFalse("PDF export remained stuck", running.get());
+        java.io.File outputDirectory = activity.getExternalFilesDir("pdf-test-output");
+        assertNotNull(outputDirectory);
+        assertTrue(outputDirectory.isDirectory() || outputDirectory.mkdirs());
         try (Cursor cursor = activity.getContentResolver().query(uri.get(),
                 new String[] { MediaStore.MediaColumns.IS_PENDING }, null, null, null)) {
             assertNotNull(cursor);
             assertTrue("PDF was deleted because export failed", cursor.moveToFirst());
             assertEquals("PDF remains hidden in Downloads", 0, cursor.getInt(0));
+        }
+        try (java.io.InputStream input = activity.getContentResolver().openInputStream(uri.get());
+             java.io.OutputStream output = new java.io.FileOutputStream(new java.io.File(outputDirectory, name + ".pdf"))) {
+            assertNotNull(input);
+            byte[] buffer = new byte[8192];
+            int length;
+            while ((length = input.read(buffer)) != -1) output.write(buffer, 0, length);
         }
         try (ParcelFileDescriptor fd = activity.getContentResolver().openFileDescriptor(uri.get(), "r");
              PdfRenderer renderer = new PdfRenderer(fd)) {
@@ -95,8 +105,12 @@ public class PdfExportTest {
                             if (Color.red(color) < 100 && Color.green(color) < 100 && Color.blue(color) < 100) ink++;
                         }
                     }
+                    try (java.io.OutputStream output = new java.io.FileOutputStream(
+                            new java.io.File(outputDirectory, name + "-" + (i + 1) + ".png"))) {
+                        assertTrue(image.compress(Bitmap.CompressFormat.PNG, 100, output));
+                    }
                     image.recycle();
-                    assertTrue("Page " + (i + 1) + " is blank", ink > 500);
+                    assertTrue(name + " page " + (i + 1) + " is blank (ink=" + ink + ")", ink > 500);
                 }
             }
         }

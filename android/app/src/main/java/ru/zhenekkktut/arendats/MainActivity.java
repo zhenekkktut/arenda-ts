@@ -481,6 +481,8 @@ public class MainActivity extends Activity {
         PdfDocument document = new PdfDocument();
         boolean success = false;
         try {
+            android.util.Log.i("ArendaPdf", "PDF viewport=" + source.getWidth() + "x" + source.getHeight() +
+                " contentHeight=" + source.getContentHeight() + " density=" + density + " pages=" + pageCount);
             float scale = Math.min(
                 PDF_OUTPUT_WIDTH / (PDF_PAGE_WIDTH * density),
                 PDF_OUTPUT_HEIGHT / (PDF_PAGE_HEIGHT * density)
