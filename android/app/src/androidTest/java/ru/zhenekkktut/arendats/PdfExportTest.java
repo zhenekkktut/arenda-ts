@@ -72,9 +72,6 @@ public class PdfExportTest {
         }
         assertNull(failure.get());
         assertFalse("PDF export remained stuck", running.get());
-        java.io.File outputDirectory = activity.getExternalFilesDir("pdf-test-output");
-        assertNotNull(outputDirectory);
-        assertTrue(outputDirectory.isDirectory() || outputDirectory.mkdirs());
         try (Cursor cursor = activity.getContentResolver().query(uri.get(),
                 new String[] { MediaStore.MediaColumns.IS_PENDING }, null, null, null)) {
             assertNotNull(cursor);
@@ -82,7 +79,7 @@ public class PdfExportTest {
             assertEquals("PDF remains hidden in Downloads", 0, cursor.getInt(0));
         }
         try (java.io.InputStream input = activity.getContentResolver().openInputStream(uri.get());
-             java.io.OutputStream output = new java.io.FileOutputStream(new java.io.File(outputDirectory, name + ".pdf"))) {
+             java.io.OutputStream output = testOutput(activity, name + ".pdf")) {
             assertNotNull(input);
             byte[] buffer = new byte[8192];
             int length;
@@ -95,7 +92,9 @@ public class PdfExportTest {
                 try (PdfRenderer.Page page = renderer.openPage(i)) {
                     assertEquals(595, page.getWidth(), 2);
                     assertEquals(842, page.getHeight(), 2);
-                    Bitmap image = Bitmap.createBitmap(page.getWidth(), page.getHeight(), Bitmap.Config.ARGB_8888);
+                    // Render at 144 dpi: thin 8.7 pt table text is mostly antialias
+                    // pixels at 72 dpi and must not be mistaken for a blank page.
+                    Bitmap image = Bitmap.createBitmap(page.getWidth() * 2, page.getHeight() * 2, Bitmap.Config.ARGB_8888);
                     image.eraseColor(Color.WHITE);
                     page.render(image, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
                     int ink = 0;
@@ -105,8 +104,7 @@ public class PdfExportTest {
                             if (Color.red(color) < 100 && Color.green(color) < 100 && Color.blue(color) < 100) ink++;
                         }
                     }
-                    try (java.io.OutputStream output = new java.io.FileOutputStream(
-                            new java.io.File(outputDirectory, name + "-" + (i + 1) + ".png"))) {
+                    try (java.io.OutputStream output = testOutput(activity, name + "-" + (i + 1) + ".png")) {
                         assertTrue(image.compress(Bitmap.CompressFormat.PNG, 100, output));
                     }
                     image.recycle();
@@ -114,5 +112,17 @@ public class PdfExportTest {
                 }
             }
         }
+    }
+
+    private java.io.OutputStream testOutput(MainActivity activity, String name) throws Exception {
+        android.content.ContentValues values = new android.content.ContentValues();
+        values.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+        values.put(MediaStore.MediaColumns.MIME_TYPE, name.endsWith(".png") ? "image/png" : "application/pdf");
+        values.put(MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS + "/arenda-pdf-test-output");
+        Uri output = activity.getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+        assertNotNull(output);
+        java.io.OutputStream stream = activity.getContentResolver().openOutputStream(output, "w");
+        assertNotNull(stream);
+        return stream;
     }
 }

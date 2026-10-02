@@ -41,7 +41,7 @@ export function compactInput(tools = documentTools()) {
       amountKopecks, period: "2026-09" }));
   const expenses = ["12", "18"].map(day => ({ expenseDate: `2026-09-${day}`, amountKopecks: 250000,
     category: "fuel", payer: "customer" }));
-  return { settings, meta: { ...tools.defaultDocumentMeta("2026-09", 2, "2026-10-02"), openingBalanceKopecks: 10000000 },
+  return { settings, meta: tools.defaultDocumentMeta("2026-09", 2, "2026-10-02"),
     entries, invoices, expenses, downtimes: [],
     payments: [{ invoiceId: 101, paymentDate: "2026-09-26", amountKopecks: 3000000 }],
     openingPayments: [{ invoiceId: 99, paymentDate: "2026-09-08", amountKopecks: 10000000 }],
