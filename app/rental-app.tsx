@@ -2280,7 +2280,7 @@ export default function RentalApp() {
 
   function prepareDocument(kind: "act" | "reconciliation") {
     if (!data) return;
-    if (DOCUMENT_TEXT_FIELDS.some((field) => !documentSettings[field].trim())) {
+    if (DOCUMENT_TEXT_FIELDS.some((field) => field !== "lessorDative" && !documentSettings[field].trim())) {
       toast.error("Заполните реквизиты договора в настройках перед формированием документа");
       return;
     }

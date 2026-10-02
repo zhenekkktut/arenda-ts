@@ -7,19 +7,15 @@ import android.content.ClipboardManager;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.pdf.PdfDocument;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.CancellationSignal;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.ParcelFileDescriptor;
-import android.print.PageRange;
-import android.print.PrintAttributes;
-import android.print.PrintDocumentAdapter;
-import android.print.PrintDocumentInfo;
 import android.provider.MediaStore;
 import android.util.Base64;
 import android.view.View;
@@ -29,8 +25,8 @@ import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceError;
-import android.webkit.WebResourceResponse;
 import android.webkit.RenderProcessGoneDetail;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -46,6 +42,10 @@ public class MainActivity extends Activity {
     private static final int REQUEST_OPEN_FILE = 1001;
     private static final int REQUEST_SAVE_FILE = 1002;
     private static final int REQUEST_SAVE_PDF = 1003;
+    private static final int PDF_PAGE_WIDTH = 794;
+    private static final int PDF_PAGE_HEIGHT = 1123;
+    private static final int PDF_OUTPUT_WIDTH = 595;
+    private static final int PDF_OUTPUT_HEIGHT = 842;
 
     private WebView webView;
     private FrameLayout rootView;
@@ -58,9 +58,6 @@ public class MainActivity extends Activity {
     private String pendingPdfFileName;
     private WebView pdfWebView;
     private final Handler pdfHandler = new Handler(Looper.getMainLooper());
-    private PrintDocumentAdapter pdfAdapter;
-    private ParcelFileDescriptor pdfOutput;
-    private CancellationSignal pdfCancellation;
     private Runnable pdfTimeout;
     private Uri pdfDestination;
     private boolean pdfMediaStoreDestination;
@@ -77,6 +74,7 @@ public class MainActivity extends Activity {
             View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
         );
 
+        WebView.enableSlowWholeDocumentDraw();
         webView = new WebView(this);
         webView.setBackgroundColor(Color.rgb(244, 246, 249));
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
@@ -267,6 +265,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (pdfDestination != null) finishPdfSave(pdfDestination, "", pdfMediaStoreDestination, false);
         if (webView != null) {
             webView.removeJavascriptInterface("AndroidApp");
             webView.destroy();
@@ -413,6 +412,9 @@ public class MainActivity extends Activity {
         pdfMediaStoreDestination = mediaStoreDestination;
         pdfWebView = new WebView(this);
         pdfWebView.setBackgroundColor(Color.WHITE);
+        pdfWebView.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
+        pdfWebView.setFocusable(false);
+        pdfWebView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         pdfWebView.setHorizontalScrollBarEnabled(false);
         pdfWebView.setVerticalScrollBarEnabled(false);
         pdfWebView.getSettings().setJavaScriptEnabled(false);
@@ -423,102 +425,94 @@ public class MainActivity extends Activity {
         pdfWebView.getSettings().setTextZoom(100);
         pdfWebView.setInitialScale(100);
         final WebView source = pdfWebView;
+        final int pageCount = countPdfPages(html);
+        final float density = getResources().getDisplayMetrics().density;
+        final int renderWidth = Math.round(PDF_PAGE_WIDTH * density);
+        final int renderHeight = Math.round(PDF_PAGE_HEIGHT * pageCount * density);
+        // The renderer must be attached for visual callbacks and deferred work.
+        // Put it behind the opaque app WebView, with an A4 viewport in CSS pixels.
+        rootView.addView(source, 0, new FrameLayout.LayoutParams(renderWidth, renderHeight));
         pdfTimeout = () -> {
             if (pdfWebView == source) finishPdfSave(destination, pdfFileName, mediaStoreDestination, false);
         };
         pdfHandler.postDelayed(pdfTimeout, 30_000);
         pdfWebView.setWebViewClient(new WebViewClient() {
             private boolean renderStarted;
-
             @Override
             public void onPageFinished(WebView view, String url) {
                 if (renderStarted || pdfWebView != view) return;
                 renderStarted = true;
-                // Use the main looper: View.post waits for an unattached WebView.
-                pdfHandler.post(() -> writeWebViewPdf(view, pdfFileName, destination, mediaStoreDestination));
+                pdfHandler.post(() -> {
+                    if (pdfWebView != view) return;
+                    view.measure(View.MeasureSpec.makeMeasureSpec(renderWidth, View.MeasureSpec.EXACTLY),
+                        View.MeasureSpec.makeMeasureSpec(renderHeight, View.MeasureSpec.EXACTLY));
+                    view.layout(0, 0, renderWidth, renderHeight);
+                    view.scrollTo(0, 0);
+                    view.postVisualStateCallback(0, new WebView.VisualStateCallback() {
+                        @Override
+                        public void onComplete(long requestId) {
+                            if (pdfWebView == view) writeWebViewPdf(view, pageCount, density, pdfFileName, destination, mediaStoreDestination);
+                        }
+                    });
+                });
             }
-
             @Override
             public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
-                if (request.isForMainFrame() && pdfWebView == view) {
-                    finishPdfSave(destination, pdfFileName, mediaStoreDestination, false);
-                }
+                if (request.isForMainFrame() && pdfWebView == view) finishPdfSave(destination, pdfFileName, mediaStoreDestination, false);
             }
-
             @Override
             public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
                 if (pdfWebView == view) finishPdfSave(destination, pdfFileName, mediaStoreDestination, false);
                 return true;
             }
         });
-        pdfWebView.loadDataWithBaseURL(
-            "https://" + WebViewAssetLoader.DEFAULT_DOMAIN + "/assets/",
-            html,
-            "text/html",
-            "UTF-8",
-            null
-        );
+        pdfWebView.loadDataWithBaseURL("https://" + WebViewAssetLoader.DEFAULT_DOMAIN + "/assets/", html, "text/html", "UTF-8", null);
     }
 
     private void writeWebViewPdf(
         WebView source,
+        int pageCount,
+        float density,
         String pdfFileName,
         Uri destination,
         boolean mediaStoreDestination
     ) {
         if (source != pdfWebView) return;
+        PdfDocument document = new PdfDocument();
+        boolean success = false;
         try {
-            pdfOutput = getContentResolver().openFileDescriptor(destination, "rwt");
-            if (pdfOutput == null) throw new IllegalStateException("Файл недоступен");
-            pdfCancellation = new CancellationSignal();
-            pdfAdapter = source.createPrintDocumentAdapter(pdfFileName);
-            final PrintDocumentAdapter adapter = pdfAdapter;
-            PrintAttributes attributes = new PrintAttributes.Builder()
-                .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
-                .setResolution(new PrintAttributes.Resolution("pdf", "PDF", 300, 300))
-                .setMinMargins(PrintAttributes.Margins.NO_MARGINS)
-                .setColorMode(PrintAttributes.COLOR_MODE_COLOR)
-                .build();
-            adapter.onStart();
-            adapter.onLayout(null, attributes, pdfCancellation, new PrintDocumentAdapter.LayoutResultCallback() {
-                @Override
-                public void onLayoutFinished(PrintDocumentInfo info, boolean changed) {
-                    pdfHandler.post(() -> {
-                        if (source != pdfWebView) return;
-                        try {
-                            adapter.onWrite(new PageRange[] { PageRange.ALL_PAGES }, pdfOutput, pdfCancellation,
-                                new PrintDocumentAdapter.WriteResultCallback() {
-                                    @Override
-                                    public void onWriteFinished(PageRange[] pages) {
-                                        complete(pages.length > 0 && pdfOutput != null && pdfOutput.getStatSize() > 0);
-                                    }
-                                    @Override
-                                    public void onWriteFailed(CharSequence error) { complete(false); }
-                                    @Override
-                                    public void onWriteCancelled() { complete(false); }
-                                    private void complete(boolean success) {
-                                        pdfHandler.post(() -> {
-                                            if (source == pdfWebView) finishPdfSave(destination, pdfFileName, mediaStoreDestination, success);
-                                        });
-                                    }
-                                });
-                        } catch (Exception error) {
-                            finishPdfSave(destination, pdfFileName, mediaStoreDestination, false);
-                        }
-                    });
-                }
-                @Override
-                public void onLayoutFailed(CharSequence error) { complete(); }
-                @Override
-                public void onLayoutCancelled() { complete(); }
-                private void complete() {
-                    pdfHandler.post(() -> {
-                        if (source == pdfWebView) finishPdfSave(destination, pdfFileName, mediaStoreDestination, false);
-                    });
-                }
-            }, null);
+            float scale = Math.min(
+                PDF_OUTPUT_WIDTH / (PDF_PAGE_WIDTH * density),
+                PDF_OUTPUT_HEIGHT / (PDF_PAGE_HEIGHT * density)
+            );
+            for (int index = 0; index < pageCount; index++) {
+                PdfDocument.PageInfo pageInfo = new PdfDocument.PageInfo.Builder(
+                    PDF_OUTPUT_WIDTH,
+                    PDF_OUTPUT_HEIGHT,
+                    index + 1
+                ).create();
+                PdfDocument.Page page = document.startPage(pageInfo);
+                Canvas canvas = page.getCanvas();
+                canvas.drawColor(Color.WHITE);
+                int checkpoint = canvas.save();
+                canvas.scale(scale, scale);
+                canvas.translate(0, -index * PDF_PAGE_HEIGHT * density);
+                source.draw(canvas);
+                canvas.restoreToCount(checkpoint);
+                document.finishPage(page);
+            }
+
+            try (OutputStream output = getContentResolver().openOutputStream(destination, "w")) {
+                if (output == null) throw new IllegalStateException("Файл недоступен");
+                document.writeTo(output);
+                output.flush();
+            }
+            success = true;
         } catch (Exception error) {
-            finishPdfSave(destination, pdfFileName, mediaStoreDestination, false);
+            success = false;
+        } finally {
+            document.close();
+            finishPdfSave(destination, pdfFileName, mediaStoreDestination, success);
         }
     }
 
@@ -527,17 +521,10 @@ public class MainActivity extends Activity {
         pdfWebView = null;
         if (pdfTimeout != null) pdfHandler.removeCallbacks(pdfTimeout);
         pdfTimeout = null;
-        if (!success && pdfCancellation != null) pdfCancellation.cancel();
-        pdfCancellation = null;
-        if (pdfAdapter != null) {
-            try { pdfAdapter.onFinish(); } catch (Exception ignored) { }
-            pdfAdapter = null;
+        if (source != null) {
+            rootView.removeView(source);
+            source.destroy();
         }
-        if (pdfOutput != null) {
-            try { pdfOutput.close(); } catch (Exception error) { success = false; }
-            pdfOutput = null;
-        }
-        if (source != null) source.destroy();
         pdfDestination = null;
         if (mediaStoreDestination && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
@@ -553,10 +540,13 @@ public class MainActivity extends Activity {
             }
         }
 
+        if (pdfWebView != null) {
+            pdfWebView.destroy();
+            pdfWebView = null;
+        }
         pdfInProgress = false;
         String archiveId = activeArchiveId;
         activeArchiveId = null;
-
         if (isFinishing() || isDestroyed()) return;
 
         if (!success) {
@@ -605,11 +595,15 @@ public class MainActivity extends Activity {
         }
     }
 
-    @Override
-    protected void onDestroy() {
-        if (pdfDestination != null) finishPdfSave(pdfDestination, "", pdfMediaStoreDestination, false);
-        if (webView != null) webView.destroy();
-        super.onDestroy();
+    private int countPdfPages(String html) {
+        String marker = "<section class=\"page\">";
+        int count = 0;
+        int cursor = 0;
+        while ((cursor = html.indexOf(marker, cursor)) >= 0) {
+            count += 1;
+            cursor += marker.length();
+        }
+        return Math.max(1, count);
     }
 
     private String safeFileName(String value) {

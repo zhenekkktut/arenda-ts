@@ -609,7 +609,7 @@ function reconciliationPages(input: OfficialDocumentInput) {
     <p class="subtitle">Расшифровка количества бутылей и вычета топлива по дням · акт № ${escapeHtml(m.reconciliationNumber)}</p>
     ${index === 0 ? `<p><b>3.</b> По каждой дате указаны количество бутылей, вычет топлива заказчика и итог к оплате за день. Стоимость одной бутыли для расчёта — ${rubles(s.rateKopecks)} руб.</p>` : ""}
     <table class="reconciliation-daily"><colgroup><col style="width:29%"><col style="width:19%"><col style="width:12%"><col style="width:20%"><col style="width:20%"></colgroup><thead><tr><th>Счёт / период</th><th>Дата</th><th>Бутылей</th><th>Вычет топлива, руб.</th><th>Итог, руб.</th></tr></thead><tbody>${chunk}</tbody></table>
-    ${index === dailyChunks.length - 1 ? `<p><b>4.</b> Подписанием акта Стороны подтверждают результат сверки. ${escapeHtml(s.lesseeShort)} признаёт задолженность перед ${escapeHtml(s.lessorDative)} в размере <b>${escapeHtml(amountWords(balance))}</b> по состоянию на ${shortDate(asOf)}.</p>
+    ${index === dailyChunks.length - 1 ? `<p><b>4.</b> Подписанием акта Стороны подтверждают результат сверки. Задолженность ${escapeHtml(s.lesseeShort)} перед ${escapeHtml(s.lessorDative || s.lessorShort)} составляет <b>${escapeHtml(amountWords(balance))}</b> по состоянию на ${shortDate(asOf)}.</p>
     <p><b>5.</b> Сроки оплаты определяются договором. Платежи после ${shortDate(asOf)} уменьшают задолженность без переоформления акта-расчёта. Документ составлен в двух экземплярах.</p>
     ${signatures(s)}` : ""}</div>`);
   return [firstPage, ...additionalInvoicePages, ...continuation];
