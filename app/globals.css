@@ -3933,11 +3933,11 @@ html[data-theme="dark"] .month-tools-cash strong.negative {
 .document-archive-row small { color: var(--muted-foreground); }
 .document-preview-dialog { width: min(96vw, 850px) !important; max-width: 850px !important; max-height: 94dvh !important; }
 .document-preview-frame { overflow: auto; max-height: min(64dvh, 830px); background: #ddd; border: 1px solid #bbb; }
-.document-preview-frame iframe { display: block; width: 794px; height: 1123px; border: 0; background: white; transform-origin: top left; }
+.document-preview-paper { position: relative; margin: 0 auto; }
+.document-preview-frame iframe { position: absolute; display: block; width: 794px; border: 0; background: white; transform-origin: top left; }
 @media (max-width: 560px) {
   .document-fields { grid-template-columns: 1fr 1fr; }
-  .document-preview-frame { height: 440px; overflow: hidden; }
-  .document-preview-frame iframe { transform: scale(.4); }
+  .document-preview-frame { height: min(64dvh, 440px); }
   .document-actions button { flex: 1 1 100%; }
 }
 

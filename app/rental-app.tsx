@@ -70,9 +70,9 @@ import {
   buildReconciliationHtml,
   buildRentActHtml,
   calculateRental,
+  calculateSettlement,
   defaultDocumentMeta,
   DEFAULT_DOCUMENT_SETTINGS,
-  fuelInvoiceForDate,
   periodBounds,
   reconciliationSummary,
   sharedBottlePeriodParts,
@@ -164,6 +164,7 @@ type DashboardData = {
   entries: Entry[];
   invoices: Invoice[];
   payments: Payment[];
+  openingPayments?: Payment[];
   expenses: Expense[];
   expenseCategories?: ExpenseCategory[];
   expenseShortcuts?: ExpenseShortcut[];
@@ -442,7 +443,7 @@ function automaticOpeningBalance(store: OfflineStore, period: string) {
   return balance;
 }
 
-function offlineDashboard(period: string): DashboardData {
+export function offlineDashboard(period: string): DashboardData {
   const store = readOfflineStore();
   const from = `${period}-01`;
   const to = `${period}-31`;
@@ -456,6 +457,8 @@ function offlineDashboard(period: string): DashboardData {
   const payments = store.payments
     .filter((payment) => invoiceIds.has(payment.invoiceId))
     .sort((a, b) => b.paymentDate.localeCompare(a.paymentDate) || b.id - a.id);
+  const priorInvoiceIds = new Set(store.invoices.filter((invoice) => invoice.period < period).map((invoice) => invoice.id));
+  const openingPayments = store.payments.filter((payment) => priorInvoiceIds.has(payment.invoiceId) && payment.paymentDate >= from);
   const expenses = store.expenses
     .filter((expense) => expense.expenseDate >= from && expense.expenseDate <= to)
     .sort((a, b) => b.expenseDate.localeCompare(a.expenseDate) || b.id - a.id);
@@ -470,6 +473,7 @@ function offlineDashboard(period: string): DashboardData {
     entries,
     invoices,
     payments,
+    openingPayments,
     expenses,
     expenseCategories: store.expenseCategories,
     expenseShortcuts: store.expenseShortcuts,
@@ -1159,8 +1163,8 @@ function printHtmlInBrowser(html: string) {
   }, 300);
 }
 
-function statusFor(invoice: Invoice, paid: number, fuelDeduction = 0) {
-  if (paid >= Math.max(0, invoice.amountKopecks - fuelDeduction)) return { label: "Оплачен", tone: "paid" };
+function statusFor(invoice: Invoice, paid: number) {
+  if (paid >= invoice.amountKopecks) return { label: "Оплачен", tone: "paid" };
   if (paid > 0) return { label: "Частично", tone: "partial" };
   if (invoice.dueDate && invoice.dueDate < localIsoDate()) {
     return { label: "Просрочен", tone: "overdue" };
@@ -1218,6 +1222,27 @@ function normalizedHeader(value: unknown) {
     .toLowerCase()
     .replace(/ё/g, "е")
     .replace(/[^a-zа-я0-9]/g, "");
+}
+
+function DocumentPreviewPages({ html }: { html: string }) {
+  const frameRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(794);
+  const pageCount = Math.max(1, (html.match(/<section class="page">/g) ?? []).length);
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!frame) return;
+    const resize = () => setWidth(Math.min(794, frame.clientWidth));
+    resize();
+    const observer = new ResizeObserver(resize);
+    observer.observe(frame);
+    return () => observer.disconnect();
+  }, []);
+  const scale = width / 794;
+  return <div className="document-preview-frame" ref={frameRef}>
+    <div className="document-preview-paper" style={{ width, height: 1123 * pageCount * scale }}>
+      <iframe title="Предпросмотр PDF" srcDoc={html} sandbox="" style={{ height: 1123 * pageCount, transform: `scale(${scale})` }} />
+    </div>
+  </div>;
 }
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
@@ -1593,30 +1618,16 @@ export default function RentalApp() {
   const totalPaid = data?.payments.reduce((sum, payment) => sum + payment.amountKopecks, 0) ?? 0;
   const totalInvoiced = data?.invoices.reduce((sum, invoice) => sum + invoice.amountKopecks, 0) ?? 0;
   const totalExpenses = data?.expenses.reduce((sum, expense) => sum + expense.amountKopecks, 0) ?? 0;
-  const customerFuel = data?.expenses.filter((e) => e.category === "fuel" && e.payer === "customer").reduce((sum, e) => sum + e.amountKopecks, 0) ?? 0;
-  const fuelByInvoice = useMemo(() => {
-    const allocated = new Map<number, number>();
-    for (const expense of data?.expenses ?? []) {
-      if (expense.category !== "fuel" || expense.payer !== "customer") continue;
-      const invoiceId = fuelInvoiceForDate(data?.invoices ?? [], expense.expenseDate);
-      if (invoiceId !== undefined) allocated.set(invoiceId,
-        (allocated.get(invoiceId) ?? 0) + expense.amountKopecks);
-    }
-    return allocated;
-  }, [data?.expenses, data?.invoices]);
-  const allocatedFuel = [...fuelByInvoice.values()].reduce((sum, amount) => sum + amount, 0);
+  const settlement = calculateSettlement(month, calculation, data?.invoices ?? [], data?.expenses ?? []);
+  const customerFuel = settlement.customerFuelKopecks;
   const selfExpenses = totalExpenses - customerFuel;
-  const fixedInvoiced = data?.invoices.filter((invoice) => invoice.kind === "fixed").reduce((sum, invoice) => sum + invoice.amountKopecks, 0) ?? 0;
-  const variableInvoiced = data?.invoices.filter((invoice) => invoice.kind === "variable").reduce((sum, invoice) => sum + invoice.amountKopecks, 0) ?? 0;
-  const fixedTargetKopecks = calculation.baseKopecks;
-  const fixedRemainingKopecks = Math.max(0, fixedTargetKopecks - fixedInvoiced);
-  const variableRemainingKopecks = Math.max(0, calculation.variableKopecks - variableInvoiced);
+  const { fixedTargetKopecks, variableTargetKopecks, fixedRemainingKopecks, variableRemainingKopecks } = settlement;
   const filteredExpenses = data?.expenses.filter((expense) => expenseFilter === "all" || expense.category === expenseFilter) ?? [];
   const filteredExpenseTotal = filteredExpenses.reduce((sum, expense) => sum + expense.amountKopecks, 0);
   const filteredCustomerFuel = filteredExpenses.filter((expense) => expense.category === "fuel" && expense.payer === "customer").reduce((sum, expense) => sum + expense.amountKopecks, 0);
   const filteredSelfFuel = filteredExpenses.filter((expense) => expense.category === "fuel" && expense.payer !== "customer").reduce((sum, expense) => sum + expense.amountKopecks, 0);
-  const netRent = calculation.totalKopecks - customerFuel;
-  const remainingToInvoice = Math.max(0, calculation.totalKopecks - totalInvoiced);
+  const netRent = settlement.netRentKopecks;
+  const remainingToInvoice = settlement.remainingToInvoiceKopecks;
   const selectedBottleUnits = data?.entries.filter((entry) => invoiceStartDate && invoiceEndDate &&
     entry.entryDate >= invoiceStartDate && entry.entryDate <= invoiceEndDate)
     .reduce((sum, entry) => sum + entry.units, 0) ?? 0;
@@ -1911,9 +1922,9 @@ export default function RentalApp() {
           : "fixed"
     );
     const suggestedAmount = kind === "fixed"
-      ? Math.min(fixedRemainingKopecks || calculation.baseKopecks, remainingToInvoice || calculation.baseKopecks)
+      ? fixedRemainingKopecks
       : kind === "variable"
-        ? Math.min(variableRemainingKopecks, remainingToInvoice || variableRemainingKopecks)
+        ? variableRemainingKopecks
         : remainingToInvoice;
     setInvoiceKind(kind);
     setInvoiceAmount(suggestedAmount > 0 ? String(suggestedAmount / 100) : "");
@@ -1972,7 +1983,7 @@ export default function RentalApp() {
     setPaymentInvoiceId(invoice.id);
     setPaymentSplits(null);
     setPaymentDate(today);
-    setPaymentAmount(String(Math.max(0, invoice.amountKopecks - (fuelByInvoice.get(invoice.id) ?? 0) - alreadyPaid) / 100));
+    setPaymentAmount(String(Math.max(0, invoice.amountKopecks - alreadyPaid) / 100));
     setPaymentMethod("bank");
     setPaymentDocument("");
     setPaymentNote("");
@@ -2254,7 +2265,7 @@ export default function RentalApp() {
     return JSON.stringify({ kind, meta, settings: documentSettings, calculation,
       entries: data?.entries ?? [], downtimes: data?.downtimes ?? [],
       ...(kind === "reconciliation" || kind === "ledger"
-        ? { invoices: data?.invoices ?? [], payments: data?.payments ?? [], expenses: data?.expenses ?? [] } : {}),
+        ? { invoices: data?.invoices ?? [], payments: data?.payments ?? [], openingPayments: data?.openingPayments ?? [], expenses: data?.expenses ?? [] } : {}),
     });
   }
 
@@ -2289,6 +2300,7 @@ export default function RentalApp() {
         downtimes: data.downtimes ?? [],
         invoices: data.invoices,
         payments: data.payments,
+        openingPayments: data.openingPayments,
         expenses: data.expenses,
         entries: data.entries,
       };
@@ -2491,9 +2503,7 @@ export default function RentalApp() {
           "Вид начисления",
           "Первый день бутылей",
           "Последний день бутылей",
-          "Начислено, ₽",
-          "Вычет топлива, ₽",
-          "К оплате, ₽",
+          "Сумма счёта после вычета топлива, ₽",
           "Оплачено, ₽",
           "Остаток, ₽",
           "Срок оплаты",
@@ -2509,8 +2519,7 @@ export default function RentalApp() {
         ...data.invoices.map((invoice) => {
           const invoicePayments = data.payments.filter((payment) => payment.invoiceId === invoice.id);
           const paid = invoicePayments.reduce((sum, payment) => sum + payment.amountKopecks, 0);
-          const fuelDeduction = fuelByInvoice.get(invoice.id) ?? 0;
-          const status = statusFor(invoice, paid, fuelDeduction).label;
+          const status = statusFor(invoice, paid).label;
           return [
             invoice.invoiceNumber,
             dateLabel(invoice.invoiceDate),
@@ -2518,10 +2527,8 @@ export default function RentalApp() {
             dateLabel(invoice.bottleStartDate ?? null),
             dateLabel(invoice.bottleEndDate ?? null),
             invoice.amountKopecks / 100,
-            fuelDeduction / 100,
-            (invoice.amountKopecks - fuelDeduction) / 100,
             paid / 100,
-            Math.max(0, invoice.amountKopecks - fuelDeduction - paid) / 100,
+            Math.max(0, invoice.amountKopecks - paid) / 100,
             dateLabel(invoice.dueDate),
             status,
             [...new Set(invoicePayments.map((payment) => payment.method === "bank" ? "Безналичные" : "Наличные"))].join(", "),
@@ -2533,15 +2540,14 @@ export default function RentalApp() {
             emailText(invoice, documentSettings),
           ];
         }),
-        ["ИТОГО", "", "", "", "", totalInvoiced / 100, allocatedFuel / 100,
-          (totalInvoiced - allocatedFuel) / 100, totalPaid / 100,
-          Math.max(0, totalInvoiced - allocatedFuel - totalPaid) / 100,
+        ["ИТОГО", "", "", "", "", totalInvoiced / 100, totalPaid / 100,
+          Math.max(0, totalInvoiced - totalPaid) / 100,
           "", "", "", "", "", "", "", "", ""],
       ];
       const invoicesSheet = XLSX.utils.aoa_to_sheet(invoiceRows);
       invoicesSheet["!cols"] = [
         { wch: 14 }, { wch: 14 }, { wch: 24 }, { wch: 19 }, { wch: 19 },
-        { wch: 15 }, { wch: 18 }, { wch: 15 }, { wch: 15 }, { wch: 15 },
+        { wch: 26 }, { wch: 15 }, { wch: 15 },
         { wch: 15 }, { wch: 15 }, { wch: 20 }, { wch: 24 }, { wch: 38 },
         { wch: 48 }, { wch: 62 }, { wch: 46 }, { wch: 70 },
       ];
@@ -2647,8 +2653,7 @@ export default function RentalApp() {
         <div className="calculation-total"><span>Осталось выставить</span><strong>{money(remainingToInvoice)}</strong></div>
       </div>
       {customerFuel > 0 && <p className="help-note">Топливо заказчика вычтено из суммы к оплате: {money(customerFuel)}. По дням оно видно в акте сверки.</p>}
-      {customerFuel > allocatedFuel && <p className="help-note">Вычет топлива на {money(customerFuel - allocatedFuel)} пока не связан с периодом счёта. Укажите даты бутылей в соответствующем счёте.</p>}
-      {totalInvoiced > calculation.totalKopecks && <p className="help-note">Выставлено больше расчётной суммы на {money(totalInvoiced - calculation.totalKopecks)}. Проверьте ранее выставленные счета.</p>}
+      {totalInvoiced > netRent && <p className="help-note">Выставлено больше суммы после вычета топлива на {money(totalInvoiced - netRent)}. Проверьте ранее выставленные счета.</p>}
       <Button className="mt-4 w-full" type="button" disabled={remainingToInvoice <= 0} onClick={() => {
         setSettlementOpen(false);
         openInvoice();
@@ -2915,11 +2920,16 @@ export default function RentalApp() {
                     <label><FieldLabel>Дата составления</FieldLabel><Input type="date" value={documentDate} onChange={(e) => setDocumentDate(e.target.value)} /></label>
                     <label><FieldLabel>Сверка по состоянию на</FieldLabel><Input type="date" value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} /></label>
                   </div>
+                  <Button type="button" variant="outline" onClick={() => { setDocumentDate(today); setAsOfDate(today); }}>Составить на сегодня</Button>
+                  {(data.invoices.some((invoice) => invoice.invoiceDate > asOfDate) ||
+                    [...data.payments, ...(data.openingPayments ?? [])].some((payment) => payment.paymentDate > asOfDate) ||
+                    data.expenses.some((expense) => expense.category === "fuel" && expense.payer === "customer" && expense.expenseDate > asOfDate)) &&
+                    <p className="help-note">В сверку на {dateLabel(asOfDate)} не войдут более поздние счета, оплаты и вычеты топлива. Для полного расчёта выберите нужную дату или нажмите «Составить на сегодня».</p>}
                   <label className="document-note"><FieldLabel>Замечания и согласованные корректировки</FieldLabel><Input value={documentAdjustments} onChange={(e) => setDocumentAdjustments(e.target.value)} placeholder="Если нет — останется «отсутствуют»" /></label>
                   <p className="help-note">Задолженность на начало периода: {money(data.documentMeta?.openingBalanceKopecks ?? 0)}. Оплаты учитываются по дате поступления и связи со счётом выбранного месяца.</p>
                   <p className="help-note">Календарных дней: {calculation.calendarDays}. Владение: {calculation.ownershipDays}. Простой: {calculation.downtimeDays}. Оплачиваемых дней: {calculation.payableDays}. N: {number(calculation.actualUnits)}. Ф: {money(calculation.baseKopecks)}. И: {money(calculation.intensityKopecks)}. Переменная часть: {money(calculation.variableKopecks)}. Итого: {money(calculation.totalKopecks)}.</p>
                   {missingMonthDays.length > 0 && <p className="help-note text-amber-700">Дни без записи: {number(missingMonthDays.length)}. Проверьте календарь до подписания акта.</p>}
-                  {data.invoices.some((invoice) => (paidByInvoice.get(invoice.id) ?? 0) < invoice.amountKopecks - (fuelByInvoice.get(invoice.id) ?? 0)) &&
+                  {data.invoices.some((invoice) => (paidByInvoice.get(invoice.id) ?? 0) < invoice.amountKopecks) &&
                     <p className="help-note text-amber-700">Есть неоплаченные или частично оплаченные счета. Их остатки видны в разделе «Счета».</p>}
                   {data.payments.reduce((sum, payment) => sum + payment.amountKopecks, 0) > netRent &&
                     <p className="help-note text-amber-700">Оплаты превышают сумму после вычета топлива: переплата {money(data.payments.reduce((sum, payment) => sum + payment.amountKopecks, 0) - netRent)}.</p>}
@@ -3084,7 +3094,7 @@ export default function RentalApp() {
                 <section className="finance-summary">
                   <div><span>Выставлено</span><strong>{money(totalInvoiced)}</strong></div>
                   <div><span>Получено</span><strong>{money(totalPaid)}</strong></div>
-                  <div><span>Долг по счетам</span><strong>{money(Math.max(0, totalInvoiced - allocatedFuel - totalPaid))}</strong></div>
+                  <div><span>Долг по счетам</span><strong>{money(Math.max(0, totalInvoiced - totalPaid))}</strong></div>
                 </section>
                 <section className="panel payment-schedule">
                   <div className="section-heading">
@@ -3094,9 +3104,9 @@ export default function RentalApp() {
                     </div>
                   </div>
                   <div className="schedule-grid">
-                    <div><span>Постоянная часть</span><strong>{money(fixedTargetKopecks)}</strong><small>можно несколькими счетами</small></div>
+                    <div><span>Постоянная часть</span><strong>{money(fixedTargetKopecks)}</strong><small>после вычета топлива; можно несколькими счетами</small></div>
                     <div><span>Осталось постоянной части</span><strong>{money(fixedRemainingKopecks)}</strong></div>
-                    <div><span>Переменная часть</span><strong>{money(calculation.variableKopecks)}</strong><small>{data.closure ? "рассчитана по итогам месяца" : "после закрытия месяца"}</small></div>
+                    <div><span>Переменная часть</span><strong>{money(variableTargetKopecks)}</strong><small>{data.closure ? "рассчитана по итогам месяца" : "после закрытия месяца"}</small></div>
                   </div>
                 </section>
                 <Button type="button" onClick={() => openInvoice()} className="h-12 w-full sm:w-auto">
@@ -3113,8 +3123,7 @@ export default function RentalApp() {
                     {data.invoices.map((invoice) => {
                       const invoicePayments = data.payments.filter((payment) => payment.invoiceId === invoice.id);
                       const paid = paidByInvoice.get(invoice.id) ?? 0;
-                      const fuelDeduction = fuelByInvoice.get(invoice.id) ?? 0;
-                      const status = statusFor(invoice, paid, fuelDeduction);
+                      const status = statusFor(invoice, paid);
                       return (
                         <article className={`panel invoice-card invoice-card-${status.tone}`} key={invoice.id}>
                           <div className="flex items-start justify-between gap-3">
@@ -3133,10 +3142,9 @@ export default function RentalApp() {
                             </Button>
                           </div>
                           <div className="invoice-amounts">
-                            <div><span>Начислено</span><strong>{money(invoice.amountKopecks)}</strong></div>
-                            {fuelDeduction > 0 && <div><span>Вычет топлива</span><strong>−{money(fuelDeduction)}</strong></div>}
+                            <div><span>Сумма счёта</span><strong>{money(invoice.amountKopecks)}</strong></div>
                             <div><span>Оплачено</span><strong>{money(paid)}</strong></div>
-                            <div><span>Остаток</span><strong>{money(Math.max(0, invoice.amountKopecks - fuelDeduction - paid))}</strong></div>
+                            <div><span>Остаток</span><strong>{money(Math.max(0, invoice.amountKopecks - paid))}</strong></div>
                           </div>
                             {invoice.dueDate && <p className="due-line">Срок оплаты: <strong>{dateLabel(invoice.dueDate)}</strong></p>}
                             <p className="due-line">Период: <strong>{monthLabel(invoice.period)}</strong>{invoice.actNumber && <> · акт-расчёт №{invoice.actNumber}</>}</p>
@@ -3323,7 +3331,7 @@ export default function RentalApp() {
           <DialogHeader><DialogTitle>Предпросмотр документа</DialogTitle>
             <DialogDescription>Проверьте суммы, даты и текст перед сохранением PDF. Подписи останутся пустыми.</DialogDescription>
           </DialogHeader>
-          {documentPreview && <div className="document-preview-frame"><iframe title="Предпросмотр PDF" srcDoc={documentPreview.html} /></div>}
+          {documentPreview && <DocumentPreviewPages html={documentPreview.html} />}
           <DialogFooter><Button type="button" variant="outline" onClick={() => setDocumentPreview(null)}>Назад</Button>
             <Button type="button" onClick={() => void savePreviewedDocument()}>Сохранить PDF</Button></DialogFooter>
         </DialogContent>
@@ -3743,14 +3751,15 @@ export default function RentalApp() {
             </label>
             <div className="grid grid-cols-2 gap-3">
               <label><FieldLabel>Номер счёта</FieldLabel><Input value={invoiceNumber} onChange={(event) => setInvoiceNumber(event.target.value)} placeholder="Например, 24" required /></label>
-              <label><FieldLabel>Начислено до вычета топлива, ₽</FieldLabel><Input type="number" min="0.01" step="0.01" inputMode="decimal" value={invoiceAmount} onChange={(event) => setInvoiceAmount(event.target.value)} required /></label>
+              <label><FieldLabel>Сумма выставленного счёта, ₽</FieldLabel><Input type="number" min="0.01" step="0.01" inputMode="decimal" value={invoiceAmount} onChange={(event) => setInvoiceAmount(event.target.value)} required /></label>
             </div>
+            <p className="help-note">Введите сумму самого счёта после вычета топлива заказчика. Оплаты и остаток считаются от этой суммы.</p>
             <div className="grid grid-cols-2 gap-3">
               <label><FieldLabel>Первый день бутылей</FieldLabel><Input type="date" min={`${month}-01`} max={periodBounds(month).end} value={invoiceStartDate} onChange={(event) => setInvoiceStartDate(event.target.value)} required={editingInvoiceId === null} /></label>
               <label><FieldLabel>Последний день бутылей</FieldLabel><Input type="date" min={`${month}-01`} max={periodBounds(month).end} value={invoiceEndDate} onChange={(event) => setInvoiceEndDate(event.target.value)} required={editingInvoiceId === null} /></label>
             </div>
             {invoiceStartDate && invoiceEndDate && invoiceStartDate <= invoiceEndDate &&
-              <p className="help-note">За выбранные дни: {number(selectedBottleUnits)} бутылей, расчёт по ставке {money(selectedBottleUnits * documentSettings.rateKopecks)}. Топливо заказчика за эти дни: {money(selectedBottleFuel)}. В акте сверки будет показана разница, если сумма счёта отличается от расчёта по бутылям.</p>}
+              <p className="help-note">За выбранные дни: {number(selectedBottleUnits)} бутылей, расчёт по ставке {money(selectedBottleUnits * documentSettings.rateKopecks)}. Топливо заказчика за эти дни: {money(selectedBottleFuel)}. После вычета: {money(selectedBottleUnits * documentSettings.rateKopecks - selectedBottleFuel)}.</p>}
             {editingInvoiceId !== null && !invoiceStartDate && !invoiceEndDate &&
               <p className="help-note">Этот старый счёт сохранён без дат бутылей. Можно оставить его как есть или добавить период для расшифровки в акте сверки.</p>}
             <label><FieldLabel>Связанный акт-расчёт №</FieldLabel><Input value={invoiceActNumber} onChange={(event) => setInvoiceActNumber(event.target.value)} placeholder="Необязательно для предварительного счёта" /></label>

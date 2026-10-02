@@ -7,13 +7,19 @@ import android.content.ClipboardManager;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
-import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.pdf.PdfDocument;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.CancellationSignal;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.ParcelFileDescriptor;
+import android.print.PageRange;
+import android.print.PrintAttributes;
+import android.print.PrintDocumentAdapter;
+import android.print.PrintDocumentInfo;
 import android.provider.MediaStore;
 import android.util.Base64;
 import android.view.View;
@@ -22,7 +28,9 @@ import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceError;
 import android.webkit.WebResourceResponse;
+import android.webkit.RenderProcessGoneDetail;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -38,10 +46,6 @@ public class MainActivity extends Activity {
     private static final int REQUEST_OPEN_FILE = 1001;
     private static final int REQUEST_SAVE_FILE = 1002;
     private static final int REQUEST_SAVE_PDF = 1003;
-    private static final int PDF_PAGE_WIDTH = 794;
-    private static final int PDF_PAGE_HEIGHT = 1123;
-    private static final int PDF_OUTPUT_WIDTH = 595;
-    private static final int PDF_OUTPUT_HEIGHT = 842;
 
     private WebView webView;
     private FrameLayout rootView;
@@ -53,6 +57,13 @@ public class MainActivity extends Activity {
     private String pendingPdfHtml;
     private String pendingPdfFileName;
     private WebView pdfWebView;
+    private final Handler pdfHandler = new Handler(Looper.getMainLooper());
+    private PrintDocumentAdapter pdfAdapter;
+    private ParcelFileDescriptor pdfOutput;
+    private CancellationSignal pdfCancellation;
+    private Runnable pdfTimeout;
+    private Uri pdfDestination;
+    private boolean pdfMediaStoreDestination;
     private boolean pdfInProgress;
     private String activeArchiveId;
 
@@ -369,6 +380,10 @@ public class MainActivity extends Activity {
                 if (destination == null) throw new IllegalStateException("Не удалось создать PDF");
                 renderHtmlToPdf(html, pdfFileName, destination, true);
             } catch (Exception error) {
+                if (pdfDestination != null) {
+                    finishPdfSave(pdfDestination, pdfFileName, true, false);
+                    return;
+                }
                 pdfInProgress = false;
                 activeArchiveId = null;
                 Toast.makeText(this, R.string.file_save_error, Toast.LENGTH_LONG).show();
@@ -394,13 +409,10 @@ public class MainActivity extends Activity {
     }
 
     private void renderHtmlToPdf(String html, String pdfFileName, Uri destination, boolean mediaStoreDestination) {
-        if (pdfWebView != null) {
-            pdfWebView.destroy();
-            pdfWebView = null;
-        }
+        pdfDestination = destination;
+        pdfMediaStoreDestination = mediaStoreDestination;
         pdfWebView = new WebView(this);
         pdfWebView.setBackgroundColor(Color.WHITE);
-        pdfWebView.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
         pdfWebView.setHorizontalScrollBarEnabled(false);
         pdfWebView.setVerticalScrollBarEnabled(false);
         pdfWebView.getSettings().setJavaScriptEnabled(false);
@@ -410,18 +422,33 @@ public class MainActivity extends Activity {
         pdfWebView.getSettings().setLoadWithOverviewMode(false);
         pdfWebView.getSettings().setTextZoom(100);
         pdfWebView.setInitialScale(100);
-        final int pageCount = countPdfPages(html);
+        final WebView source = pdfWebView;
+        pdfTimeout = () -> {
+            if (pdfWebView == source) finishPdfSave(destination, pdfFileName, mediaStoreDestination, false);
+        };
+        pdfHandler.postDelayed(pdfTimeout, 30_000);
         pdfWebView.setWebViewClient(new WebViewClient() {
             private boolean renderStarted;
 
             @Override
             public void onPageFinished(WebView view, String url) {
-                if (renderStarted) return;
+                if (renderStarted || pdfWebView != view) return;
                 renderStarted = true;
-                view.postDelayed(
-                    () -> writeWebViewPdf(view, pageCount, pdfFileName, destination, mediaStoreDestination),
-                    350
-                );
+                // Use the main looper: View.post waits for an unattached WebView.
+                pdfHandler.post(() -> writeWebViewPdf(view, pdfFileName, destination, mediaStoreDestination));
+            }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                if (request.isForMainFrame() && pdfWebView == view) {
+                    finishPdfSave(destination, pdfFileName, mediaStoreDestination, false);
+                }
+            }
+
+            @Override
+            public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                if (pdfWebView == view) finishPdfSave(destination, pdfFileName, mediaStoreDestination, false);
+                return true;
             }
         });
         pdfWebView.loadDataWithBaseURL(
@@ -435,58 +462,83 @@ public class MainActivity extends Activity {
 
     private void writeWebViewPdf(
         WebView source,
-        int pageCount,
         String pdfFileName,
         Uri destination,
         boolean mediaStoreDestination
     ) {
-        PdfDocument document = new PdfDocument();
-        boolean success = false;
+        if (source != pdfWebView) return;
         try {
-            int totalHeight = PDF_PAGE_HEIGHT * pageCount;
-            source.measure(
-                View.MeasureSpec.makeMeasureSpec(PDF_PAGE_WIDTH, View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.makeMeasureSpec(totalHeight, View.MeasureSpec.EXACTLY)
-            );
-            source.layout(0, 0, PDF_PAGE_WIDTH, totalHeight);
-            source.scrollTo(0, 0);
-
-            float scale = Math.min(
-                PDF_OUTPUT_WIDTH / (float) PDF_PAGE_WIDTH,
-                PDF_OUTPUT_HEIGHT / (float) PDF_PAGE_HEIGHT
-            );
-            for (int index = 0; index < pageCount; index++) {
-                PdfDocument.PageInfo pageInfo = new PdfDocument.PageInfo.Builder(
-                    PDF_OUTPUT_WIDTH,
-                    PDF_OUTPUT_HEIGHT,
-                    index + 1
-                ).create();
-                PdfDocument.Page page = document.startPage(pageInfo);
-                Canvas canvas = page.getCanvas();
-                canvas.drawColor(Color.WHITE);
-                int checkpoint = canvas.save();
-                canvas.scale(scale, scale);
-                canvas.translate(0, -index * PDF_PAGE_HEIGHT);
-                source.draw(canvas);
-                canvas.restoreToCount(checkpoint);
-                document.finishPage(page);
-            }
-
-            try (OutputStream output = getContentResolver().openOutputStream(destination, "w")) {
-                if (output == null) throw new IllegalStateException("Файл недоступен");
-                document.writeTo(output);
-                output.flush();
-            }
-            success = true;
+            pdfOutput = getContentResolver().openFileDescriptor(destination, "rwt");
+            if (pdfOutput == null) throw new IllegalStateException("Файл недоступен");
+            pdfCancellation = new CancellationSignal();
+            pdfAdapter = source.createPrintDocumentAdapter(pdfFileName);
+            final PrintDocumentAdapter adapter = pdfAdapter;
+            PrintAttributes attributes = new PrintAttributes.Builder()
+                .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
+                .setResolution(new PrintAttributes.Resolution("pdf", "PDF", 300, 300))
+                .setMinMargins(PrintAttributes.Margins.NO_MARGINS)
+                .setColorMode(PrintAttributes.COLOR_MODE_COLOR)
+                .build();
+            adapter.onStart();
+            adapter.onLayout(null, attributes, pdfCancellation, new PrintDocumentAdapter.LayoutResultCallback() {
+                @Override
+                public void onLayoutFinished(PrintDocumentInfo info, boolean changed) {
+                    pdfHandler.post(() -> {
+                        if (source != pdfWebView) return;
+                        try {
+                            adapter.onWrite(new PageRange[] { PageRange.ALL_PAGES }, pdfOutput, pdfCancellation,
+                                new PrintDocumentAdapter.WriteResultCallback() {
+                                    @Override
+                                    public void onWriteFinished(PageRange[] pages) {
+                                        complete(pages.length > 0 && pdfOutput != null && pdfOutput.getStatSize() > 0);
+                                    }
+                                    @Override
+                                    public void onWriteFailed(CharSequence error) { complete(false); }
+                                    @Override
+                                    public void onWriteCancelled() { complete(false); }
+                                    private void complete(boolean success) {
+                                        pdfHandler.post(() -> {
+                                            if (source == pdfWebView) finishPdfSave(destination, pdfFileName, mediaStoreDestination, success);
+                                        });
+                                    }
+                                });
+                        } catch (Exception error) {
+                            finishPdfSave(destination, pdfFileName, mediaStoreDestination, false);
+                        }
+                    });
+                }
+                @Override
+                public void onLayoutFailed(CharSequence error) { complete(); }
+                @Override
+                public void onLayoutCancelled() { complete(); }
+                private void complete() {
+                    pdfHandler.post(() -> {
+                        if (source == pdfWebView) finishPdfSave(destination, pdfFileName, mediaStoreDestination, false);
+                    });
+                }
+            }, null);
         } catch (Exception error) {
-            success = false;
-        } finally {
-            document.close();
-            finishPdfSave(destination, pdfFileName, mediaStoreDestination, success);
+            finishPdfSave(destination, pdfFileName, mediaStoreDestination, false);
         }
     }
 
     private void finishPdfSave(Uri destination, String pdfFileName, boolean mediaStoreDestination, boolean success) {
+        WebView source = pdfWebView;
+        pdfWebView = null;
+        if (pdfTimeout != null) pdfHandler.removeCallbacks(pdfTimeout);
+        pdfTimeout = null;
+        if (!success && pdfCancellation != null) pdfCancellation.cancel();
+        pdfCancellation = null;
+        if (pdfAdapter != null) {
+            try { pdfAdapter.onFinish(); } catch (Exception ignored) { }
+            pdfAdapter = null;
+        }
+        if (pdfOutput != null) {
+            try { pdfOutput.close(); } catch (Exception error) { success = false; }
+            pdfOutput = null;
+        }
+        if (source != null) source.destroy();
+        pdfDestination = null;
         if (mediaStoreDestination && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
                 if (success) {
@@ -501,13 +553,11 @@ public class MainActivity extends Activity {
             }
         }
 
-        if (pdfWebView != null) {
-            pdfWebView.destroy();
-            pdfWebView = null;
-        }
         pdfInProgress = false;
         String archiveId = activeArchiveId;
         activeArchiveId = null;
+
+        if (isFinishing() || isDestroyed()) return;
 
         if (!success) {
             Toast.makeText(this, R.string.file_save_error, Toast.LENGTH_LONG).show();
@@ -555,15 +605,11 @@ public class MainActivity extends Activity {
         }
     }
 
-    private int countPdfPages(String html) {
-        String marker = "<section class=\"page\">";
-        int count = 0;
-        int cursor = 0;
-        while ((cursor = html.indexOf(marker, cursor)) >= 0) {
-            count += 1;
-            cursor += marker.length();
-        }
-        return Math.max(1, count);
+    @Override
+    protected void onDestroy() {
+        if (pdfDestination != null) finishPdfSave(pdfDestination, "", pdfMediaStoreDestination, false);
+        if (webView != null) webView.destroy();
+        super.onDestroy();
     }
 
     private String safeFileName(String value) {

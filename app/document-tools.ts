@@ -275,6 +275,7 @@ const officialCss = `
   body { font-family: "Noto Serif", "DejaVu Serif", "Times New Roman", serif; font-size: 10pt; line-height: 1.19; }
   .page { width: 794px; height: 1123px; overflow: hidden; padding: 60px 67px 48px; page-break-after: always; }
   .page:last-child { page-break-after: auto; }
+  @media print { .page { width: 210mm; height: 297mm; } }
   h1 { margin: 0; text-align: center; font-size: 14pt; line-height: 1.18; font-weight: 700; }
   h2 { margin: 0 0 4px; text-align: center; font-size: 11.4pt; }
   p { margin: 0 0 6px; text-align: justify; }
@@ -285,13 +286,15 @@ const officialCss = `
   th { background: #e9e9e9; text-align: left; }
   .value { width: 31%; text-align: right; white-space: nowrap; }
   .reconciliation .value { width: 30%; }
-  .reconciliation-page { font-size: 9.5pt; }
-  .reconciliation-invoices { font-size: 7.4pt; table-layout: fixed; }
+  .reconciliation-page { font-size: 10pt; margin: -16px -23px 0; }
+  .reconciliation-invoices { font-size: 8.3pt; table-layout: fixed; }
   .reconciliation-invoices th, .reconciliation-invoices td { padding: 3px; overflow-wrap: anywhere; }
-  .reconciliation-daily { font-size: 8pt; table-layout: fixed; }
+  .reconciliation-invoices .value { width: auto; white-space: normal; }
+  .reconciliation-invoices th { text-align: center; }
+  .reconciliation-daily { font-size: 8.7pt; table-layout: fixed; }
   .reconciliation-daily th, .reconciliation-daily td { padding: 2px 4px; }
   .reconciliation-daily .value { width: auto; }
-  .reconciliation-continuation { font-size: 8.8pt; }
+  .reconciliation-continuation { font-size: 10pt; margin: -16px -23px 0; }
   .reconciliation-continuation p { margin-bottom: 4px; }
   .total { font-weight: bold; }
   .signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px -8px 0; font-size: 9pt; page-break-inside: avoid; }
@@ -314,6 +317,7 @@ export type OfficialDocumentInput = {
   downtimes: Downtime[];
   invoices: InvoiceLike[];
   payments: PaymentLike[];
+  openingPayments?: PaymentLike[];
   expenses?: ExpenseLike[];
   entries?: EntryLike[];
 };
@@ -400,19 +404,50 @@ export function reconciliationSummary(input: OfficialDocumentInput) {
   const payments = input.payments.filter((payment) => invoiceIds.has(payment.invoiceId) && payment.paymentDate <= asOf);
   const paidKopecks = payments.reduce((sum, payment) => sum + payment.amountKopecks, 0);
   const bounds = periodBounds(input.meta.period);
+  const openingPayments = (input.openingPayments ?? []).filter((payment) =>
+    !invoiceIds.has(payment.invoiceId) && payment.paymentDate >= bounds.start && payment.paymentDate <= asOf);
+  const openingPaidKopecks = openingPayments.reduce((sum, payment) => sum + payment.amountKopecks, 0);
   const customerFuelKopecks = (input.expenses ?? [])
     .filter((expense) => expense.category === "fuel" && expense.payer === "customer" &&
       expense.expenseDate >= bounds.start && expense.expenseDate <= bounds.end && expense.expenseDate <= asOf)
     .reduce((sum, expense) => sum + expense.amountKopecks, 0);
   const opening = input.meta.openingBalanceKopecks;
-  return { payments, paidKopecks, customerFuelKopecks, opening,
-    balance: opening + input.calculation.totalKopecks - customerFuelKopecks - paidKopecks, asOf };
+  return { payments, paidKopecks, openingPayments, openingPaidKopecks, customerFuelKopecks, opening,
+    balance: opening + input.calculation.totalKopecks - customerFuelKopecks - paidKopecks - openingPaidKopecks, asOf };
+}
+
+// amountKopecks is the amount on an issued invoice. Customer fuel is deducted
+// from rent before issuing invoices, so it must not reduce that amount again.
+export function calculateSettlement(
+  period: string,
+  calculation: DocumentCalculation,
+  invoices: InvoiceLike[],
+  expenses: ExpenseLike[],
+) {
+  const bounds = periodBounds(period);
+  const periodInvoices = invoices.filter((invoice) => !invoice.period || invoice.period === period);
+  const customerFuelKopecks = expenses.filter((expense) => expense.category === "fuel" &&
+    expense.payer === "customer" && expense.expenseDate >= bounds.start && expense.expenseDate <= bounds.end)
+    .reduce((sum, expense) => sum + expense.amountKopecks, 0);
+  const totalInvoicedKopecks = periodInvoices.reduce((sum, invoice) => sum + (invoice.amountKopecks ?? 0), 0);
+  const netRentKopecks = calculation.totalKopecks - customerFuelKopecks;
+  const remainingToInvoiceKopecks = Math.max(0, netRentKopecks - totalInvoicedKopecks);
+  const fixedTargetKopecks = Math.max(0, calculation.baseKopecks - customerFuelKopecks);
+  const variableTargetKopecks = Math.max(0, calculation.variableKopecks - Math.max(0, customerFuelKopecks - calculation.baseKopecks));
+  const fixedInvoiced = periodInvoices.filter((invoice) => invoice.kind === "fixed")
+    .reduce((sum, invoice) => sum + (invoice.amountKopecks ?? 0), 0);
+  const variableInvoiced = periodInvoices.filter((invoice) => invoice.kind === "variable")
+    .reduce((sum, invoice) => sum + (invoice.amountKopecks ?? 0), 0);
+  return { customerFuelKopecks, totalInvoicedKopecks, netRentKopecks, remainingToInvoiceKopecks,
+    fixedTargetKopecks, variableTargetKopecks,
+    fixedRemainingKopecks: Math.min(remainingToInvoiceKopecks, Math.max(0, fixedTargetKopecks - fixedInvoiced)),
+    variableRemainingKopecks: Math.min(remainingToInvoiceKopecks, Math.max(0, variableTargetKopecks - variableInvoiced)) };
 }
 
 function reconciliationPages(input: OfficialDocumentInput) {
   const { settings: s, meta: m, calculation: c } = input;
   const b = periodBounds(m.period);
-  const { payments, paidKopecks, customerFuelKopecks, opening, balance, asOf } = reconciliationSummary(input);
+  const { payments, paidKopecks, openingPayments, openingPaidKopecks, customerFuelKopecks, opening, balance, asOf } = reconciliationSummary(input);
   const invoices = input.invoices.filter((invoice) => (!invoice.period || invoice.period === m.period) &&
     (!invoice.invoiceDate || invoice.invoiceDate <= asOf))
     .sort((a, b) => (a.bottleStartDate ?? a.invoiceDate ?? "").localeCompare(b.bottleStartDate ?? b.invoiceDate ?? "") || a.id - b.id);
@@ -433,14 +468,14 @@ function reconciliationPages(input: OfficialDocumentInput) {
   const entriesByDate = new Map<string, number>();
   for (const entry of input.entries ?? []) {
     if (entry.entryDate < b.start || entry.entryDate > b.end ||
-        entry.entryDate < s.rentalStart || entry.entryDate > s.rentalEnd) continue;
+        (s.rentalStart && entry.entryDate < s.rentalStart) || (s.rentalEnd && entry.entryDate > s.rentalEnd)) continue;
     entriesByDate.set(entry.entryDate, (entriesByDate.get(entry.entryDate) ?? 0) + entry.units);
   }
   const rows = [
     ["Задолженность на начало периода", rubles(opening)],
     [`Начислено за ${monthNames[Number(m.period.slice(5)) - 1]} по акту-расчёту № ${m.actNumber} от ${shortDate(m.documentDate)}, ${s.vatLabel === "Без НДС" ? "без НДС" : s.vatLabel}`, rubles(c.totalKopecks)],
     ["Вычет топлива, оплаченного заказчиком", `−${rubles(customerFuelKopecks)}`],
-    ["Поступившие платежи", `−${rubles(paidKopecks)}`],
+    ["Поступившие платежи", `−${rubles(paidKopecks + openingPaidKopecks)}`],
     [`Задолженность Арендатора на ${shortDate(asOf)}`, rubles(balance)],
   ];
   const invoiceRows: string[] = [];
@@ -464,14 +499,14 @@ function reconciliationPages(input: OfficialDocumentInput) {
     dates.forEach((date) => invoicedDates.add(date));
     const fuel = dates.reduce((sum, date) => sum +
       (invoiceForFuel.get(date) === invoice.id ? fuelByDate.get(date) ?? 0 : 0), 0);
-    const charged = invoice.amountKopecks ?? 0;
+    const invoiceAmount = invoice.amountKopecks ?? 0;
     const paid = payments.filter((payment) => payment.invoiceId === invoice.id)
       .reduce((sum, payment) => sum + payment.amountKopecks, 0);
     invoiceRows.push(`<tr><td>№ ${escapeHtml(invoice.invoiceNumber)}<br>${invoice.invoiceDate ? shortDate(invoice.invoiceDate) : ""}</td>
       <td>${range ? `${shortDate(invoice.bottleStartDate!)}–${shortDate(invoice.bottleEndDate!)}` : "не указан"}</td>
-      <td class="value">${range ? integer(units) : "—"}</td><td class="value">${rubles(charged)}</td>
-      <td class="value">${rubles(fuel)}</td><td class="value">${rubles(charged - fuel)}</td>
-      <td class="value">${rubles(paid)}</td><td class="value">${rubles(charged - fuel - paid)}</td></tr>`);
+      <td class="value">${range ? integer(units) : "—"}</td><td class="value">${range ? rubles(invoiceAmount + fuel) : "—"}</td>
+      <td class="value">${range ? rubles(fuel) : "—"}</td><td class="value">${rubles(invoiceAmount)}</td>
+      <td class="value">${rubles(paid)}</td><td class="value">${rubles(invoiceAmount - paid)}</td></tr>`);
     if (!range) continue;
     const connectedGroups = invoiceGroups.filter((group) => group.some((item) => sharedBottlePeriodParts(item, invoice)));
     if (!connectedGroups.length) invoiceGroups.push([invoice]);
@@ -498,17 +533,32 @@ function reconciliationPages(input: OfficialDocumentInput) {
         <td class="value">${dayFuel ? rubles(dayFuel) : "—"}</td><td class="value">${rubles(dayUnits * s.rateKopecks - dayFuel)}</td></tr>`);
     }
     const calculated = units * s.rateKopecks;
-    if (calculated !== charged) dailyRows.push(`<tr><td colspan="4">Разница между расчётом по бутылям и суммой ${group.length === 1 ? "счёта" : "счетов"} ${refs}</td>
-      <td class="value">${rubles(charged - calculated)}</td></tr>`);
+    if (calculated !== charged + fuel) dailyRows.push(`<tr><td colspan="4">Разница между расчётом по бутылям после вычета топлива и суммой ${group.length === 1 ? "счёта" : "счетов"} ${refs}</td>
+      <td class="value">${rubles(charged + fuel - calculated)}</td></tr>`);
     dailyRows.push(`<tr class="total"><td>Итого ${group.length === 1 ? "счёт" : "счета"} ${refs}</td><td></td>
       <td class="value">${integer(units)}</td><td class="value">${rubles(fuel)}</td>
-      <td class="value">${rubles(charged - fuel)}</td></tr>`);
+      <td class="value">${rubles(charged)}</td></tr>`);
   }
   const invoicedUnits = [...invoicedDates].reduce((sum, date) => sum + (entriesByDate.get(date) ?? 0), 0);
   const unassignedFuel = [...fuelByDate].filter(([date]) => !invoiceForFuel.has(date));
   const unassignedFuelTotal = unassignedFuel.reduce((sum, [, amount]) => sum + amount, 0);
-  for (const [date, amount] of unassignedFuel) dailyRows.push(`<tr><td>Без периода счёта</td><td>${shortDate(date)}</td>
-    <td class="value">—</td><td class="value">${rubles(amount)}</td><td class="value">−${rubles(amount)}</td></tr>`);
+  // Old backups have no invoice ranges. Keep their actual daily entries visible
+  // without inventing which invoice covered each date.
+  const unlinkedDates = [...new Set([...entriesByDate.keys(), ...fuelByDate.keys()])]
+    .filter((date) => !invoicedDates.has(date)).sort();
+  for (const date of unlinkedDates) {
+    const units = entriesByDate.get(date) ?? 0;
+    const fuel = fuelByDate.get(date) ?? 0;
+    dailyRows.push(`<tr><td>${date === unlinkedDates[0] ? "Дни без связи со счётом" : ""}</td><td>${shortDate(date)}</td>
+      <td class="value">${integer(units)}</td><td class="value">${fuel ? rubles(fuel) : "—"}</td>
+      <td class="value">${rubles(units * s.rateKopecks - fuel)}</td></tr>`);
+  }
+  const unlinkedUnits = unlinkedDates.reduce((sum, date) => sum + (entriesByDate.get(date) ?? 0), 0);
+  const groupNet = invoiceGroups.flat().reduce((sum, invoice) => sum + (invoice.amountKopecks ?? 0), 0);
+  const dailyNet = groupNet + unlinkedUnits * s.rateKopecks - unassignedFuelTotal;
+  const netRent = c.totalKopecks - customerFuelKopecks;
+  if (dailyNet !== netRent) dailyRows.push(`<tr><td colspan="4">Разница до начисления по акту-расчёту № ${escapeHtml(m.actNumber)}</td>
+    <td class="value">${rubles(netRent - dailyNet)}</td></tr>`);
   const totalInvoiced = invoices.reduce((sum, invoice) => sum + (invoice.amountKopecks ?? 0), 0);
   const visibleInvoiceIds = new Set(invoices.map((invoice) => invoice.id));
   const advances = payments.filter((payment) => !visibleInvoiceIds.has(payment.invoiceId))
@@ -516,39 +566,36 @@ function reconciliationPages(input: OfficialDocumentInput) {
   if (advances) invoiceRows.push(`<tr><td colspan="3">Аванс до даты выставления счёта</td>
     <td class="value">—</td><td class="value">—</td><td class="value">—</td>
     <td class="value">${rubles(advances)}</td><td class="value">−${rubles(advances)}</td></tr>`);
-  if (unassignedFuelTotal) invoiceRows.push(`<tr><td colspan="3">Топливо вне периодов счетов</td>
-    <td class="value">—</td><td class="value">${rubles(unassignedFuelTotal)}</td>
-    <td class="value">−${rubles(unassignedFuelTotal)}</td><td class="value">—</td>
-    <td class="value">−${rubles(unassignedFuelTotal)}</td></tr>`);
-  invoiceRows.push(`<tr class="total"><td>Итого по счетам</td><td></td><td class="value">${integer(invoicedUnits)}</td>
-    <td class="value">${rubles(totalInvoiced)}</td><td class="value">${rubles(customerFuelKopecks)}</td>
-    <td class="value">${rubles(totalInvoiced - customerFuelKopecks)}</td>
-    <td class="value">${rubles(paidKopecks)}</td><td class="value">${rubles(totalInvoiced - customerFuelKopecks - paidKopecks)}</td></tr>`);
-  dailyRows.push(`<tr class="total"><td>Итого по счетам за ${escapeHtml(periodLabel(m.period))}</td><td></td>
-    <td class="value">${integer(invoicedUnits)}</td><td class="value">${rubles(customerFuelKopecks)}</td>
-    <td class="value">${rubles(totalInvoiced - customerFuelKopecks)}</td></tr>`);
-  const paymentDocuments = payments.map((p) => p.documentNumber).filter(Boolean).join(", ");
+  invoiceRows.push(`<tr class="total"><td>Итого по счетам</td><td></td><td class="value">${hasLegacyInvoice ? "—" : integer(invoicedUnits)}</td>
+    <td class="value">${hasLegacyInvoice ? "—" : rubles(totalInvoiced + customerFuelKopecks - unassignedFuelTotal)}</td><td class="value">${hasLegacyInvoice ? "—" : rubles(customerFuelKopecks - unassignedFuelTotal)}</td>
+    <td class="value">${rubles(totalInvoiced)}</td>
+    <td class="value">${rubles(paidKopecks)}</td><td class="value">${rubles(totalInvoiced - paidKopecks)}</td></tr>`);
+  dailyRows.push(`<tr class="total"><td>Итого за ${escapeHtml(periodLabel(m.period))}</td><td></td>
+    <td class="value">${integer(c.actualUnits)}</td><td class="value">${rubles(customerFuelKopecks)}</td>
+    <td class="value">${rubles(netRent)}</td></tr>`);
+  const allPayments = [...payments, ...openingPayments].sort((first, second) => first.paymentDate.localeCompare(second.paymentDate));
+  const paymentDocuments = allPayments.map((p) => `${shortDate(p.paymentDate)} — ${rubles(p.amountKopecks)} руб.${p.documentNumber ? `, № ${p.documentNumber}` : ""}`).join("; ");
   const fuelDocuments = (input.expenses ?? []).filter((expense) => expense.category === "fuel" &&
     expense.payer === "customer" && expense.expenseDate >= b.start && expense.expenseDate <= b.end &&
-    expense.expenseDate <= asOf).map((expense) => `${shortDate(expense.expenseDate)} — ${rubles(expense.amountKopecks)} руб.${expense.documentNumber ? `, документ № ${expense.documentNumber}` : ""}`);
-  const invoiceTable = (tableRows: string[]) => `<table class="reconciliation-invoices"><thead><tr><th>Счёт</th><th>Период бутылей</th><th>Бутылей</th><th>Начислено</th><th>Вычет топлива</th><th>К оплате</th><th>Оплачено</th><th>Остаток</th></tr></thead>
+    expense.expenseDate <= asOf).sort((first, second) => first.expenseDate.localeCompare(second.expenseDate))
+    .map((expense) => `${shortDate(expense.expenseDate)} — ${rubles(expense.amountKopecks)} руб.${expense.documentNumber ? `, документ № ${expense.documentNumber}` : ""}`);
+  const invoiceTable = (tableRows: string[]) => `<table class="reconciliation-invoices"><colgroup><col style="width:12%"><col style="width:17%"><col style="width:8%"><col style="width:13%"><col style="width:12%"><col style="width:13%"><col style="width:13%"><col style="width:12%"></colgroup><thead><tr><th>Счёт</th><th>Период бутылей</th><th>Бутылей</th><th>Начислено</th><th>Вычет топлива</th><th>К оплате</th><th>Оплачено</th><th>Остаток</th></tr></thead>
     <tbody>${tableRows.join("")}</tbody></table>`;
   const firstPage = `<div class="reconciliation-page"><h1>АКТ СВЕРКИ ВЗАИМНЫХ РАСЧЁТОВ</h1>
   <p class="number">№${escapeHtml(m.reconciliationNumber)}　Дата составления: ${shortDate(m.documentDate)}</p>
   <p class="subtitle">по аренде за ${escapeHtml(periodLabel(m.period))}, по состоянию на ${shortDate(asOf)}</p>
   <p class="city">г. ${escapeHtml(s.city)}</p>
-  <p>Договор аренды транспортного средства без экипажа № ${escapeHtml(s.contractNumber)} от ${escapeHtml(longDate(s.contractDate))}.</p>
-  <p>${escapeHtml(s.lessorFull)}, ИНН ${escapeHtml(s.lessorInn)} (Арендодатель), и ${escapeHtml(s.lesseeFull)}, ИНН ${escapeHtml(s.lesseeInn)}, КПП ${escapeHtml(s.lesseeKpp)}, в лице генерального директора ${escapeHtml(s.lesseeDirector)}, действующего на основании Устава (Арендатор), составили настоящий документ о нижеследующем.</p>
-  <p><b>1.</b> Сверка проведена по начислению арендной платы за период с ${shortDate(b.start)} по ${shortDate(b.end)}, вычету топлива заказчика и платежам по состоянию на ${shortDate(asOf)}. Автомобиль: ${escapeHtml(s.vehicleModel)}, VIN ${escapeHtml(s.vehicleVin)}, государственный регистрационный знак ${escapeHtml(s.vehiclePlate)}.</p>
+  <p>${escapeHtml(s.lessorFull)} (Арендодатель) и ${escapeHtml(s.lesseeFull)} (Арендатор) составили настоящий акт по автомобилю ${escapeHtml(s.vehicleModel)}, госномер ${escapeHtml(s.vehiclePlate)}, по договору № ${escapeHtml(s.contractNumber)} от ${shortDate(s.contractDate)}.</p>
+  <p><b>1.</b> Сверка за период ${shortDate(b.start)}–${shortDate(b.end)}, по выставленным счетам и платежам, полученным по состоянию на ${shortDate(asOf)}. Основание начисления — акт-расчёт № ${escapeHtml(m.actNumber)} за ${escapeHtml(periodLabel(m.period))}.</p>
   <table class="reconciliation"><thead><tr><th>Показатель</th><th class="value">Сумма, руб.</th></tr></thead><tbody>
   ${rows.map(([label, value], i) => `<tr class="${i === 4 ? "total" : ""}"><td>${escapeHtml(label)}</td><td class="value">${escapeHtml(value)}</td></tr>`).join("")}</tbody></table>
+  ${openingPaidKopecks ? `<p>В поступившие платежи включены ${rubles(openingPaidKopecks)} руб. в погашение задолженности за предыдущие месяцы.</p>` : ""}
   <p><b>2.</b> Расшифровка выставленных счетов. Количество бутылей и вычет топлива по датам приведены на следующих страницах.</p>
   ${invoiceTable(invoiceRows.slice(0, 8))}
   ${invoiceGroups.some((group) => group.length > 1) ? "<p>Дни счетов постоянной и переменной части расшифрованы общим блоком. Вычет топлива за общие дни отнесён к постоянной части.</p>" : ""}
-  ${hasLegacyInvoice ? "<p>У ранее сохранённых счетов без дат период бутылей не указан; эти даты можно добавить при редактировании счёта.</p>" : ""}
-  ${unassignedFuel.length ? "<p>Вычет топлива за даты вне указанных периодов счетов показан отдельно на следующей странице.</p>" : ""}
+  ${hasLegacyInvoice ? "<p>В старых счетах периоды бутылей не сохранены. Дневные записи и топливо приведены ниже; связь со счётом можно указать при его редактировании. Суммы счетов — после вычета топлива.</p>" : ""}
   ${fuelDocuments.length ? `<p>Основания вычета топлива по датам: ${escapeHtml(fuelDocuments.join("; "))}.</p>` : ""}
-  <p>Реквизиты платёжных документов на сумму ${rubles(paidKopecks)} руб.: ${paymentDocuments ? escapeHtml(paymentDocuments) : "____________________________"}.</p></div>`;
+  <p>Поступившие платежи на сумму ${rubles(paidKopecks + openingPaidKopecks)} руб.: ${paymentDocuments ? escapeHtml(paymentDocuments) : "____________________________"}.</p></div>`;
   const additionalInvoicePages: string[] = [];
   for (let start = 8; start < invoiceRows.length; start += 20) {
     additionalInvoicePages.push(`<div class="reconciliation-page"><h1>АКТ СВЕРКИ ВЗАИМНЫХ РАСЧЁТОВ</h1>
@@ -561,7 +608,7 @@ function reconciliationPages(input: OfficialDocumentInput) {
     <h1>АКТ СВЕРКИ ВЗАИМНЫХ РАСЧЁТОВ</h1>
     <p class="subtitle">Расшифровка количества бутылей и вычета топлива по дням · акт № ${escapeHtml(m.reconciliationNumber)}</p>
     ${index === 0 ? `<p><b>3.</b> По каждой дате указаны количество бутылей, вычет топлива заказчика и итог к оплате за день. Стоимость одной бутыли для расчёта — ${rubles(s.rateKopecks)} руб.</p>` : ""}
-    <table class="reconciliation-daily"><thead><tr><th>Счёт / период</th><th>Дата</th><th>Бутылей</th><th>Вычет топлива, руб.</th><th>Итог, руб.</th></tr></thead><tbody>${chunk}</tbody></table>
+    <table class="reconciliation-daily"><colgroup><col style="width:29%"><col style="width:19%"><col style="width:12%"><col style="width:20%"><col style="width:20%"></colgroup><thead><tr><th>Счёт / период</th><th>Дата</th><th>Бутылей</th><th>Вычет топлива, руб.</th><th>Итог, руб.</th></tr></thead><tbody>${chunk}</tbody></table>
     ${index === dailyChunks.length - 1 ? `<p><b>4.</b> Подписанием акта Стороны подтверждают результат сверки. ${escapeHtml(s.lesseeShort)} признаёт задолженность перед ${escapeHtml(s.lessorDative)} в размере <b>${escapeHtml(amountWords(balance))}</b> по состоянию на ${shortDate(asOf)}.</p>
     <p><b>5.</b> Сроки оплаты определяются договором. Платежи после ${shortDate(asOf)} уменьшают задолженность без переоформления акта-расчёта. Документ составлен в двух экземплярах.</p>
     ${signatures(s)}` : ""}</div>`);

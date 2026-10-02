@@ -112,7 +112,7 @@ test("rent act keeps the contract amount while reconciliation deducts customer f
   assert.match(act, /112[\s ]000 \(Сто двенадцать тысяч\) рублей 00 копеек/);
   assert.match(act, /Переменная часть: И - Ф, если результат положительный/);
   assert.match(act, /в лице генерального директора Иванова Ивана Ивановича/);
-  assert.match(reconciliation, /в лице генерального директора Иванова Ивана Ивановича/);
+  assert.match(reconciliation, /АКТ СВЕРКИ ВЗАИМНЫХ РАСЧЁТОВ/);
   assert.equal((act.match(/class="signature-header"/g) ?? []).length, 2);
   assert.match(act, /32[\s ]000,00 руб/);
   assert.match(act, /Подтверждённого технического простоя не было; P = 0 дней/);
@@ -134,7 +134,7 @@ test("reconciliation traces each invoice to days and shows fuel deductions on th
   const entries = counts.map((units, index) => ({ entryDate: `2026-08-${String(index + 1).padStart(2, "0")}`, units }));
   const invoices = [
     { id: 31, period: "2026-08", invoiceNumber: "31", invoiceDate: "2026-08-04", bottleStartDate: "2026-08-01", bottleEndDate: "2026-08-03", amountKopecks: 1_280_000 },
-    { id: 32, period: "2026-08", invoiceNumber: "32", invoiceDate: "2026-08-16", bottleStartDate: "2026-08-04", bottleEndDate: "2026-08-15", amountKopecks: 4_720_000 },
+    { id: 32, period: "2026-08", invoiceNumber: "32", invoiceDate: "2026-08-16", bottleStartDate: "2026-08-04", bottleEndDate: "2026-08-15", amountKopecks: 3_970_000 },
     { id: 33, period: "2026-08", invoiceNumber: "33", invoiceDate: "2026-08-22", bottleStartDate: "2026-08-16", bottleEndDate: "2026-08-21", amountKopecks: 2_000_000 },
     { id: 34, period: "2026-08", invoiceNumber: "34", invoiceDate: "2026-09-01", bottleStartDate: "2026-08-22", bottleEndDate: "2026-08-31", amountKopecks: 3_200_000 },
   ];
@@ -172,7 +172,7 @@ test("fixed and variable invoices share days and deduct customer fuel once", () 
   const entries = [1000, 900, 900].map((units, index) => ({ entryDate: `2026-08-0${index + 1}`, units }));
   const invoices = [
     { id: 1, invoiceNumber: "F", period: "2026-08", invoiceDate: "2026-08-04", kind: "fixed",
-      bottleStartDate: "2026-08-01", bottleEndDate: "2026-08-03", amountKopecks: 8_000_000 },
+      bottleStartDate: "2026-08-01", bottleEndDate: "2026-08-03", amountKopecks: 7_750_000 },
     { id: 2, invoiceNumber: "V", period: "2026-08", invoiceDate: "2026-08-04", kind: "variable",
       bottleStartDate: "2026-08-01", bottleEndDate: "2026-08-03", amountKopecks: 3_200_000 },
   ];
@@ -192,7 +192,7 @@ test("fixed and variable invoices share days and deduct customer fuel once", () 
   assert.equal(tools.reconciliationSummary(input).balance, 750_000);
   const splitInvoices = [
     { ...invoices[0], id: 1, invoiceNumber: "F1", bottleEndDate: "2026-08-01", amountKopecks: 4_000_000 },
-    { ...invoices[0], id: 3, invoiceNumber: "F2", bottleStartDate: "2026-08-02", amountKopecks: 4_000_000 },
+    { ...invoices[0], id: 3, invoiceNumber: "F2", bottleStartDate: "2026-08-02", amountKopecks: 3_750_000 },
     invoices[1],
   ];
   const splitHtml = tools.buildReconciliationHtml({ ...input, invoices: splitInvoices });

@@ -7,6 +7,7 @@ on:
       - "android/**"
       - "offline/**"
       - "app/rental-app.tsx"
+      - "app/document-tools.ts"
       - "app/tax-calculation.ts"
       - "app/expense-shortcuts.ts"
       - "app/globals.css"
@@ -23,6 +24,7 @@ on:
       - "android/**"
       - "offline/**"
       - "app/rental-app.tsx"
+      - "app/document-tools.ts"
       - "app/tax-calculation.ts"
       - "app/expense-shortcuts.ts"
       - "app/globals.css"
@@ -71,6 +73,30 @@ jobs:
 
       - name: Подготовить файл
         run: cp android/app/build/outputs/apk/debug/app-debug.apk arenda-ts.apk
+
+      - name: Подготовить формы для проверки PDF
+        run: node tests/pdf-fixture.mjs android/app/src/androidTest/assets
+
+      - name: Разрешить ускорение эмулятора
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Проверить сохранение обоих PDF на Android
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          arch: x86_64
+          disable-animations: true
+          script: gradle -p android :app:connectedDebugAndroidTest --no-daemon --stacktrace
+
+      - name: Сохранить отчёт проверки PDF
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-pdf-test-report
+          path: android/app/build/reports/androidTests/connected/
 
       - name: Сохранить результат сборки
         uses: actions/upload-artifact@v4

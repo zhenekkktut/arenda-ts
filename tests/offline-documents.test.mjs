@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
+import { documentTools } from "./pdf-fixture.mjs";
 import { createServer } from "vite";
 
 test("old phone records survive migration and one bank payment is allocated without duplication", async () => {
@@ -64,5 +65,64 @@ test("old phone records survive migration and one bank payment is allocated with
     saveOfflineAction({ action: "save_entry", entryDate: "2026-08-01", units: 110, note: "изменено" });
     assert.equal(read().entries[0].units, 110);
     assert.equal(read().documentArchive[0].version, 1);
+  } finally { delete globalThis.window; await server.close(); }
+});
+
+test("old net invoices deduct fuel before invoicing and later payments settle the opening debt", async () => {
+  const server = await createServer({ configFile: "offline/vite.config.ts", hmr: false,
+    optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true }, appType: "custom" });
+  const tools = documentTools();
+  const store = { version: 5, settings: tools.DEFAULT_DOCUMENT_SETTINGS,
+    entries: [{ id: 1, entryDate: "2026-08-01", units: 3100, note: "" },
+      { id: 2, entryDate: "2026-09-10", units: 2138, note: "" }],
+    invoices: [
+      { id: 1, period: "2026-08", invoiceNumber: "A1", invoiceDate: "2026-09-08", kind: "fixed", amountKopecks: 3500000 },
+      { id: 2, period: "2026-08", invoiceNumber: "A2", invoiceDate: "2026-08-01", kind: "other", amountKopecks: 5000000 },
+      { id: 3, period: "2026-08", invoiceNumber: "A3", invoiceDate: "2026-08-30", kind: "fixed", amountKopecks: 2700000 },
+      { id: 4, period: "2026-09", invoiceNumber: "S1", invoiceDate: "2026-09-26", kind: "fixed", amountKopecks: 3120000 },
+      { id: 5, period: "2026-09", invoiceNumber: "S2", invoiceDate: "2026-10-01", kind: "fixed", amountKopecks: 1230000 },
+      { id: 6, period: "2026-09", invoiceNumber: "S3", invoiceDate: "2026-10-01", kind: "variable", amountKopecks: 2952000 }],
+    expenses: [{ id: 1, expenseDate: "2026-08-01", category: "fuel", payer: "customer", amountKopecks: 1200000 },
+      { id: 2, expenseDate: "2026-09-12", category: "fuel", payer: "customer", amountKopecks: 1250000 },
+      { id: 3, expenseDate: "2026-09-13", category: "repair", payer: "self", amountKopecks: 500000 }],
+    payments: [
+      { id: 1, invoiceId: 1, paymentDate: "2026-09-08", amountKopecks: 3500000 },
+      { id: 2, invoiceId: 2, paymentDate: "2026-09-22", amountKopecks: 5000000 },
+      { id: 3, invoiceId: 3, paymentDate: "2026-09-30", amountKopecks: 2700000 },
+      { id: 4, invoiceId: 4, paymentDate: "2026-09-26", amountKopecks: 3120000 }],
+    downtimes: [{ id: 1, startDate: "2026-09-01", endDate: "2026-09-09", reason: "Простой", note: "" }],
+    closures: [], documents: [] };
+  let stored = JSON.stringify(store);
+  globalThis.window = { localStorage: { getItem: (key) => key === "arenda-ts-offline-v1" ? stored : null,
+    setItem: (key, value) => { if (key === "arenda-ts-offline-v1") stored = value; } } };
+  try {
+    const { offlineDashboard } = await server.ssrLoadModule(path.resolve("app/rental-app.tsx"));
+    for (const period of ["2026-08", "2026-09"]) {
+      const data = offlineDashboard(period);
+      const calculation = tools.calculateRental(period, data.entries, data.downtimes, data.settings);
+      const settlement = tools.calculateSettlement(period, calculation, data.invoices, data.expenses);
+      assert.equal(settlement.remainingToInvoiceKopecks, 0);
+      assert.equal(settlement.fixedRemainingKopecks, 0);
+      assert.equal(settlement.variableRemainingKopecks, 0);
+      assert.equal(settlement.netRentKopecks, period === "2026-08" ? 11200000 : 7302000);
+      const input = { ...data, calculation, meta: { ...data.documentMeta, documentDate: "2026-10-02", asOfDate: "2026-10-02" } };
+      const summary = tools.reconciliationSummary(input);
+      assert.equal(summary.balance, period === "2026-08" ? 0 : 4182000);
+      const html = tools.buildReconciliationHtml(input);
+      const daily = html.split('class="reconciliation-daily"')[1];
+      assert.match(daily, period === "2026-08" ? /01\.08\.2026/ : /10\.09\.2026/);
+      assert.match(daily, period === "2026-08" ? /3[\s ]100/ : /2[\s ]138/);
+      if (period === "2026-09") {
+        assert.equal(summary.opening, 11200000);
+        assert.equal(summary.openingPaidKopecks, 11200000);
+        assert.match(html, /погашение задолженности за предыдущие месяцы/);
+        const historical = tools.reconciliationSummary({ ...input, meta: { ...input.meta, asOfDate: "2026-09-16" } });
+        assert.equal(historical.openingPaidKopecks, 3500000);
+      }
+    }
+    const migrated = JSON.parse(stored);
+    assert.equal(migrated.invoices[0].amountKopecks, 3500000);
+    assert.equal(migrated.invoices[0].bottleStartDate, undefined);
+    assert.equal(migrated.entries.length, 2);
   } finally { delete globalThis.window; await server.close(); }
 });

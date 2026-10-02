@@ -17,6 +17,7 @@ android {
         targetSdk = 35
         versionCode = buildNumber
         versionName = "3.4.$buildNumber"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     compileOptions {
@@ -27,4 +28,6 @@ android {
 
 dependencies {
     implementation("androidx.webkit:webkit:1.12.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }
