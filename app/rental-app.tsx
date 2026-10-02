@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { calculateTaxYear, type TaxAdjustment, type TaxYearOptions } from "@/app/tax-calculation";
+import { normalizeExpenseShortcuts, validateExpenseShortcuts, type ExpenseShortcut } from "@/app/expense-shortcuts";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -165,6 +166,7 @@ type DashboardData = {
   payments: Payment[];
   expenses: Expense[];
   expenseCategories?: ExpenseCategory[];
+  expenseShortcuts?: ExpenseShortcut[];
   closure: Closure | null;
   rules: {
     baseKopecks: number;
@@ -200,6 +202,7 @@ type OfflineStore = {
   payments: Payment[];
   expenses: Expense[];
   expenseCategories: ExpenseCategory[];
+  expenseShortcuts: ExpenseShortcut[];
   closures: Closure[];
   settings: DocumentSettings;
   downtimes: Downtime[];
@@ -344,6 +347,7 @@ function emptyOfflineStore(): OfflineStore {
     payments: [],
     expenses: [],
     expenseCategories: normalizeExpenseCategories(undefined),
+    expenseShortcuts: normalizeExpenseShortcuts(undefined, normalizeExpenseCategories(undefined)),
     closures: [],
     settings: normalizeDocumentSettings(undefined),
     downtimes: [],
@@ -379,6 +383,7 @@ function normalizeOfflineStore(value: unknown): OfflineStore {
     payments: store.payments,
     expenses: store.expenses,
     expenseCategories: normalizeExpenseCategories(store.expenseCategories),
+    expenseShortcuts: normalizeExpenseShortcuts(store.expenseShortcuts, normalizeExpenseCategories(store.expenseCategories)),
     closures: store.closures,
     settings: normalizeDocumentSettings(store.settings),
     downtimes: Array.isArray(store.downtimes) ? store.downtimes : [],
@@ -467,6 +472,7 @@ function offlineDashboard(period: string): DashboardData {
     payments,
     expenses,
     expenseCategories: store.expenseCategories,
+    expenseShortcuts: store.expenseShortcuts,
     closure: store.closures.find((closure) => closure.period === period) ?? null,
     rules: {
       baseKopecks: store.settings.baseKopecks,
@@ -793,12 +799,17 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
         : { ...expense, category: fallbackCategory.id, payer: "self" }
     ));
     store.expenseCategories = categories;
+    store.expenseShortcuts = normalizeExpenseShortcuts(store.expenseShortcuts, categories);
     appendAudit(store, {
       period: localIsoDate().slice(0, 7),
       entity: "settings",
       title: "Изменены категории расходов",
       detail: `${number(categories.length)} категорий`,
     });
+  } else if (action === "save_expense_shortcuts") {
+    store.expenseShortcuts = validateExpenseShortcuts(payload.shortcuts, store.expenseCategories);
+    appendAudit(store, { period: localIsoDate().slice(0, 7), entity: "settings",
+      title: "Изменены быстрые кнопки расходов", detail: `${number(store.expenseShortcuts.length)} кнопок` });
   } else if (action === "save_settings") {
     const value = payload.settings;
     if (!value || typeof value !== "object") throw new Error("Проверьте настройки договора");
@@ -821,12 +832,15 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
         throw new Error("Заполните все реквизиты договора");
       }
     }
+    const shortcuts = payload.shortcuts === undefined ? store.expenseShortcuts
+      : validateExpenseShortcuts(payload.shortcuts, store.expenseCategories);
     store.settings = {
       ...(settings as DocumentSettings),
       baseKopecks,
       includedUnits,
       rateKopecks,
     };
+    store.expenseShortcuts = shortcuts;
     appendAudit(store, {
       period: localIsoDate().slice(0, 7),
       entity: "settings",
@@ -1251,6 +1265,8 @@ export default function RentalApp() {
   const [quickEntryOpen, setQuickEntryOpen] = useState(false);
   const [closeMonthOpen, setCloseMonthOpen] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
+  const [entryHistoryOpen, setEntryHistoryOpen] = useState(false);
+  const [monthCalendarOpen, setMonthCalendarOpen] = useState(false);
   const [taxOpen, setTaxOpen] = useState(false);
   const [taxKind, setTaxKind] = useState<TaxAdjustment["kind"]>("income");
   const [taxDate, setTaxDate] = useState(today);
@@ -1305,6 +1321,7 @@ export default function RentalApp() {
   const [expenseOpen, setExpenseOpen] = useState(false);
   const [expenseCategoriesOpen, setExpenseCategoriesOpen] = useState(false);
   const [expenseCategoriesDraft, setExpenseCategoriesDraft] = useState<ExpenseCategory[]>(() => normalizeExpenseCategories(undefined));
+  const [expenseShortcutsDraft, setExpenseShortcutsDraft] = useState<ExpenseShortcut[]>([]);
   const [expenseDate, setExpenseDate] = useState(today);
   const [expenseCategory, setExpenseCategory] = useState("base_lease");
   const [expenseAmount, setExpenseAmount] = useState("20000");
@@ -1315,7 +1332,6 @@ export default function RentalApp() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsDraft, setSettingsDraft] = useState<DocumentSettings>({ ...DEFAULT_DOCUMENT_SETTINGS });
   const [actNumber, setActNumber] = useState("1");
-  const [reconciliationNumber, setReconciliationNumber] = useState("1");
   const [documentDate, setDocumentDate] = useState(today);
   const [asOfDate, setAsOfDate] = useState(today);
   const [documentAdjustments, setDocumentAdjustments] = useState("");
@@ -1398,11 +1414,13 @@ export default function RentalApp() {
   }, [themeMode]);
 
   useEffect(() => {
+    if (data && !settingsOpen) setSettingsDraft({ ...(data.settings ?? DEFAULT_DOCUMENT_SETTINGS) });
+  }, [data, settingsOpen]);
+
+  useEffect(() => {
     if (!data) return;
     const meta = data.documentMeta ?? defaultDocumentMeta(month, 1, today);
-    setSettingsDraft({ ...(data.settings ?? DEFAULT_DOCUMENT_SETTINGS) });
     setActNumber(meta.actNumber);
-    setReconciliationNumber(meta.reconciliationNumber);
     setDocumentDate(meta.documentDate);
     setAsOfDate(meta.asOfDate ?? meta.documentDate);
     setDocumentAdjustments(meta.adjustments ?? "");
@@ -1621,6 +1639,8 @@ export default function RentalApp() {
     [expenseCategories],
   );
   const expenseCategoryName = (category: string) => expenseCategoryNames.get(category) ?? "Другая категория";
+  const expenseShortcuts = useMemo(() => normalizeExpenseShortcuts(data?.expenseShortcuts, expenseCategories),
+    [data?.expenseShortcuts, expenseCategories]);
   const expenseBreakdown = useMemo(() => expenseCategories
     .map((category, index) => ({
       ...category,
@@ -1641,6 +1661,19 @@ export default function RentalApp() {
   const monthBounds = periodBounds(month);
   const missingCutoff = month === today.slice(0, 7) ? today : monthBounds.end;
   const currentWeekStart = weekStart(entryDate);
+  const monthCalendarDays = useMemo(() => {
+    const entriesByDate = new Map((data?.entries ?? []).map((entry) => [entry.entryDate, entry]));
+    const first = weekStart(monthBounds.start);
+    const last = addIsoDays(weekStart(monthBounds.end), 6);
+    const days = [];
+    for (let date = first; date <= last; date = addIsoDays(date, 1)) {
+      const inMonth = date.slice(0, 7) === month;
+      const entry = entriesByDate.get(date);
+      const isSunday = new Date(`${date}T12:00:00Z`).getUTCDay() === 0;
+      days.push({ date, inMonth, entry, missing: inMonth && date <= missingCutoff && !isSunday && !entry });
+    }
+    return days;
+  }, [data?.entries, month, monthBounds.start, monthBounds.end, missingCutoff]);
   const currentWeekDays = useMemo(() => {
     const entriesByDate = new Map((data?.entries ?? []).map((entry) => [entry.entryDate, entry]));
     return Array.from({ length: 7 }, (_, index) => {
@@ -1994,7 +2027,8 @@ export default function RentalApp() {
     setExpenseOpen(true);
   }
 
-  function openExpenseTemplate(category: string, payer: "self" | "customer" = "self") {
+  function openExpenseTemplate(shortcut: ExpenseShortcut) {
+    const { category, payer } = shortcut;
     if (!expenseCategories.some((item) => item.id === category)) {
       openExpense();
       return;
@@ -2003,7 +2037,7 @@ export default function RentalApp() {
     setExpenseDate(month === today.slice(0, 7) ? today : `${month}-01`);
     setExpensePayer(payer);
     setExpenseCategory(category);
-    setExpenseAmount("");
+    setExpenseAmount(shortcut.amountKopecks > 0 ? String(shortcut.amountKopecks / 100) : "");
     setExpenseMethod("bank");
     setExpenseDocument("");
     setExpenseNote("");
@@ -2119,16 +2153,33 @@ export default function RentalApp() {
 
   function openSettings() {
     setSettingsDraft({ ...documentSettings });
+    setExpenseShortcutsDraft(expenseShortcuts.map((shortcut) => ({ ...shortcut })));
     setSettingsOpen(true);
   }
 
   async function saveSettings(event: FormEvent) {
     event.preventDefault();
     const ok = await request(
-      { action: "save_settings", settings: settingsDraft },
+      { action: "save_settings", settings: settingsDraft, shortcuts: expenseShortcutsDraft },
       "Настройки расчёта сохранены",
     );
     if (ok) setSettingsOpen(false);
+  }
+
+  function addExpenseShortcut() {
+    if (expenseShortcutsDraft.length >= 8 || !expenseCategories.length) return;
+    setExpenseShortcutsDraft((items) => [...items, {
+      id: `shortcut-${Date.now().toString(36)}`, title: "Новая кнопка", category: expenseCategories[0].id,
+      payer: "self", amountKopecks: 0,
+    }]);
+  }
+
+  function updateExpenseShortcut(id: string, patch: Partial<ExpenseShortcut>) {
+    setExpenseShortcutsDraft((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item));
+  }
+
+  async function saveExpenseShortcuts() {
+    await request({ action: "save_expense_shortcuts", shortcuts: expenseShortcutsDraft }, "Быстрые кнопки сохранены");
   }
 
   function openDowntime(downtime?: Downtime) {
@@ -2183,14 +2234,14 @@ export default function RentalApp() {
   }
 
   function currentDocumentMeta() {
-    if (!actNumber.trim() || !reconciliationNumber.trim() || !validIsoDate(documentDate) || !validIsoDate(asOfDate)) {
-      toast.error("Заполните номера и дату документов");
+    if (!actNumber.trim() || !validIsoDate(documentDate) || !validIsoDate(asOfDate)) {
+      toast.error("Заполните номер и дату документов");
       return null;
     }
     return {
       period: month,
       actNumber: actNumber.trim(),
-      reconciliationNumber: reconciliationNumber.trim(),
+      reconciliationNumber: actNumber.trim(),
       documentDate,
       basis: data?.documentMeta?.basis ?? "",
       openingBalanceKopecks: data?.documentMeta?.openingBalanceKopecks ?? 0,
@@ -2689,7 +2740,9 @@ export default function RentalApp() {
               <strong>{monthLabel(month)}</strong>
             </div>
           </div>
-          <Input
+          <label className="month-picker">
+            <span>{monthLabel(month).replace(" г.", "")}</span><CalendarDays aria-hidden="true" />
+            <Input
             type="month"
             value={month}
             onChange={(event) => {
@@ -2697,9 +2750,10 @@ export default function RentalApp() {
               setMonth(nextMonth);
               selectEntryDate(nextMonth === today.slice(0, 7) ? today : `${nextMonth}-01`);
             }}
-            className="h-11 w-[155px] border-slate-200 bg-white text-base font-semibold"
+            className="month-native"
             aria-label="Месяц"
           />
+          </label>
         </section>
 
         <Tabs
@@ -2771,12 +2825,6 @@ export default function RentalApp() {
                     Показать расчёт <ChevronRight />
                   </button>
                 </section>
-                {offlineMode && <section className="panel tax-summary">
-                  <div><span className="eyebrow">УСН 6% · {taxQuarter} квартал {taxYear}</span>
-                    <strong>{money(tax.outstandingKopecks)}</strong>
-                    <small>Ориентир к доплате с учётом отмеченных платежей</small></div>
-                  <Button type="button" variant="outline" onClick={openTax}>Открыть расчёт</Button>
-                </section>}
                 <section className="dashboard-actions" aria-label="Быстрые действия">
                   <button type="button" onClick={() => openInvoice()}>
                     <span><ReceiptText /></span>
@@ -2863,8 +2911,7 @@ export default function RentalApp() {
                     <p className="text-sm text-muted-foreground">Данные берутся из дней, простоев, счетов и оплат.</p>
                   </div></div>
                   <div className="document-fields">
-                    <label><FieldLabel>№ акта-расчёта</FieldLabel><Input value={actNumber} onChange={(e) => setActNumber(e.target.value)} /></label>
-                    <label><FieldLabel>№ акта сверки</FieldLabel><Input value={reconciliationNumber} onChange={(e) => setReconciliationNumber(e.target.value)} /></label>
+                    <label className="col-span-2"><FieldLabel>№ обоих актов</FieldLabel><Input value={actNumber} onChange={(e) => setActNumber(e.target.value)} /></label>
                     <label><FieldLabel>Дата составления</FieldLabel><Input type="date" value={documentDate} onChange={(e) => setDocumentDate(e.target.value)} /></label>
                     <label><FieldLabel>Сверка по состоянию на</FieldLabel><Input type="date" value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} /></label>
                   </div>
@@ -2911,17 +2958,9 @@ export default function RentalApp() {
                       <span>Неделя</span>
                       <strong>{shortWeekRange(currentWeekStart, addIsoDays(currentWeekStart, 6))}</strong>
                     </div>
-                    <label className="week-date-jump" aria-label="Выбрать неделю по дате">
+                    <Button type="button" variant="ghost" size="icon" onClick={() => setMonthCalendarOpen(true)} aria-label="Открыть месячный календарь">
                       <CalendarDays />
-                      <Input
-                        className="week-date-native"
-                        type="date"
-                        value={entryDate}
-                        min={monthBounds.start}
-                        max={monthBounds.end}
-                        onChange={(event) => selectEntryDate(event.target.value)}
-                      />
-                    </label>
+                    </Button>
                     <Button
                       type="button"
                       variant="ghost"
@@ -2975,14 +3014,16 @@ export default function RentalApp() {
                   )}
                 </section>
 
-                <section className="panel">
-                  <div className="section-heading">
+                <section className="panel entry-history">
+                  <div className="entry-history-heading">
+                    <Button type="button" variant="ghost" className="entry-history-toggle" onClick={() => setEntryHistoryOpen((open) => !open)} aria-expanded={entryHistoryOpen} aria-controls="entry-history-list">
                     <div>
                       <span className="eyebrow">{shortWeekRange(currentWeekStart, addIsoDays(currentWeekStart, 6))}</span>
-                      <h2>Записи недели</h2>
+                      <strong>История записей</strong>
                     </div>
+                    <small>{number(weekEntries.length)}</small><ChevronDown />
+                    </Button>
                     <div className="entry-heading-actions">
-                      <strong>{number(weekUnits)} ед.</strong>
                       <Button
                         type="button"
                         variant="outline"
@@ -3002,7 +3043,7 @@ export default function RentalApp() {
                       />
                     </div>
                   </div>
-                  {weekEntries.length === 0 ? (
+                  {entryHistoryOpen && <div className="entry-history-list" id="entry-history-list">{weekEntries.length === 0 ? (
                     <div className="empty-state">
                       <CalendarDays />
                       <p>За эту неделю записей пока нет.</p>
@@ -3019,9 +3060,9 @@ export default function RentalApp() {
                             {entry.note && <p>{entry.note}</p>}
                           </div>
                           {(
-                            <div className="flex items-center gap-1">
+                            <div className="entry-record-actions">
                               <Button type="button" variant="outline" size="sm" onClick={() => { setEditingEntry(entry); setEditUnits(String(entry.units)); setEditNote(entry.note); }} aria-label={`Изменить запись за ${dateLabel(entry.entryDate)}`}>
-                                <Pencil className="size-4" />Изменить
+                                <Pencil className="size-4" /><span className="entry-edit-label">Изменить</span>
                               </Button>
                               <Button type="button" variant="ghost" size="icon" onClick={() => askDeleteEntry(entry)} aria-label="Удалить запись"><Trash2 /></Button>
                             </div>
@@ -3029,11 +3070,17 @@ export default function RentalApp() {
                         </article>
                       ))}
                     </div>
-                  )}
+                  )}</div>}
                 </section>
               </TabsContent>
 
               <TabsContent value="invoices" className="space-y-4">
+                {offlineMode && <section className="panel tax-summary">
+                  <div><span className="eyebrow">УСН 6% · {taxQuarter} квартал {taxYear}</span>
+                    <strong>{money(tax.outstandingKopecks)}</strong>
+                    <small>Ориентир к доплате с учётом отмеченных платежей</small></div>
+                  <Button type="button" variant="outline" onClick={openTax}>Открыть расчёт</Button>
+                </section>}
                 <section className="finance-summary">
                   <div><span>Выставлено</span><strong>{money(totalInvoiced)}</strong></div>
                   <div><span>Получено</span><strong>{money(totalPaid)}</strong></div>
@@ -3190,20 +3237,14 @@ export default function RentalApp() {
                   </div>
                   <WalletCards />
                 </section>
-                <div className="expense-templates" aria-label="Быстрое добавление расхода">
+                {expenseShortcuts.length > 0 && <div className="expense-templates" aria-label="Быстрое добавление расхода">
                   <span>Быстро добавить</span>
                   <div>
-                    {expenseCategories.some((category) => category.id === "fuel") && (
-                      <button type="button" onClick={() => openExpenseTemplate("fuel", "customer")}><Fuel />Топливо заказчика</button>
-                    )}
-                    {expenseCategories.some((category) => category.id === "fuel") && (
-                      <button type="button" onClick={() => openExpenseTemplate("fuel", "self")}><Fuel />Моё топливо</button>
-                    )}
-                    {expenseCategories.some((category) => category.id === "repair") && (
-                      <button type="button" onClick={() => openExpenseTemplate("repair")}><Wrench />Ремонт</button>
-                    )}
+                    {expenseShortcuts.map((shortcut) => <button key={shortcut.id} type="button" onClick={() => openExpenseTemplate(shortcut)}>
+                      {shortcut.category === "fuel" ? <Fuel /> : shortcut.category === "repair" ? <Wrench /> : <WalletCards />}{shortcut.title}
+                    </button>)}
                   </div>
-                </div>
+                </div>}
                 <Button type="button" onClick={openExpense} className="h-12 w-full sm:w-auto">
                   <Plus />Добавить расход
                 </Button>
@@ -3432,6 +3473,36 @@ export default function RentalApp() {
               ))}
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={monthCalendarOpen} onOpenChange={setMonthCalendarOpen}>
+        <DialogContent className="dialog-card month-calendar-dialog">
+          <DialogHeader>
+            <DialogTitle>{monthLabel(month)} · по дням</DialogTitle>
+            <DialogDescription>В каждой ячейке: дата, количество бутылей и сумма по {number(documentSettings.rateKopecks / 100)} ₽ за бутыль. Нажмите день, чтобы внести или изменить запись.</DialogDescription>
+          </DialogHeader>
+          <div className="month-calendar-weekdays" aria-hidden="true">{WEEKDAY_LABELS.map((day) => <span key={day}>{day}</span>)}</div>
+          <div className="month-calendar-grid">
+            {monthCalendarDays.map((day) => <button
+              key={day.date}
+              type="button"
+              className={["month-day", !day.inMonth ? "month-day-outside" : "", !day.entry ? "month-day-empty" : "", day.missing ? "month-day-missing" : "", day.date === entryDate ? "month-day-selected" : ""].filter(Boolean).join(" ")}
+              disabled={!day.inMonth}
+              aria-pressed={day.date === entryDate}
+              aria-label={`${dateLabel(day.date)}${day.entry ? `, ${day.entry.units} бутылей, ${money(day.entry.units * documentSettings.rateKopecks)}` : ", записи нет"}`}
+              onClick={() => { setMonthCalendarOpen(false); openEntryForDate(day.date); }}
+            >
+              <strong>{Number(day.date.slice(-2))}</strong>
+              <span className="month-day-units">{day.entry ? `${number(day.entry.units)} б.` : day.missing ? "нет" : "—"}</span>
+              <small className="month-day-amount">{day.entry ? money(day.entry.units * documentSettings.rateKopecks) : "—"}</small>
+            </button>)}
+          </div>
+          <div className="month-calendar-legend"><span><i className="month-day-selected" />Выбранный день</span><span><i />Запись есть</span><span><i className="month-day-missing" />Нужно заполнить</span><span>— Нет записи</span></div>
+          <div className="week-totals">
+            <div><span>Бутылей за месяц</span><strong>{number(calculation.actualUnits)}</strong></div>
+            <div><span>Количество × ставка</span><strong>{money(calculation.actualUnits * documentSettings.rateKopecks)}</strong></div>
+          </div>
         </DialogContent>
       </Dialog>
 
@@ -3860,6 +3931,30 @@ export default function RentalApp() {
                   </SelectContent>
                 </Select>
               </div>
+            </div>
+
+            <div className="settings-section expense-shortcuts-settings">
+              <strong>Быстрые кнопки расходов</strong>
+              <p className="help-note">Настройте название, категорию, плательщика и сумму для быстрого ввода.</p>
+              {expenseShortcutsDraft.map((shortcut, index) => <div key={shortcut.id} className="expense-shortcut-editor">
+                <div className="expense-shortcut-editor-heading"><strong>{shortcut.title || `Кнопка № ${index + 1}`}</strong>
+                  <Button type="button" variant="ghost" size="icon" aria-label={`Удалить быструю кнопку № ${index + 1}`} onClick={() => setExpenseShortcutsDraft((items) => items.filter((item) => item.id !== shortcut.id))}><Trash2 /></Button>
+                </div>
+                <div className="expense-shortcut-fields">
+                  <label><FieldLabel>Название кнопки</FieldLabel><Input value={shortcut.title} maxLength={40} onChange={(event) => updateExpenseShortcut(shortcut.id, { title: event.target.value })} /></label>
+                  <label><FieldLabel>Категория</FieldLabel><select value={shortcut.category} onChange={(event) => updateExpenseShortcut(shortcut.id, { category: event.target.value, payer: event.target.value === "fuel" ? shortcut.payer : "self" })}>
+                    {expenseCategories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+                  </select></label>
+                  <label><FieldLabel>Кто оплатил</FieldLabel><select value={shortcut.payer} onChange={(event) => updateExpenseShortcut(shortcut.id, { payer: event.target.value as ExpenseShortcut["payer"] })}>
+                    <option value="self">Оплатил я</option>{shortcut.category === "fuel" && <option value="customer">Оплатил заказчик</option>}
+                  </select></label>
+                  <label><FieldLabel>Сумма, ₽</FieldLabel><Input type="number" min="0" step="0.01" inputMode="decimal" value={shortcut.amountKopecks / 100} onChange={(event) => updateExpenseShortcut(shortcut.id, { amountKopecks: Math.round(Number(event.target.value) * 100) })} /></label>
+                </div>
+              </div>)}
+              {expenseShortcutsDraft.length === 0 && <p className="help-note">Быстрых кнопок пока нет.</p>}
+              <p className="help-note">Сумма 0 — при добавлении расхода сумма вводится вручную. Можно создать до 8 кнопок.</p>
+              <Button type="button" variant="outline" onClick={addExpenseShortcut} disabled={expenseShortcutsDraft.length >= 8 || !expenseCategories.length}><Plus />Добавить кнопку</Button>
+              <Button type="button" onClick={() => void saveExpenseShortcuts()} disabled={busy}>Сохранить быстрые кнопки</Button>
             </div>
 
             <div className="settings-section">

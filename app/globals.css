@@ -3940,3 +3940,168 @@ html[data-theme="dark"] .month-tools-cash strong.negative {
   .document-preview-frame iframe { transform: scale(.4); }
   .document-actions button { flex: 1 1 100%; }
 }
+
+/* Размеры месяца и раскрываемая история на экране телефона. */
+.month-picker {
+  position: relative;
+  display: inline-flex;
+  min-height: 2.75rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: .4rem;
+  padding: .6rem .75rem;
+  border: 1px solid var(--border);
+  border-radius: .9rem;
+  color: var(--foreground);
+  background: var(--muted);
+  font-size: .85rem;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.month-picker > svg { width: 1rem; height: 1rem; flex: 0 0 auto; }
+.month-picker:focus-within { outline: 2px solid #2688eb; outline-offset: 2px; }
+.month-picker .month-native {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 100% !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: inherit;
+  background: transparent !important;
+  box-shadow: none !important;
+  opacity: 0;
+  cursor: pointer;
+}
+.month-native::-webkit-calendar-picker-indicator {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+}
+.entry-history-heading { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+.entry-history-toggle[data-slot="button"] {
+  display: flex;
+  min-width: 0;
+  height: auto;
+  flex: 1 1 13rem;
+  align-items: center;
+  justify-content: flex-start;
+  gap: .65rem;
+  padding: .35rem 0;
+  color: var(--foreground);
+  background: transparent;
+  text-align: left;
+  white-space: normal;
+}
+.entry-history-toggle > div { min-width: 0; flex: 1; }
+.entry-history-toggle strong { display: block; font-size: 1rem; line-height: 1.3; }
+.entry-history-toggle .eyebrow { display: block; margin-bottom: .1rem; }
+.entry-history-toggle > small { flex: 0 0 auto; color: var(--muted-foreground); font-size: .75rem; }
+.entry-history-toggle > svg { width: 1rem; flex: 0 0 auto; transition: transform 150ms ease; }
+.entry-history-toggle[aria-expanded="true"] > svg { transform: rotate(180deg); }
+.entry-history-list { margin-top: .75rem; border-top: 1px solid var(--border); }
+.entry-history .record-row { min-width: 0; }
+.entry-history .entry-record-actions { display: flex; flex: 0 0 auto; align-items: center; gap: .3rem; }
+.entry-history .entry-record-value { min-width: 0; }
+.entry-history .entry-record-value strong,
+.entry-history .entry-record-value > span,
+.entry-history .record-amount { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+/* Полный месяц: дата, количество бутылей и сумма видны в каждой ячейке. */
+.month-calendar-dialog { width: min(96vw, 560px); max-width: 560px; }
+.month-calendar-weekdays,
+.month-calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: .3rem; }
+.month-calendar-weekdays { color: var(--muted-foreground); font-size: .7rem; font-weight: 700; text-align: center; }
+.month-calendar-grid { min-width: 0; }
+.month-day {
+  display: grid;
+  min-width: 0;
+  min-height: 4.4rem;
+  align-content: center;
+  justify-items: center;
+  gap: .2rem;
+  padding: .4rem .12rem;
+  border: 1px solid var(--border);
+  border-radius: .7rem;
+  color: var(--foreground);
+  background: var(--muted);
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.month-day strong { font-size: .95rem; line-height: 1.15; }
+.month-day-units { max-width: 100%; color: #267dc9; font-size: .75rem; font-weight: 750; line-height: 1.15; white-space: nowrap; }
+.month-day-amount { max-width: 100%; color: var(--muted-foreground); font-size: .65rem; line-height: 1.15; white-space: nowrap; }
+.month-day-empty { background: var(--background); }
+.month-day-missing:not(.month-day-selected) { border-color: #edc1c5; background: #fff4f4; }
+.month-day-missing .month-day-units { color: #b94d58; }
+.month-day-selected { border-color: #2688eb; color: #fff; background: linear-gradient(145deg, #2293ee, #3677e8); }
+.month-day-selected .month-day-units,
+.month-day-selected .month-day-amount { color: #fff; }
+.month-day-outside { opacity: .3; cursor: default; }
+.month-day:focus-visible { outline: 2px solid #2688eb; outline-offset: 2px; }
+.month-calendar-legend { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem .9rem; color: var(--muted-foreground); font-size: .72rem; }
+.month-calendar-legend > span { display: inline-flex; align-items: center; gap: .3rem; }
+.month-calendar-legend i { width: .6rem; height: .6rem; border: 1px solid var(--border); border-radius: .2rem; background: var(--muted); }
+.month-calendar-legend i.month-day-missing { border-color: #edc1c5; background: #fff4f4; }
+.month-calendar-legend i.month-day-selected { border-color: #2688eb; background: #2688eb; }
+.month-calendar-dialog .week-totals strong { overflow-wrap: anywhere; }
+
+/* Настройка быстрых расходов сохраняет удобную ширину полей. */
+.expense-shortcuts-settings { min-width: 0; }
+.expense-shortcut-editor { display: grid; min-width: 0; gap: .75rem; padding: .8rem; border: 1px solid var(--border); border-radius: .8rem; background: var(--card); }
+.expense-shortcut-editor-heading { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: .5rem; }
+.expense-shortcut-editor-heading strong { min-width: 0; overflow-wrap: anywhere; }
+.expense-shortcut-editor-heading button { flex: 0 0 auto; }
+.expense-shortcut-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; }
+.expense-shortcut-fields label { display: grid; min-width: 0; gap: .3rem; }
+.expense-shortcut-fields input,
+.expense-shortcut-fields select,
+.expense-shortcut-fields [data-slot="select-trigger"] { width: 100%; min-width: 0; }
+.expense-shortcut-fields select { min-height: 3rem; padding: .6rem .7rem; border: 1px solid var(--border); border-radius: .9rem; color: var(--foreground); background: var(--muted); font-size: .85rem; color-scheme: light; }
+.expense-shortcut-fields [data-slot="select-trigger"] { height: auto; min-height: 3rem; white-space: normal; }
+
+html[data-theme="dark"] .month-picker { background: #202c3c; border-color: #2d3b4d; }
+html[data-theme="dark"] .month-day-units { color: #73baff; }
+html[data-theme="dark"] .month-day-missing:not(.month-day-selected) { border-color: #75434a; background: #3b272f; }
+html[data-theme="dark"] .month-day-missing .month-day-units { color: #ffa3ae; }
+html[data-theme="dark"] .month-day-selected .month-day-units,
+html[data-theme="dark"] .month-day-selected .month-day-amount { color: #fff; }
+html[data-theme="dark"] .month-calendar-legend i.month-day-missing { border-color: #75434a; background: #3b272f; }
+html[data-theme="dark"] .expense-shortcut-fields select { color-scheme: dark; }
+
+@media (max-width: 480px) {
+  .month-bar { gap: .5rem; }
+  .month-copy { min-width: 0; }
+  .month-copy > div { min-width: 0; }
+  .month-copy strong { overflow: visible; font-size: .9rem; line-height: 1.25; text-overflow: clip; white-space: normal; }
+  .month-picker { gap: .3rem; padding-inline: .6rem; font-size: .78rem; }
+  .entry-history-heading > button:not(.entry-history-toggle) { margin-left: auto; }
+  .entry-history .record-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .3rem .5rem; padding-block: .8rem; }
+  .entry-history .record-date { grid-column: 1; width: auto; font-size: .77rem; }
+  .entry-history .entry-record-value { grid-column: 1; font-size: .9rem; }
+  .entry-history .entry-record-value p { font-size: .76rem; }
+  .entry-history .entry-record-actions { grid-column: 2; grid-row: 1 / 3; align-self: center; }
+  .entry-history .entry-record-actions button[data-slot="button"] { width: 2.6rem; min-width: 2.6rem; padding: 0; }
+  .entry-edit-label { display: none; }
+  .month-calendar-weekdays,
+  .month-calendar-grid { gap: .2rem; }
+  .month-day { min-height: 4.15rem; padding-inline: .05rem; border-radius: .55rem; }
+  .month-day strong { font-size: .83rem; }
+  .month-day-units { font-size: .69rem; }
+  .month-day-amount { font-size: .6rem; letter-spacing: -.02em; }
+  .expense-shortcut-fields { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 390px) {
+  .month-bar { padding-inline: .75rem; }
+  .month-copy { gap: .5rem; }
+  .month-copy .month-icon { width: 2.4rem; height: 2.4rem; }
+  .month-copy strong { font-size: .82rem; }
+  .month-picker { padding-inline: .5rem; font-size: .74rem; }
+  .month-day-amount { font-size: .56rem; }
+}

@@ -8,6 +8,7 @@ on:
       - "offline/**"
       - "app/rental-app.tsx"
       - "app/tax-calculation.ts"
+      - "app/expense-shortcuts.ts"
       - "app/globals.css"
       - "components/**"
       - "lib/**"
@@ -23,6 +24,7 @@ on:
       - "offline/**"
       - "app/rental-app.tsx"
       - "app/tax-calculation.ts"
+      - "app/expense-shortcuts.ts"
       - "app/globals.css"
       - ".github/workflows/android-apk.yml"
 

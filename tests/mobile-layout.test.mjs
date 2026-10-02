@@ -124,7 +124,8 @@ test("expenses include category visualization and quick templates", () => {
   assert.match(app, /const expenseBreakdown = useMemo/);
   assert.match(app, /className="expense-donut"/);
   assert.match(app, /Топливо заказчика/);
-  assert.match(app, /openExpenseTemplate\("repair"\)/);
+  assert.match(app, /expenseShortcuts\.map/);
+  assert.match(app, /openExpenseTemplate\(shortcut\)/);
   assert.match(styles, /\.expense-donut\s*\{/);
 });
 
