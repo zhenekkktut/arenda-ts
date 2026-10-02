@@ -31,6 +31,7 @@ public class PdfExportTest {
         MainActivity activity = (MainActivity) instrumentation.startActivitySync(intent);
         try {
             exportAndCheck(instrumentation, activity, "reconciliation", 2);
+            exportAndCheck(instrumentation, activity, "reconciliation-compact", 1);
             exportAndCheck(instrumentation, activity, "rent", 1);
         } finally { instrumentation.runOnMainSync(activity::finish); }
     }

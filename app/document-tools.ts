@@ -287,15 +287,13 @@ const officialCss = `
   .value { width: 31%; text-align: right; white-space: nowrap; }
   .reconciliation .value { width: 30%; }
   .reconciliation-page { font-size: 10pt; margin: -16px -23px 0; }
-  .reconciliation-invoices { font-size: 8.3pt; table-layout: fixed; }
+  .reconciliation-invoices { font-size: 9.2pt; table-layout: fixed; }
   .reconciliation-invoices th, .reconciliation-invoices td { padding: 3px; overflow-wrap: anywhere; }
   .reconciliation-invoices .value { width: auto; white-space: normal; }
   .reconciliation-invoices th { text-align: center; }
   .reconciliation-daily { font-size: 8.7pt; table-layout: fixed; }
-  .reconciliation-daily th, .reconciliation-daily td { padding: 2px 4px; }
+  .reconciliation-daily th, .reconciliation-daily td { padding: 2px 4px; overflow-wrap: anywhere; }
   .reconciliation-daily .value { width: auto; }
-  .reconciliation-continuation { font-size: 10pt; margin: -16px -23px 0; }
-  .reconciliation-continuation p { margin-bottom: 4px; }
   .total { font-weight: bold; }
   .signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px -8px 0; font-size: 9pt; page-break-inside: avoid; }
   .signature-header { min-height: 44px; }
@@ -447,7 +445,7 @@ export function calculateSettlement(
 function reconciliationPages(input: OfficialDocumentInput) {
   const { settings: s, meta: m, calculation: c } = input;
   const b = periodBounds(m.period);
-  const { payments, paidKopecks, openingPayments, openingPaidKopecks, customerFuelKopecks, opening, balance, asOf } = reconciliationSummary(input);
+  const { payments, paidKopecks, openingPaidKopecks, customerFuelKopecks, opening, balance, asOf } = reconciliationSummary(input);
   const invoices = input.invoices.filter((invoice) => (!invoice.period || invoice.period === m.period) &&
     (!invoice.invoiceDate || invoice.invoiceDate <= asOf))
     .sort((a, b) => (a.bottleStartDate ?? a.invoiceDate ?? "").localeCompare(b.bottleStartDate ?? b.invoiceDate ?? "") || a.id - b.id);
@@ -480,7 +478,6 @@ function reconciliationPages(input: OfficialDocumentInput) {
   ];
   const invoiceRows: string[] = [];
   const dailyRows: string[] = [];
-  let hasLegacyInvoice = false;
   const invoicedDates = new Set<string>();
   const invoiceGroups: InvoiceLike[][] = [];
   const invoiceDates = (invoice: InvoiceLike) => {
@@ -494,18 +491,12 @@ function reconciliationPages(input: OfficialDocumentInput) {
   for (const invoice of invoices) {
     const range = validRange(invoice);
     const dates = invoiceDates(invoice);
-    if (!range) hasLegacyInvoice = true;
-    const units = dates.reduce((sum, date) => sum + (entriesByDate.get(date) ?? 0), 0);
     dates.forEach((date) => invoicedDates.add(date));
-    const fuel = dates.reduce((sum, date) => sum +
-      (invoiceForFuel.get(date) === invoice.id ? fuelByDate.get(date) ?? 0 : 0), 0);
     const invoiceAmount = invoice.amountKopecks ?? 0;
     const paid = payments.filter((payment) => payment.invoiceId === invoice.id)
       .reduce((sum, payment) => sum + payment.amountKopecks, 0);
     invoiceRows.push(`<tr><td>№ ${escapeHtml(invoice.invoiceNumber)}<br>${invoice.invoiceDate ? shortDate(invoice.invoiceDate) : ""}</td>
-      <td>${range ? `${shortDate(invoice.bottleStartDate!)}–${shortDate(invoice.bottleEndDate!)}` : "не указан"}</td>
-      <td class="value">${range ? integer(units) : "—"}</td><td class="value">${range ? rubles(invoiceAmount + fuel) : "—"}</td>
-      <td class="value">${range ? rubles(fuel) : "—"}</td><td class="value">${rubles(invoiceAmount)}</td>
+      <td class="value">${rubles(invoiceAmount)}</td>
       <td class="value">${rubles(paid)}</td><td class="value">${rubles(invoiceAmount - paid)}</td></tr>`);
     if (!range) continue;
     const connectedGroups = invoiceGroups.filter((group) => group.some((item) => sharedBottlePeriodParts(item, invoice)));
@@ -539,7 +530,6 @@ function reconciliationPages(input: OfficialDocumentInput) {
       <td class="value">${integer(units)}</td><td class="value">${rubles(fuel)}</td>
       <td class="value">${rubles(charged)}</td></tr>`);
   }
-  const invoicedUnits = [...invoicedDates].reduce((sum, date) => sum + (entriesByDate.get(date) ?? 0), 0);
   const unassignedFuel = [...fuelByDate].filter(([date]) => !invoiceForFuel.has(date));
   const unassignedFuelTotal = unassignedFuel.reduce((sum, [, amount]) => sum + amount, 0);
   // Old backups have no invoice ranges. Keep their actual daily entries visible
@@ -563,56 +553,88 @@ function reconciliationPages(input: OfficialDocumentInput) {
   const visibleInvoiceIds = new Set(invoices.map((invoice) => invoice.id));
   const advances = payments.filter((payment) => !visibleInvoiceIds.has(payment.invoiceId))
     .reduce((sum, payment) => sum + payment.amountKopecks, 0);
-  if (advances) invoiceRows.push(`<tr><td colspan="3">Аванс до даты выставления счёта</td>
-    <td class="value">—</td><td class="value">—</td><td class="value">—</td>
+  if (advances) invoiceRows.push(`<tr><td>Аванс до даты выставления счёта</td><td class="value">—</td>
     <td class="value">${rubles(advances)}</td><td class="value">−${rubles(advances)}</td></tr>`);
-  invoiceRows.push(`<tr class="total"><td>Итого по счетам</td><td></td><td class="value">${hasLegacyInvoice ? "—" : integer(invoicedUnits)}</td>
-    <td class="value">${hasLegacyInvoice ? "—" : rubles(totalInvoiced + customerFuelKopecks - unassignedFuelTotal)}</td><td class="value">${hasLegacyInvoice ? "—" : rubles(customerFuelKopecks - unassignedFuelTotal)}</td>
+  invoiceRows.push(`<tr class="total"><td>Итого по счетам</td>
     <td class="value">${rubles(totalInvoiced)}</td>
     <td class="value">${rubles(paidKopecks)}</td><td class="value">${rubles(totalInvoiced - paidKopecks)}</td></tr>`);
   dailyRows.push(`<tr class="total"><td>Итого за ${escapeHtml(periodLabel(m.period))}</td><td></td>
     <td class="value">${integer(c.actualUnits)}</td><td class="value">${rubles(customerFuelKopecks)}</td>
     <td class="value">${rubles(netRent)}</td></tr>`);
-  const allPayments = [...payments, ...openingPayments].sort((first, second) => first.paymentDate.localeCompare(second.paymentDate));
-  const paymentDocuments = allPayments.map((p) => `${shortDate(p.paymentDate)} — ${rubles(p.amountKopecks)} руб.${p.documentNumber ? `, № ${p.documentNumber}` : ""}`).join("; ");
-  const fuelDocuments = (input.expenses ?? []).filter((expense) => expense.category === "fuel" &&
-    expense.payer === "customer" && expense.expenseDate >= b.start && expense.expenseDate <= b.end &&
-    expense.expenseDate <= asOf).sort((first, second) => first.expenseDate.localeCompare(second.expenseDate))
-    .map((expense) => `${shortDate(expense.expenseDate)} — ${rubles(expense.amountKopecks)} руб.${expense.documentNumber ? `, документ № ${expense.documentNumber}` : ""}`);
-  const invoiceTable = (tableRows: string[]) => `<table class="reconciliation-invoices"><colgroup><col style="width:12%"><col style="width:17%"><col style="width:8%"><col style="width:13%"><col style="width:12%"><col style="width:13%"><col style="width:13%"><col style="width:12%"></colgroup><thead><tr><th>Счёт</th><th>Период бутылей</th><th>Бутылей</th><th>Начислено</th><th>Вычет топлива</th><th>К оплате</th><th>Оплачено</th><th>Остаток</th></tr></thead>
+  const invoiceHeader = `<tr><th>Счёт</th><th>К оплате</th><th>Оплачено</th><th>Остаток</th></tr>`;
+  const invoiceTable = (tableRows: string[]) => `<table class="reconciliation-invoices"><colgroup><col style="width:40%"><col style="width:20%"><col style="width:20%"><col style="width:20%"></colgroup><thead>${invoiceHeader}</thead>
     <tbody>${tableRows.join("")}</tbody></table>`;
-  const firstPage = `<div class="reconciliation-page"><h1>АКТ СВЕРКИ ВЗАИМНЫХ РАСЧЁТОВ</h1>
+  const dailyHeader = `<tr><th>Счёт / период</th><th>Дата</th><th>Бутылей</th><th>Вычет топлива, руб.</th><th>Итог, руб.</th></tr>`;
+  const dailyTable = (tableRows: string[]) => `<table class="reconciliation-daily"><colgroup><col style="width:29%"><col style="width:19%"><col style="width:12%"><col style="width:20%"><col style="width:20%"></colgroup><thead>${dailyHeader}</thead><tbody>${tableRows.join("")}</tbody></table>`;
+  const summaryRows = rows.map(([label, value], i) => `<tr class="${i === 4 ? "total" : ""}"><td>${escapeHtml(label)}</td><td class="value">${escapeHtml(value)}</td></tr>`);
+  const introduction = `<h1>АКТ СВЕРКИ ВЗАИМНЫХ РАСЧЁТОВ</h1>
   <p class="number">№${escapeHtml(m.reconciliationNumber)}　Дата составления: ${shortDate(m.documentDate)}</p>
   <p class="subtitle">по аренде за ${escapeHtml(periodLabel(m.period))}, по состоянию на ${shortDate(asOf)}</p>
   <p class="city">г. ${escapeHtml(s.city)}</p>
   <p>${escapeHtml(s.lessorFull)} (Арендодатель) и ${escapeHtml(s.lesseeFull)} (Арендатор) составили настоящий акт по автомобилю ${escapeHtml(s.vehicleModel)}, госномер ${escapeHtml(s.vehiclePlate)}, по договору № ${escapeHtml(s.contractNumber)} от ${shortDate(s.contractDate)}.</p>
   <p><b>1.</b> Сверка за период ${shortDate(b.start)}–${shortDate(b.end)}, по выставленным счетам и платежам, полученным по состоянию на ${shortDate(asOf)}. Основание начисления — акт-расчёт № ${escapeHtml(m.actNumber)} за ${escapeHtml(periodLabel(m.period))}.</p>
   <table class="reconciliation"><thead><tr><th>Показатель</th><th class="value">Сумма, руб.</th></tr></thead><tbody>
-  ${rows.map(([label, value], i) => `<tr class="${i === 4 ? "total" : ""}"><td>${escapeHtml(label)}</td><td class="value">${escapeHtml(value)}</td></tr>`).join("")}</tbody></table>
+  ${summaryRows.join("")}</tbody></table>
   ${openingPaidKopecks ? `<p>В поступившие платежи включены ${rubles(openingPaidKopecks)} руб. в погашение задолженности за предыдущие месяцы.</p>` : ""}
-  <p><b>2.</b> Расшифровка выставленных счетов. Количество бутылей и вычет топлива по датам приведены на следующих страницах.</p>
-  ${invoiceTable(invoiceRows.slice(0, 8))}
-  ${invoiceGroups.some((group) => group.length > 1) ? "<p>Дни счетов постоянной и переменной части расшифрованы общим блоком. Вычет топлива за общие дни отнесён к постоянной части.</p>" : ""}
-  ${hasLegacyInvoice ? "<p>В старых счетах периоды бутылей не сохранены. Дневные записи и топливо приведены ниже; связь со счётом можно указать при его редактировании. Суммы счетов — после вычета топлива.</p>" : ""}
-  ${fuelDocuments.length ? `<p>Основания вычета топлива по датам: ${escapeHtml(fuelDocuments.join("; "))}.</p>` : ""}
-  <p>Поступившие платежи на сумму ${rubles(paidKopecks + openingPaidKopecks)} руб.: ${paymentDocuments ? escapeHtml(paymentDocuments) : "____________________________"}.</p></div>`;
-  const additionalInvoicePages: string[] = [];
-  for (let start = 8; start < invoiceRows.length; start += 20) {
-    additionalInvoicePages.push(`<div class="reconciliation-page"><h1>АКТ СВЕРКИ ВЗАИМНЫХ РАСЧЁТОВ</h1>
-      <p class="subtitle">Расшифровка счетов · акт № ${escapeHtml(m.reconciliationNumber)} · продолжение</p>
-      ${invoiceTable(invoiceRows.slice(start, start + 20))}</div>`);
-  }
-  const dailyChunks: string[] = [];
-  for (let start = 0; start < dailyRows.length; start += 36) dailyChunks.push(dailyRows.slice(start, start + 36).join(""));
-  const continuation = dailyChunks.map((chunk, index) => `<div class="reconciliation-continuation">
-    <h1>АКТ СВЕРКИ ВЗАИМНЫХ РАСЧЁТОВ</h1>
-    <p class="subtitle">Расшифровка количества бутылей и вычета топлива по дням · акт № ${escapeHtml(m.reconciliationNumber)}</p>
-    ${index === 0 ? `<p><b>3.</b> По каждой дате указаны количество бутылей, вычет топлива заказчика и итог к оплате за день. Стоимость одной бутыли для расчёта — ${rubles(s.rateKopecks)} руб.</p>` : ""}
-    <table class="reconciliation-daily"><colgroup><col style="width:29%"><col style="width:19%"><col style="width:12%"><col style="width:20%"><col style="width:20%"></colgroup><thead><tr><th>Счёт / период</th><th>Дата</th><th>Бутылей</th><th>Вычет топлива, руб.</th><th>Итог, руб.</th></tr></thead><tbody>${chunk}</tbody></table>
-    ${index === dailyChunks.length - 1 ? `<p><b>4.</b> Подписанием акта Стороны подтверждают результат сверки. Задолженность ${escapeHtml(s.lesseeShort)} перед ${escapeHtml(s.lessorDative || s.lessorShort)} составляет <b>${escapeHtml(amountWords(balance))}</b> по состоянию на ${shortDate(asOf)}.</p>
-    <p><b>5.</b> Сроки оплаты определяются договором. Платежи после ${shortDate(asOf)} уменьшают задолженность без переоформления акта-расчёта. Документ составлен в двух экземплярах.</p>
-    ${signatures(s)}` : ""}</div>`);
-  return [firstPage, ...additionalInvoicePages, ...continuation];
+  <p><b>2.</b> Расшифровка выставленных счетов.</p>`;
+
+  // Pack the invoice and daily tables in reading order. Reserve room for wrapped
+  // cells so short acts fit one sheet and longer acts retain every daily row.
+  const lineCount = (html: string, width: number, fontSize: number, bold = false) =>
+    html.split(/<br\s*\/?\s*>/i).reduce((sum, line) => {
+      const text = line.replace(/<[^>]*>/g, "").replace(/&[^;]+;/g, "x");
+      return sum + Math.max(1, Math.ceil(text.length * fontSize * (bold ? 0.62 : 0.58) / width));
+    }, 0);
+  const rowHeight = (html: string, widths: number[], fontSize: number, padding: number) => {
+    let column = 0;
+    let lines = 1;
+    for (const cell of html.matchAll(/<t[dh]([^>]*)>([\s\S]*?)<\/t[dh]>/g)) {
+      const span = Number(cell[1].match(/colspan="(\d+)"/)?.[1] ?? 1);
+      const width = widths.slice(column, column + span).reduce((sum, value) => sum + value, 0) * 7.06 - padding - 1;
+      lines = Math.max(lines, lineCount(cell[2], width, fontSize, html.includes('class="total"') || html.includes("<th>")));
+      column += span;
+    }
+    return lines * fontSize * 1.19 + padding + 1;
+  };
+  const invoiceWidths = [40, 20, 20, 20];
+  const dailyWidths = [29, 19, 12, 20, 20];
+  const introHeight = 24 + [...introduction.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/g)]
+    .reduce((sum, paragraph) => sum + lineCount(paragraph[1], 690, 13.34) * 16 + 7, 0) +
+    summaryRows.reduce((sum, row) => sum + rowHeight(row, [70, 30], 12.27, 8), 0) + 42;
+  const pages = [{ content: introduction, remaining: 1010 - introHeight }];
+  const appendTable = (tableRows: string[], widths: number[], fontSize: number, padding: number,
+    header: string, render: (rows: string[]) => string, repeatFirstColumn = false) => {
+    const overhead = rowHeight(header, widths, fontSize, padding) + 16;
+    let start = 0;
+    while (start < tableRows.length) {
+      let firstRow = tableRows[start];
+      if (repeatFirstColumn && firstRow.startsWith("<tr><td></td>")) {
+        const label = tableRows.slice(0, start).reverse()
+          .map((row) => row.match(/^<tr><td>(.+?)<\/td>/)?.[1]).find(Boolean);
+        if (label) firstRow = firstRow.replace("<tr><td></td>", `<tr><td>${label}</td>`);
+      }
+      let page = pages[pages.length - 1];
+      const firstHeight = rowHeight(firstRow, widths, fontSize, padding);
+      if (page.remaining < overhead + firstHeight) {
+        page = { content: "", remaining: 1010 };
+        pages.push(page);
+      }
+      let end = start;
+      let height = overhead;
+      while (end < tableRows.length) {
+        const nextHeight = rowHeight(end === start ? firstRow : tableRows[end], widths, fontSize, padding);
+        if (end > start && height + nextHeight > page.remaining) break;
+        height += nextHeight;
+        end++;
+      }
+      page.content += render([firstRow, ...tableRows.slice(start + 1, end)]);
+      page.remaining -= height;
+      start = end;
+    }
+  };
+  appendTable(invoiceRows, invoiceWidths, 12.27, 6, invoiceHeader, invoiceTable);
+  appendTable(dailyRows, dailyWidths, 11.6, 4, dailyHeader, dailyTable, true);
+  return pages.map((page) => `<div class="reconciliation-page">${page.content}</div>`);
 }
 
 export function buildRentActHtml(input: OfficialDocumentInput) {

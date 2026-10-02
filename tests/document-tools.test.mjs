@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 import ts from "typescript";
+import { compactInput, sampleInput } from "./pdf-fixture.mjs";
 
 const source = fs.readFileSync(new URL("../app/document-tools.ts", import.meta.url), "utf8");
 const compiled = ts.transpileModule(source, {
@@ -122,10 +123,41 @@ test("rent act keeps the contract amount while reconciliation deducts customer f
   assert.match(reconciliation, /08\.09\.2026/);
   assert.match(reconciliation, /35[\s ]000,00/);
   assert.match(reconciliation, /73[\s ]000,00/);
-  assert.match(reconciliation, /Семьдесят три тысячи/);
   assert.equal(tools.reconciliationSummary(input).customerFuelKopecks, 400_000);
   assert.equal(tools.reconciliationSummary(input).balance, 7_300_000);
-  assert.equal((packageHtml.match(/class="page"/g) ?? []).length, 3);
+  assert.equal((packageHtml.match(/class="page"/g) ?? []).length, 2);
+});
+
+test("short reconciliation puts invoices and dated fuel on one sheet without removed columns or boilerplate", () => {
+  const input = compactInput(tools);
+  const html = tools.buildReconciliationHtml(input);
+  assert.equal((html.match(/class="page"/g) ?? []).length, 1);
+  const invoiceTable = html.match(/<table class="reconciliation-invoices">[\s\S]*?<\/table>/)[0];
+  assert.deepEqual([...invoiceTable.matchAll(/<th>(.*?)<\/th>/g)].map(match => match[1]),
+    ["Счёт", "К оплате", "Оплачено", "Остаток"]);
+  assert.match(html, /class="reconciliation-daily"/);
+  assert.match(html, /12\.09\.2026<\/td>\s*<td class="value">100<\/td><td class="value">2[\s ]500,00/);
+  assert.match(html, /18\.09\.2026<\/td>\s*<td class="value">100<\/td><td class="value">2[\s ]500,00/);
+  assert.match(invoiceTable, /75[\s ]000,00/);
+  assert.match(invoiceTable, /45[\s ]000,00/);
+  assert.equal(tools.reconciliationSummary(input).balance, 4_500_000);
+  assert.doesNotMatch(html, /В старых счетах|Основания вычета топлива по датам|Поступившие платежи на сумму|Подписанием акта|Сроки оплаты|class="signatures"/);
+});
+
+test("long reconciliation starts daily rows on the first page and preserves all dates across continuations", () => {
+  const input = sampleInput(tools);
+  const html = tools.buildReconciliationHtml(input);
+  const pages = [...html.matchAll(/<section class="page">([\s\S]*?)<\/section>/g)].map(match => match[1]);
+  assert.equal(pages.length, 2);
+  assert.match(pages[0], /class="reconciliation-invoices"/);
+  assert.match(pages[0], /class="reconciliation-daily"/);
+  assert.doesNotMatch(pages[1], /<h1>|<p|class="signatures"/);
+  assert.match(pages[1], /<tbody><tr><td>№ \d+ · /);
+  for (const entry of input.entries) {
+    const date = entry.entryDate.split("-").reverse().join(".");
+    assert.equal(html.split(`<td>${date}</td>`).length - 1, 1, date);
+  }
+  assert.match(pages[1], /Итого за август 2026 года/);
 });
 
 test("reconciliation traces each invoice to days and shows fuel deductions on their dates", () => {

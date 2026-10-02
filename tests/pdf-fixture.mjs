@@ -33,11 +33,27 @@ export function sampleInput(tools = documentTools()) {
     expenses, payments, downtimes: [], calculation: tools.calculateRental("2026-08", entries, [], settings) };
 }
 
+export function compactInput(tools = documentTools()) {
+  const { settings } = sampleInput(tools);
+  const entries = Array.from({ length: 15 }, (_, i) => ({ entryDate: `2026-09-${i + 10}`, units: 100 }));
+  const invoices = [[101, "2026-09-25", 3000000], [102, "2026-10-01", 2000000], [103, "2026-10-01", 2500000]]
+    .map(([id, invoiceDate, amountKopecks]) => ({ id, invoiceNumber: String(id), invoiceDate,
+      amountKopecks, period: "2026-09" }));
+  const expenses = ["12", "18"].map(day => ({ expenseDate: `2026-09-${day}`, amountKopecks: 250000,
+    category: "fuel", payer: "customer" }));
+  return { settings, meta: { ...tools.defaultDocumentMeta("2026-09", 2, "2026-10-02"), openingBalanceKopecks: 10000000 },
+    entries, invoices, expenses, downtimes: [],
+    payments: [{ invoiceId: 101, paymentDate: "2026-09-26", amountKopecks: 3000000 }],
+    openingPayments: [{ invoiceId: 99, paymentDate: "2026-09-08", amountKopecks: 10000000 }],
+    calculation: tools.calculateRental("2026-09", entries, [], settings) };
+}
+
 if (process.argv[2]) {
   const target = process.argv[2];
   fs.mkdirSync(target, { recursive: true });
   const tools = documentTools();
   const input = sampleInput(tools);
   fs.writeFileSync(`${target}/reconciliation.html`, tools.buildReconciliationHtml(input));
+  fs.writeFileSync(`${target}/reconciliation-compact.html`, tools.buildReconciliationHtml(compactInput(tools)));
   fs.writeFileSync(`${target}/rent.html`, tools.buildRentActHtml(input));
 }
