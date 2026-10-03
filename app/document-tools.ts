@@ -395,6 +395,15 @@ export function fuelInvoiceForDate(invoices: InvoiceLike[], date: string) {
   return undefined;
 }
 
+export function reconciliationDateError(meta: Pick<DocumentMeta, "period" | "documentDate" | "asOfDate">) {
+  const end = periodBounds(meta.period).end;
+  const asOf = meta.asOfDate || meta.documentDate;
+  if (meta.documentDate && asOf && (meta.documentDate < end || asOf < end)) {
+    return `Акт сверки включает весь ${periodLabel(meta.period)}. Даты составления и сверки должны быть не раньше ${shortDate(end)}. Выберите нужную дату или нажмите «Составить на сегодня».`;
+  }
+  return null;
+}
+
 export function reconciliationSummary(input: OfficialDocumentInput) {
   const asOf = input.meta.asOfDate || input.meta.documentDate;
   const invoiceIds = new Set(input.invoices.filter((invoice) =>
@@ -443,6 +452,8 @@ export function calculateSettlement(
 }
 
 function reconciliationPages(input: OfficialDocumentInput) {
+  const dateError = reconciliationDateError(input.meta);
+  if (dateError) throw new Error(dateError);
   const { settings: s, meta: m, calculation: c } = input;
   const b = periodBounds(m.period);
   const { payments, paidKopecks, openingPaidKopecks, customerFuelKopecks, opening, balance, asOf } = reconciliationSummary(input);

@@ -234,19 +234,46 @@ test("fixed and variable invoices share days and deduct customer fuel once", () 
   assert.match(splitDaily, /2[\s ]800<\/td><td class="value">2[\s ]500,00<\/td>\s*<td class="value">109[\s ]500,00/);
 });
 
-test("reconciliation excludes invoices issued after the selected date", () => {
+test("monthly reconciliation rejects dates before month end and permits historical month-end dates", () => {
+  const input = compactInput(tools);
+  const cases = [
+    { documentDate: "2026-09-16", asOfDate: "2026-10-03" },
+    { documentDate: "2026-10-03", asOfDate: "2026-09-16" },
+    { documentDate: "2026-09-16", asOfDate: undefined },
+  ];
+  for (const dates of cases) {
+    const meta = { ...input.meta, ...dates };
+    const error = tools.reconciliationDateError(meta);
+    assert.equal(typeof error, "string");
+    assert.throws(() => tools.buildReconciliationHtml({ ...input, meta }), { message: error });
+  }
+  const monthEnd = { ...input.meta, documentDate: "2026-09-30", asOfDate: "2026-09-30" };
+  assert.equal(tools.reconciliationDateError(monthEnd), null);
+  const html = tools.buildReconciliationHtml({ ...input, meta: monthEnd });
+  assert.match(html, /по состоянию на 30\.09\.2026/);
+  assert.match(html, /30\.09\.2026/);
+  assert.equal(tools.reconciliationDateError({ ...monthEnd, asOfDate: undefined }), null);
+  for (const [period, lastDay] of [["2028-02", "29"], ["2026-04", "30"], ["2026-08", "31"]]) {
+    const meta = { ...monthEnd, period, documentDate: `${period}-${lastDay}`, asOfDate: `${period}-${lastDay}` };
+    assert.equal(tools.reconciliationDateError(meta), null);
+    assert.equal(typeof tools.reconciliationDateError({ ...meta,
+      asOfDate: `${period}-${String(Number(lastDay) - 1).padStart(2, "0")}` }), "string");
+  }
+});
+
+test("reconciliation excludes invoices issued after a historical date following month end", () => {
   const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS };
   const entries = [{ entryDate: "2026-08-01", units: 320 }];
-  const input = { settings, meta: { ...tools.defaultDocumentMeta("2026-08", 1, "2026-09-15"), asOfDate: "2026-08-10" },
+  const input = { settings, meta: { ...tools.defaultDocumentMeta("2026-08", 1, "2026-09-15"), asOfDate: "2026-09-10" },
     calculation: tools.calculateRental("2026-08", entries, [], settings), entries, downtimes: [],
     invoices: [
-      { id: 1, invoiceNumber: "EARLY", invoiceDate: "2026-08-04", period: "2026-08", amountKopecks: 1_280_000,
+      { id: 1, invoiceNumber: "EARLY", invoiceDate: "2026-09-04", period: "2026-08", amountKopecks: 1_280_000,
         bottleStartDate: "2026-08-01", bottleEndDate: "2026-08-03" },
-      { id: 2, invoiceNumber: "FUTURE", invoiceDate: "2026-08-16", period: "2026-08", amountKopecks: 4_720_000,
+      { id: 2, invoiceNumber: "FUTURE", invoiceDate: "2026-09-16", period: "2026-08", amountKopecks: 4_720_000,
         bottleStartDate: "2026-08-04", bottleEndDate: "2026-08-15" },
     ], expenses: [],
-    payments: [{ invoiceId: 1, paymentDate: "2026-08-05", amountKopecks: 1_000_000 },
-      { invoiceId: 2, paymentDate: "2026-08-09", amountKopecks: 500_000 }],
+    payments: [{ invoiceId: 1, paymentDate: "2026-09-05", amountKopecks: 1_000_000 },
+      { invoiceId: 2, paymentDate: "2026-09-09", amountKopecks: 500_000 }],
   };
   assert.match(tools.buildReconciliationHtml(input), /EARLY/);
   assert.doesNotMatch(tools.buildReconciliationHtml(input), /FUTURE/);

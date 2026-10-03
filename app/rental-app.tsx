@@ -74,6 +74,7 @@ import {
   defaultDocumentMeta,
   DEFAULT_DOCUMENT_SETTINGS,
   periodBounds,
+  reconciliationDateError,
   reconciliationSummary,
   sharedBottlePeriodParts,
   type DocumentCalculation,
@@ -1362,6 +1363,7 @@ export default function RentalApp() {
   const [asOfDate, setAsOfDate] = useState(today);
   const [documentAdjustments, setDocumentAdjustments] = useState("");
   const [documentOpeningBalance, setDocumentOpeningBalance] = useState("0");
+  const [documentDraftRevision, setDocumentDraftRevision] = useState(0);
 
   const [downtimeListOpen, setDowntimeListOpen] = useState(false);
   const [downtimeOpen, setDowntimeOpen] = useState(false);
@@ -1444,15 +1446,18 @@ export default function RentalApp() {
     if (data && !settingsOpen) setSettingsDraft({ ...(data.settings ?? DEFAULT_DOCUMENT_SETTINGS) });
   }, [data, settingsOpen]);
 
+  // Reloading days, invoices or payments must keep an unsaved document draft.
+  const documentMetaSnapshot = data
+    ? JSON.stringify(data.documentMeta ?? defaultDocumentMeta(month, 1, today)) : null;
   useEffect(() => {
-    if (!data) return;
-    const meta = data.documentMeta ?? defaultDocumentMeta(month, 1, today);
+    if (!documentMetaSnapshot) return;
+    const meta = JSON.parse(documentMetaSnapshot) as DocumentMeta;
     setActNumber(meta.actNumber);
     setDocumentDate(meta.documentDate);
     setAsOfDate(meta.asOfDate ?? meta.documentDate);
     setDocumentAdjustments(meta.adjustments ?? "");
     setDocumentOpeningBalance(String(meta.openingBalanceKopecks / 100));
-  }, [data, month, today]);
+  }, [documentMetaSnapshot, documentDraftRevision]);
 
   useEffect(() => {
     window.onArchivePdfSaved = (id, uri) => {
@@ -1673,6 +1678,7 @@ export default function RentalApp() {
     }).join(", ")})`
     : "conic-gradient(#e7ecf2 0 100%)";
   const monthBounds = periodBounds(month);
+  const documentDateIssue = reconciliationDateError({ period: month, documentDate, asOfDate });
   const missingCutoff = month === today.slice(0, 7) ? today : monthBounds.end;
   const currentWeekStart = weekStart(entryDate);
   const monthCalendarDays = useMemo(() => {
@@ -2642,6 +2648,8 @@ export default function RentalApp() {
       store.documentArchive = store.documentArchive.map(({ pdfUri: _oldDeviceUri, ...document }) => document);
       writeOfflineStore(store);
       await loadData();
+      setDocumentDraftRevision((revision) => revision + 1);
+      setDocumentPreview(null);
       toast.success("Данные восстановлены");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Не удалось восстановить данные");
@@ -2923,14 +2931,14 @@ export default function RentalApp() {
                   <div className="document-fields">
                     <label className="col-span-2"><FieldLabel>№ обоих актов</FieldLabel><Input value={actNumber} onChange={(e) => setActNumber(e.target.value)} /></label>
                     <label><FieldLabel>Дата составления</FieldLabel><Input type="date" value={documentDate} onChange={(e) => setDocumentDate(e.target.value)} /></label>
-                    <label><FieldLabel>Сверка по состоянию на</FieldLabel><Input type="date" value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} /></label>
+                    <label><FieldLabel>Сверка по состоянию на</FieldLabel><Input type="date" min={monthBounds.end} value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} /></label>
                     <label className="col-span-2"><FieldLabel>Долг на начало периода, ₽</FieldLabel><Input type="number" step="0.01" inputMode="decimal" value={documentOpeningBalance} onChange={(e) => setDocumentOpeningBalance(e.target.value)} /></label>
                   </div>
                   <Button type="button" variant="outline" onClick={() => { setDocumentDate(today); setAsOfDate(today); }}>Составить на сегодня</Button>
-                  {(data.invoices.some((invoice) => invoice.invoiceDate > asOfDate) ||
-                    [...data.payments, ...((toSignedKopecks(documentOpeningBalance) ?? 0) > 0 ? data.openingPayments ?? [] : [])].some((payment) => payment.paymentDate > asOfDate) ||
-                    data.expenses.some((expense) => expense.category === "fuel" && expense.payer === "customer" && expense.expenseDate > asOfDate)) &&
-                    <p className="help-note">В сверку на {dateLabel(asOfDate)} не войдут более поздние счета, оплаты и вычеты топлива. Для полного расчёта выберите нужную дату или нажмите «Составить на сегодня».</p>}
+                  {documentDateIssue && <p className="help-note" role="alert">{documentDateIssue}</p>}
+                  {!documentDateIssue && (data.invoices.some((invoice) => invoice.invoiceDate > asOfDate) ||
+                    [...data.payments, ...((toSignedKopecks(documentOpeningBalance) ?? 0) > 0 ? data.openingPayments ?? [] : [])].some((payment) => payment.paymentDate > asOfDate)) &&
+                    <p className="help-note">В сверку на {dateLabel(asOfDate)} не войдут более поздние счета и оплаты. Для полного расчёта выберите нужную дату или нажмите «Составить на сегодня».</p>}
                   <label className="document-note"><FieldLabel>Замечания и согласованные корректировки</FieldLabel><Input value={documentAdjustments} onChange={(e) => setDocumentAdjustments(e.target.value)} placeholder="Если нет — останется «отсутствуют»" /></label>
                   <p className="help-note">При нулевом начальном долге оплаты за предыдущие месяцы в этот акт не входят. Оплаты выбранного месяца учитываются по связи со счётом и дате поступления.</p>
                   <p className="help-note">Календарных дней: {calculation.calendarDays}. Владение: {calculation.ownershipDays}. Простой: {calculation.downtimeDays}. Оплачиваемых дней: {calculation.payableDays}. N: {number(calculation.actualUnits)}. Ф: {money(calculation.baseKopecks)}. И: {money(calculation.intensityKopecks)}. Переменная часть: {money(calculation.variableKopecks)}. Итого: {money(calculation.totalKopecks)}.</p>
