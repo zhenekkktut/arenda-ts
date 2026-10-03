@@ -206,9 +206,19 @@ test("saved mid-month dates cannot mix a full month with partial settlements aft
     assert.match(html, /№ S1/);
     assert.match(html, /№ S2/);
     assert.doesNotMatch(html, /№ S3/);
-    assert.match(html, /Итого за сентябрь 2026 года[\s\S]*?2[\s ]138[\s\S]*?12[\s ]500,00[\s\S]*?73[\s ]020,00/);
-    for (const [day, amount] of [["12", "2[\\s ]770"], ["18", "3[\\s ]540"], ["23", "3[\\s ]540"], ["28", "2[\\s ]650"]]) {
-      assert.match(html, new RegExp(`${day}\\.09\\.2026</td>\\s*<td class="value">\\d+</td>\\s*<td class="value">${amount},00`));
+    assert.equal((html.match(/class="page"/g) ?? []).length, 1);
+    assert.match(html, /Начислено за сентябрь 2026 года[\s\S]*?2[\s ]138[\s\S]*?12[\s ]500,00[\s\S]*?85[\s ]520,00/);
+    assert.match(html, /Вычет топлива заказчика за месяц<\/td><td class="value">−12[\s ]500,00/);
+    assert.match(html, /Итого к оплате за месяц после вычета топлива<\/td><td class="value">73[\s ]020,00/);
+    assert.equal((html.match(/Вычет топлива заказчика за месяц/g) ?? []).length, 1);
+    assert.doesNotMatch(html, /Разница между расчётом|Разница до начисления|Доплата до начисления/);
+    assert.doesNotMatch(html, /<td>13\.09\.2026<\/td>/);
+    assert.match(html, /№ S1 · 10\.09\.2026–16\.09\.2026/);
+    assert.match(html, /Итого по дням счёта № S1[\s\S]*?780<\/td><td class="value">—<\/td>\s*<td class="value">31[\s ]200,00/);
+    for (const [day, amount, gross] of [["12", "2[\\s ]770", "3[\\s ]040"],
+      ["18", "3[\\s ]540", "10[\\s ]200"], ["23", "3[\\s ]540", "5[\\s ]840"],
+      ["28", "2[\\s ]650", "6[\\s ]440"]]) {
+      assert.match(html, new RegExp(`${day}\\.09\\.2026</td>\\s*<td class="value">\\d+</td>\\s*<td class="value">${amount},00</td>\\s*<td class="value">${gross},00`));
     }
     const historical = { ...input, meta: { ...input.meta, documentDate: "2026-09-30", asOfDate: "2026-09-30" } };
     const historicalHtml = tools.buildReconciliationHtml(historical);

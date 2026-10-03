@@ -395,6 +395,90 @@ export function fuelInvoiceForDate(invoices: InvoiceLike[], date: string) {
   return undefined;
 }
 
+export function suggestInvoicePeriods(input: {
+  period: string;
+  kind: "fixed" | "variable" | "other";
+  invoiceDate: string;
+  entries: EntryLike[];
+  invoices: InvoiceLike[];
+  expenses: ExpenseLike[];
+  settings: DocumentSettings;
+  excludeInvoiceId?: number;
+}) {
+  type SuggestedPeriod = { startDate: string; endDate: string; units: number;
+    customerFuelKopecks: number; grossKopecks: number };
+  const periods: SuggestedPeriod[] = [];
+  const legacyInvoiceNumbers: string[] = [];
+  const result = { periods, needsReview: false, legacyInvoiceNumbers, hasRelevantDays: false };
+  const validDate = (value: unknown): value is string => {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const date = parseIso(value);
+    return !Number.isNaN(date.getTime()) && isoUtc(date) === value;
+  };
+  if (!validDate(`${input.period}-01`) || !validDate(input.invoiceDate)) return result;
+  const bounds = periodBounds(input.period);
+  const start = input.settings.rentalStart > bounds.start ? input.settings.rentalStart : bounds.start;
+  const end = [bounds.end, input.invoiceDate, input.settings.rentalEnd].filter(Boolean).sort()[0];
+  if (!validDate(start) || !validDate(end) || start > end) return result;
+
+  const days = new Map<string, { units: number; fuel: number }>();
+  const dayFor = (date: string) => {
+    const day = days.get(date) ?? { units: 0, fuel: 0 };
+    days.set(date, day);
+    return day;
+  };
+  for (const entry of input.entries) {
+    if (validDate(entry.entryDate) && entry.entryDate >= start && entry.entryDate <= end &&
+        Number.isSafeInteger(entry.units) && entry.units >= 0) dayFor(entry.entryDate).units += entry.units;
+  }
+  for (const expense of input.expenses) {
+    if (expense.category === "fuel" && expense.payer === "customer" && validDate(expense.expenseDate) &&
+        expense.expenseDate >= start && expense.expenseDate <= end &&
+        Number.isSafeInteger(expense.amountKopecks) && expense.amountKopecks >= 0) {
+      dayFor(expense.expenseDate).fuel += expense.amountKopecks;
+    }
+  }
+  result.hasRelevantDays = days.size > 0;
+  const blockingRanges: { start: string; end: string }[] = [];
+  for (const invoice of input.invoices) {
+    if (invoice.id === input.excludeInvoiceId || (invoice.period && invoice.period !== input.period)) continue;
+    const sharesPart = (input.kind === "fixed" && invoice.kind === "variable") ||
+      (input.kind === "variable" && invoice.kind === "fixed");
+    if (sharesPart) continue;
+    if (!validDate(invoice.bottleStartDate) || !validDate(invoice.bottleEndDate) ||
+        invoice.bottleStartDate > invoice.bottleEndDate ||
+        invoice.bottleStartDate.slice(0, 7) !== input.period || invoice.bottleEndDate.slice(0, 7) !== input.period) {
+      result.needsReview = true;
+      const number = String(invoice.invoiceNumber ?? "").trim() || String(invoice.id);
+      if (!legacyInvoiceNumbers.includes(number)) legacyInvoiceNumbers.push(number);
+      continue;
+    }
+    // Paid and later-issued invoices still own their saved bottle periods.
+    blockingRanges.push({ start: invoice.bottleStartDate, end: invoice.bottleEndDate });
+  }
+  let candidate: SuggestedPeriod | null = null;
+  const finishSegment = () => {
+    if (candidate) periods.push(candidate);
+    candidate = null;
+  };
+  for (const cursor = parseIso(start); isoUtc(cursor) <= end; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
+    const date = isoUtc(cursor);
+    if (blockingRanges.some((range) => range.start <= date && range.end >= date)) {
+      finishSegment();
+      continue;
+    }
+    const day = days.get(date);
+    if (!day) continue;
+    candidate ??= { startDate: date, endDate: date, units: 0, customerFuelKopecks: 0, grossKopecks: 0 };
+    candidate.endDate = date;
+    candidate.units += day.units;
+    candidate.customerFuelKopecks += day.fuel;
+    candidate.grossKopecks += day.units * input.settings.rateKopecks;
+  }
+  finishSegment();
+  return result;
+}
+
 export function reconciliationDateError(meta: Pick<DocumentMeta, "period" | "documentDate" | "asOfDate">) {
   const end = periodBounds(meta.period).end;
   const asOf = meta.asOfDate || meta.documentDate;
@@ -469,11 +553,6 @@ function reconciliationPages(input: OfficialDocumentInput) {
   const validRange = (invoice: InvoiceLike) => Boolean(invoice.bottleStartDate && invoice.bottleEndDate &&
     invoice.bottleStartDate >= b.start && invoice.bottleEndDate <= b.end &&
     invoice.bottleStartDate <= invoice.bottleEndDate);
-  const invoiceForFuel = new Map<string, number>();
-  for (const date of fuelByDate.keys()) {
-    const invoiceId = fuelInvoiceForDate(invoices.filter(validRange), date);
-    if (invoiceId !== undefined) invoiceForFuel.set(date, invoiceId);
-  }
   const entriesByDate = new Map<string, number>();
   for (const entry of input.entries ?? []) {
     if (entry.entryDate < b.start || entry.entryDate > b.end ||
@@ -490,6 +569,7 @@ function reconciliationPages(input: OfficialDocumentInput) {
   const invoiceRows: string[] = [];
   const dailyRows: string[] = [];
   const invoicedDates = new Set<string>();
+  const shownDailyDates = new Set<string>();
   const invoiceGroups: InvoiceLike[][] = [];
   const invoiceDates = (invoice: InvoiceLike) => {
     const dates: string[] = [];
@@ -520,29 +600,24 @@ function reconciliationPages(input: OfficialDocumentInput) {
   }
   invoiceGroups.sort((first, second) => first[0].bottleStartDate!.localeCompare(second[0].bottleStartDate!));
   for (const group of invoiceGroups) {
-    const dates = [...new Set(group.flatMap(invoiceDates))].sort();
-    const groupIds = new Set(group.map((item) => item.id));
+    const dates = [...new Set(group.flatMap(invoiceDates))].filter((date) =>
+      (entriesByDate.has(date) || fuelByDate.has(date)) && !shownDailyDates.has(date)).sort();
+    const rangeStart = group.map((item) => item.bottleStartDate!).sort()[0];
+    const rangeEnd = group.map((item) => item.bottleEndDate!).sort().at(-1)!;
     const refs = group.map((item) => `№ ${escapeHtml(item.invoiceNumber)}`).join(", ");
     const units = dates.reduce((sum, date) => sum + (entriesByDate.get(date) ?? 0), 0);
-    const charged = group.reduce((sum, item) => sum + (item.amountKopecks ?? 0), 0);
-    const fuel = dates.reduce((sum, date) => sum +
-      (groupIds.has(invoiceForFuel.get(date) ?? -1) ? fuelByDate.get(date) ?? 0 : 0), 0);
     for (const date of dates) {
       const dayUnits = entriesByDate.get(date) ?? 0;
-      const dayFuel = groupIds.has(invoiceForFuel.get(date) ?? -1) ? fuelByDate.get(date) ?? 0 : 0;
-      dailyRows.push(`<tr><td>${date === dates[0] ? `${refs} · ${shortDate(dates[0])}–${shortDate(dates[dates.length - 1])}` : ""}</td>
+      const dayFuel = fuelByDate.get(date) ?? 0;
+      shownDailyDates.add(date);
+      dailyRows.push(`<tr><td>${date === dates[0] ? `${refs} · ${shortDate(rangeStart)}–${shortDate(rangeEnd)}` : ""}</td>
         <td>${shortDate(date)}</td><td class="value">${integer(dayUnits)}</td>
-        <td class="value">${dayFuel ? rubles(dayFuel) : "—"}</td><td class="value">${rubles(dayUnits * s.rateKopecks - dayFuel)}</td></tr>`);
+        <td class="value">${dayFuel ? rubles(dayFuel) : "—"}</td><td class="value">${rubles(dayUnits * s.rateKopecks)}</td></tr>`);
     }
-    const calculated = units * s.rateKopecks;
-    if (calculated !== charged + fuel) dailyRows.push(`<tr><td colspan="4">Разница между расчётом по бутылям после вычета топлива и суммой ${group.length === 1 ? "счёта" : "счетов"} ${refs}</td>
-      <td class="value">${rubles(charged + fuel - calculated)}</td></tr>`);
-    dailyRows.push(`<tr class="total"><td>Итого ${group.length === 1 ? "счёт" : "счета"} ${refs}</td><td></td>
-      <td class="value">${integer(units)}</td><td class="value">${rubles(fuel)}</td>
-      <td class="value">${rubles(charged)}</td></tr>`);
+    dailyRows.push(`<tr class="total"><td>Итого по дням ${group.length === 1 ? "счёта" : "счетов"} ${refs}${dates.length ? "" : ` · ${shortDate(rangeStart)}–${shortDate(rangeEnd)}`}</td><td></td>
+      <td class="value">${integer(units)}</td><td class="value">—</td>
+      <td class="value">${rubles(units * s.rateKopecks)}</td></tr>`);
   }
-  const unassignedFuel = [...fuelByDate].filter(([date]) => !invoiceForFuel.has(date));
-  const unassignedFuelTotal = unassignedFuel.reduce((sum, [, amount]) => sum + amount, 0);
   // Old backups have no invoice ranges. Keep their actual daily entries visible
   // without inventing which invoice covered each date.
   const unlinkedDates = [...new Set([...entriesByDate.keys(), ...fuelByDate.keys()])]
@@ -552,14 +627,12 @@ function reconciliationPages(input: OfficialDocumentInput) {
     const fuel = fuelByDate.get(date) ?? 0;
     dailyRows.push(`<tr><td>${date === unlinkedDates[0] ? "Дни без связи со счётом" : ""}</td><td>${shortDate(date)}</td>
       <td class="value">${integer(units)}</td><td class="value">${fuel ? rubles(fuel) : "—"}</td>
-      <td class="value">${rubles(units * s.rateKopecks - fuel)}</td></tr>`);
+      <td class="value">${rubles(units * s.rateKopecks)}</td></tr>`);
   }
-  const unlinkedUnits = unlinkedDates.reduce((sum, date) => sum + (entriesByDate.get(date) ?? 0), 0);
-  const groupNet = invoiceGroups.flat().reduce((sum, invoice) => sum + (invoice.amountKopecks ?? 0), 0);
-  const dailyNet = groupNet + unlinkedUnits * s.rateKopecks - unassignedFuelTotal;
   const netRent = c.totalKopecks - customerFuelKopecks;
-  if (dailyNet !== netRent) dailyRows.push(`<tr><td colspan="4">Разница до начисления по акту-расчёту № ${escapeHtml(m.actNumber)}</td>
-    <td class="value">${rubles(netRent - dailyNet)}</td></tr>`);
+  const dailyGross = [...entriesByDate.values()].reduce((sum, units) => sum + units * s.rateKopecks, 0);
+  if (dailyGross !== c.totalKopecks) dailyRows.push(`<tr><td colspan="4">Доплата до начисления по акту-расчёту № ${escapeHtml(m.actNumber)}</td>
+    <td class="value">${rubles(c.totalKopecks - dailyGross)}</td></tr>`);
   const totalInvoiced = invoices.reduce((sum, invoice) => sum + (invoice.amountKopecks ?? 0), 0);
   const visibleInvoiceIds = new Set(invoices.map((invoice) => invoice.id));
   const advances = payments.filter((payment) => !visibleInvoiceIds.has(payment.invoiceId))
@@ -569,13 +642,14 @@ function reconciliationPages(input: OfficialDocumentInput) {
   invoiceRows.push(`<tr class="total"><td>Итого по счетам</td>
     <td class="value">${rubles(totalInvoiced)}</td>
     <td class="value">${rubles(paidKopecks)}</td><td class="value">${rubles(totalInvoiced - paidKopecks)}</td></tr>`);
-  dailyRows.push(`<tr class="total"><td>Итого за ${escapeHtml(periodLabel(m.period))}</td><td></td>
-    <td class="value">${integer(c.actualUnits)}</td><td class="value">${rubles(customerFuelKopecks)}</td>
-    <td class="value">${rubles(netRent)}</td></tr>`);
+  dailyRows.push(`<tr class="total"><td colspan="2">Начислено за ${escapeHtml(periodLabel(m.period))}</td><td class="value">${integer(c.actualUnits)}</td>
+    <td class="value">${rubles(customerFuelKopecks)}</td><td class="value">${rubles(c.totalKopecks)}</td></tr>`);
+  dailyRows.push(`<tr><td colspan="4">Вычет топлива заказчика за месяц</td><td class="value">−${rubles(customerFuelKopecks)}</td></tr>`);
+  dailyRows.push(`<tr class="total"><td colspan="4">Итого к оплате за месяц после вычета топлива</td><td class="value">${rubles(netRent)}</td></tr>`);
   const invoiceHeader = `<tr><th>Счёт</th><th>К оплате</th><th>Оплачено</th><th>Остаток</th></tr>`;
   const invoiceTable = (tableRows: string[]) => `<table class="reconciliation-invoices"><colgroup><col style="width:40%"><col style="width:20%"><col style="width:20%"><col style="width:20%"></colgroup><thead>${invoiceHeader}</thead>
     <tbody>${tableRows.join("")}</tbody></table>`;
-  const dailyHeader = `<tr><th>Счёт / период</th><th>Дата</th><th>Бутылей</th><th>Вычет топлива, руб.</th><th>Итог, руб.</th></tr>`;
+  const dailyHeader = `<tr><th>Счёт / период</th><th>Дата</th><th>Бутылей</th><th>Топливо заказчика, руб.</th><th>Итог, руб.</th></tr>`;
   const dailyTable = (tableRows: string[]) => `<table class="reconciliation-daily"><colgroup><col style="width:29%"><col style="width:19%"><col style="width:12%"><col style="width:20%"><col style="width:20%"></colgroup><thead>${dailyHeader}</thead><tbody>${tableRows.join("")}</tbody></table>`;
   const summaryRows = rows.map(([label, value], i) => `<tr class="${i === 4 ? "total" : ""}"><td>${escapeHtml(label)}</td><td class="value">${escapeHtml(value)}</td></tr>`);
   const introduction = `<h1>АКТ СВЕРКИ ВЗАИМНЫХ РАСЧЁТОВ</h1>

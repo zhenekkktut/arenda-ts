@@ -157,10 +157,11 @@ test("long reconciliation starts daily rows on the first page and preserves all 
     const date = entry.entryDate.split("-").reverse().join(".");
     assert.equal(html.split(`<td>${date}</td>`).length - 1, 1, date);
   }
-  assert.match(pages[1], /Итого за август 2026 года/);
+  assert.match(pages[1], /Начислено за август 2026 года/);
+  assert.match(pages[1], /Итого к оплате за месяц после вычета топлива/);
 });
 
-test("reconciliation traces each invoice to days and shows fuel deductions on their dates", () => {
+test("reconciliation traces each invoice to gross daily amounts and deducts dated fuel at month end", () => {
   const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS };
   const counts = [100, 110, 110, ...Array(10).fill(100), 90, 90, ...Array(5).fill(80), 100, ...Array(10).fill(80)];
   const entries = counts.map((units, index) => ({ entryDate: `2026-08-${String(index + 1).padStart(2, "0")}`, units }));
@@ -189,9 +190,13 @@ test("reconciliation traces each invoice to days and shows fuel deductions on th
   assert.equal(input.calculation.totalKopecks, 11_200_000);
   assert.equal(tools.reconciliationSummary(input).balance, 4_170_000);
   assert.match(act, /112[\s ]000,00/);
-  assert.match(reconciliation, /07\.08\.2026<\/td><td class="value">100<\/td>\s*<td class="value">2[\s ]500,00<\/td><td class="value">1[\s ]500,00/);
-  assert.match(reconciliation, /12\.08\.2026<\/td><td class="value">100<\/td>\s*<td class="value">3[\s ]000,00<\/td><td class="value">1[\s ]000,00/);
-  assert.match(reconciliation, /13\.08\.2026<\/td><td class="value">100<\/td>\s*<td class="value">2[\s ]000,00<\/td><td class="value">2[\s ]000,00/);
+  assert.match(reconciliation, /07\.08\.2026<\/td><td class="value">100<\/td>\s*<td class="value">2[\s ]500,00<\/td><td class="value">4[\s ]000,00/);
+  assert.match(reconciliation, /12\.08\.2026<\/td><td class="value">100<\/td>\s*<td class="value">3[\s ]000,00<\/td><td class="value">4[\s ]000,00/);
+  assert.match(reconciliation, /13\.08\.2026<\/td><td class="value">100<\/td>\s*<td class="value">2[\s ]000,00<\/td><td class="value">4[\s ]000,00/);
+  assert.equal((reconciliation.match(/Вычет топлива заказчика за месяц/g) ?? []).length, 1);
+  assert.match(reconciliation, /Вычет топлива заказчика за месяц<\/td><td class="value">−7[\s ]500,00/);
+  assert.match(reconciliation, /Итого к оплате за месяц после вычета топлива<\/td><td class="value">104[\s ]500,00/);
+  assert.doesNotMatch(reconciliation, /Разница между расчётом|Разница до начисления/);
   assert.match(reconciliation, /39[\s ]700,00/);
   assert.match(reconciliation, /41[\s ]700,00/);
   assert.doesNotMatch(reconciliation, /По данным<br>Арендодателя/);
@@ -199,7 +204,7 @@ test("reconciliation traces each invoice to days and shows fuel deductions on th
   assert.equal((reconciliation.match(/class="page"/g) ?? []).length, 2);
 });
 
-test("fixed and variable invoices share days and deduct customer fuel once", () => {
+test("fixed and variable invoices share gross daily totals and one monthly fuel deduction", () => {
   const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS };
   const entries = [1000, 900, 900].map((units, index) => ({ entryDate: `2026-08-0${index + 1}`, units }));
   const invoices = [
@@ -218,8 +223,11 @@ test("fixed and variable invoices share days and deduct customer fuel once", () 
   const daily = html.split('class="reconciliation-daily"')[1];
   assert.equal(tools.fuelInvoiceForDate(invoices, "2026-08-02"), 1);
   assert.equal((daily.match(/02\.08\.2026<\/td>/g) ?? []).length, 1);
-  assert.match(daily, /Итого счета № F, № V/);
-  assert.match(daily, /2[\s ]800<\/td><td class="value">2[\s ]500,00<\/td>\s*<td class="value">109[\s ]500,00/);
+  assert.match(daily, /Итого по дням счетов № F, № V/);
+  assert.match(daily, /2[\s ]800<\/td><td class="value">—<\/td>\s*<td class="value">112[\s ]000,00/);
+  assert.match(daily, /Начислено за август 2026 года<\/td><td class="value">2[\s ]800<\/td>\s*<td class="value">2[\s ]500,00<\/td><td class="value">112[\s ]000,00/);
+  assert.match(daily, /Итого к оплате за месяц после вычета топлива<\/td><td class="value">109[\s ]500,00/);
+  assert.equal((daily.match(/Вычет топлива заказчика за месяц/g) ?? []).length, 1);
   assert.doesNotMatch(daily, /5[\s ]600/);
   assert.equal(tools.reconciliationSummary(input).balance, 750_000);
   const splitInvoices = [
@@ -231,7 +239,30 @@ test("fixed and variable invoices share days and deduct customer fuel once", () 
   const splitDaily = splitHtml.split('class="reconciliation-daily"')[1];
   assert.equal(tools.fuelInvoiceForDate(splitInvoices, "2026-08-02"), 3);
   assert.equal((splitDaily.match(/02\.08\.2026<\/td>/g) ?? []).length, 1);
-  assert.match(splitDaily, /2[\s ]800<\/td><td class="value">2[\s ]500,00<\/td>\s*<td class="value">109[\s ]500,00/);
+  assert.match(splitDaily, /2[\s ]800<\/td><td class="value">—<\/td>\s*<td class="value">112[\s ]000,00/);
+  assert.match(splitDaily, /Итого к оплате за месяц после вычета топлива<\/td><td class="value">109[\s ]500,00/);
+  assert.doesNotMatch(splitDaily, /Разница между расчётом|Разница до начисления/);
+});
+
+test("daily detail omits absent days, retains the saved invoice range and adds only the monthly rent floor", () => {
+  const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS };
+  const entries = [{ entryDate: "2026-08-02", units: 100 }, { entryDate: "2026-08-04", units: 200 }];
+  const input = { settings, entries, calculation: tools.calculateRental("2026-08", entries, [], settings),
+    meta: tools.defaultDocumentMeta("2026-08", 1, "2026-09-15"), downtimes: [], payments: [],
+    invoices: [{ id: 1, invoiceNumber: "F", period: "2026-08", invoiceDate: "2026-08-08", kind: "fixed",
+      bottleStartDate: "2026-08-01", bottleEndDate: "2026-08-07", amountKopecks: 7_900_000 }],
+    expenses: [{ expenseDate: "2026-08-06", category: "fuel", payer: "customer", amountKopecks: 100_000 }] };
+  const html = tools.buildReconciliationHtml(input);
+  const daily = html.split('class="reconciliation-daily"')[1];
+  assert.match(daily, /№ F · 01\.08\.2026–07\.08\.2026/);
+  for (const day of ["02", "04", "06"]) assert.equal(daily.split(`<td>${day}.08.2026</td>`).length - 1, 1);
+  for (const day of ["01", "03", "05", "07"]) assert.doesNotMatch(daily, new RegExp(`<td>${day}\\.08\\.2026</td>`));
+  assert.match(daily, /06\.08\.2026<\/td><td class="value">0<\/td>\s*<td class="value">1[\s ]000,00<\/td><td class="value">0,00/);
+  assert.match(daily, /Итого по дням счёта № F[\s\S]*?300<\/td><td class="value">—<\/td>\s*<td class="value">12[\s ]000,00/);
+  assert.match(daily, /Доплата до начисления по акту-расчёту № 1<\/td>\s*<td class="value">68[\s ]000,00/);
+  assert.match(daily, /Начислено за август 2026 года[\s\S]*?<td class="value">80[\s ]000,00/);
+  assert.match(daily, /Итого к оплате за месяц после вычета топлива<\/td><td class="value">79[\s ]000,00/);
+  assert.equal(tools.reconciliationSummary(input).balance, 7_900_000);
 });
 
 test("monthly reconciliation rejects dates before month end and permits historical month-end dates", () => {

@@ -6,6 +6,7 @@ on:
     paths:
       - "android/**"
       - "offline/**"
+      - "tests/**"
       - "app/rental-app.tsx"
       - "app/document-tools.ts"
       - "app/tax-calculation.ts"
@@ -23,6 +24,7 @@ on:
     paths:
       - "android/**"
       - "offline/**"
+      - "tests/**"
       - "app/rental-app.tsx"
       - "app/document-tools.ts"
       - "app/tax-calculation.ts"
@@ -63,6 +65,7 @@ jobs:
       - name: Собрать автономный интерфейс
         run: |
           npm ci
+          node --test --test-concurrency=1 tests/document-tools.test.mjs tests/invoice-periods.test.mjs tests/offline-archive.test.mjs tests/offline-documents.test.mjs tests/offline-undo.test.mjs tests/mobile-layout.test.mjs tests/tax-calculation.test.mjs tests/expense-shortcuts.test.mjs tests/offline-shortcuts.test.mjs
           ./node_modules/.bin/vite build --config offline/vite.config.ts
 
       - name: Установить Gradle
