@@ -140,8 +140,22 @@ test("short reconciliation puts invoices and dated fuel on one sheet without rem
   assert.match(html, /18\.09\.2026<\/td>\s*<td class="value">100<\/td><td class="value">2[\s ]500,00/);
   assert.match(invoiceTable, /75[\s ]000,00/);
   assert.match(invoiceTable, /45[\s ]000,00/);
+  assert.match(invoiceTable, /Итого по счетам[\s\S]*Осталось выставить<\/td>\s*<td class="value">0,00/);
   assert.equal(tools.reconciliationSummary(input).balance, 4_500_000);
   assert.doesNotMatch(html, /В старых счетах|Основания вычета топлива по датам|Поступившие платежи на сумму|Подписанием акта|Сроки оплаты|class="signatures"/);
+});
+
+test("remaining to invoice deducts monthly fuel and issued invoices independently of payments and opening debt", () => {
+  const input = compactInput(tools);
+  input.invoices[2].invoiceDate = "2026-10-03";
+  const remaining = (value) => tools.buildReconciliationHtml(value)
+    .match(/<td colspan="3">Осталось выставить<\/td>\s*<td class="value">([^<]+)/)[1].replace(/\u00a0/g, " ");
+  assert.equal(remaining(input), "25 000,00", "A future invoice does not reduce the amount on a historical act");
+  assert.equal(remaining({ ...input, payments: [], meta: { ...input.meta, openingBalanceKopecks: 2_000_000 } }), "25 000,00",
+    "Payments and prior debt belong to the debt calculation, not the uninvoiced amount");
+  assert.equal(remaining({ ...input, meta: { ...input.meta, asOfDate: "2026-10-03", documentDate: "2026-10-03" } }), "0,00");
+  assert.equal(remaining({ ...input, invoices: [{ ...input.invoices[0], amountKopecks: 8_000_000 }] }), "0,00",
+    "An amount invoiced above net rent must not become a negative amount to invoice");
 });
 
 test("long reconciliation starts daily rows on the first page and preserves all dates across continuations", () => {

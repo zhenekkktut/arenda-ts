@@ -642,6 +642,8 @@ function reconciliationPages(input: OfficialDocumentInput) {
   invoiceRows.push(`<tr class="total"><td>Итого по счетам</td>
     <td class="value">${rubles(totalInvoiced)}</td>
     <td class="value">${rubles(paidKopecks)}</td><td class="value">${rubles(totalInvoiced - paidKopecks)}</td></tr>`);
+  invoiceRows.push(`<tr class="total"><td colspan="3">Осталось выставить</td>
+    <td class="value">${rubles(Math.max(0, netRent - totalInvoiced))}</td></tr>`);
   dailyRows.push(`<tr class="total"><td colspan="2">Начислено за ${escapeHtml(periodLabel(m.period))}</td><td class="value">${integer(c.actualUnits)}</td>
     <td class="value">${rubles(customerFuelKopecks)}</td><td class="value">${rubles(c.totalKopecks)}</td></tr>`);
   dailyRows.push(`<tr><td colspan="4">Вычет топлива заказчика за месяц</td><td class="value">−${rubles(customerFuelKopecks)}</td></tr>`);
