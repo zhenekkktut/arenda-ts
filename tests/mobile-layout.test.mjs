@@ -29,30 +29,24 @@ test("Android keeps content clear of system bars and resizes for the keyboard", 
 });
 
 test("quick entry always exposes the historical date and advances after save", () => {
-  assert.match(app, /className="fast-entry-date-input"/);
+  assert.match(app, /<Dialog open=\{quickEntryOpen\}[\s\S]*?type="date"/);
   assert.match(app, /min=\{monthBounds\.start\}/);
   assert.match(app, /const followingDate = nextIsoDate\(entryDate\)/);
   assert.match(app, /selectEntryDate\(followingDate\)/);
   assert.doesNotMatch(app, /entryOptionsOpen/);
 });
 
-test("quick entry controls keep a stable mobile layout", () => {
-  assert.match(app, /quick-entry-title">Быстрая запись/);
-  assert.match(app, /className="fast-entry-date-row"/);
-  assert.match(app, /className="fast-entry-quantity"[\s\S]*?className="fast-entry-row"/);
-  assert.doesNotMatch(app, /entry-live-total/);
-  assert.doesNotMatch(app, /today-button/);
-  assert.match(styles, /\.fast-entry-row\s*\{[\s\S]*?align-items:\s*stretch/);
-  assert.match(styles, /\.fast-entry-row button\s*\{[\s\S]*?width:\s*8\.4rem/);
-  assert.match(styles, /\.fast-entry-date-control\s*\{[\s\S]*?grid-template-columns:\s*auto minmax\(0, 1fr\)/);
+test("quick entry is available in the dialog without a duplicate Home form", () => {
+  assert.doesNotMatch(app, /quick-entry-primary|fast-entry-form|entryUnitsRef/);
+  assert.match(app, /<Dialog open=\{quickEntryOpen\}[\s\S]*?className="dialog-form quick-entry-dialog-form"/);
+  assert.match(app, /ref=\{quickEntryUnitsRef\}/);
 });
 
-test("quick entry stays compact on Home and opens from the center action", () => {
-  assert.match(app, /tab === "summary"/);
-  assert.doesNotMatch(app, /tab === "summary" \|\| tab === "entries"/);
+test("quick entry opens from the center action and calendar days", () => {
   assert.match(app, /className="app-tabs grid h-auto w-full grid-cols-5/);
   assert.match(app, /className="app-quick-action"/);
   assert.match(app, /<Dialog open=\{quickEntryOpen\}/);
+  assert.match(app, /onClick=\{\(\) => openEntryForDate\(day\.date\)\}/);
   assert.match(styles, /\.app-quick-action > span\s*\{[\s\S]*?border-radius:\s*999px/);
 });
 
@@ -130,7 +124,8 @@ test("expenses include category visualization and quick templates", () => {
   assert.match(app, /const expenseBreakdown = useMemo/);
   assert.match(app, /className="expense-donut"/);
   assert.match(app, /Топливо заказчика/);
-  assert.match(app, /openExpenseTemplate\("repair"\)/);
+  assert.match(app, /expenseShortcuts\.map/);
+  assert.match(app, /openExpenseTemplate\(shortcut\)/);
   assert.match(styles, /\.expense-donut\s*\{/);
 });
 
