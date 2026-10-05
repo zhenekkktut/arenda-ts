@@ -1951,6 +1951,24 @@ button[data-slot="button"] {
     transform: none !important;
   }
 
+  [data-slot="dialog-content"].quick-entry-dialog {
+    inset: auto 0 var(--app-keyboard-offset, 0px) !important;
+    max-height: calc(var(--app-visible-height, 100dvh) - 0.5rem);
+    scroll-padding-bottom: 4rem;
+  }
+
+  .quick-entry-dialog-form .quick-dialog-save {
+    position: sticky;
+    z-index: 2;
+    bottom: 0;
+    box-shadow: 0 0 0 0.5rem var(--card);
+  }
+
+  html[data-entry-keyboard-open="true"] .quick-entry-dialog [data-slot="dialog-description"],
+  html[data-entry-keyboard-open="true"] .quick-dialog-hint {
+    display: none;
+  }
+
   [data-slot="dialog-content"]::before,
   [data-slot="alert-dialog-content"]::before {
     content: "";
@@ -3561,29 +3579,13 @@ html[data-theme="dark"] .audit-row time {
 }
 
 .settlement-hero {
-  position: relative;
-  isolation: isolate;
-  overflow: hidden;
-  padding: 1.3rem;
-  border-radius: 1.45rem;
-  color: #fff;
-  background:
-    radial-gradient(circle at 100% 0%, rgba(113, 188, 255, 0.24), transparent 12rem),
-    linear-gradient(125deg, #113052, #124b79 66%, #18577c);
-  box-shadow: 0 15px 32px rgba(19, 73, 119, 0.17);
-}
-
-.settlement-hero::after {
-  position: absolute;
-  z-index: -1;
-  top: -7rem;
-  right: -5.5rem;
-  width: 16rem;
-  height: 16rem;
-  border: 2rem solid rgba(255, 255, 255, 0.045);
-  border-radius: 999px;
-  content: "";
-  pointer-events: none;
+  min-width: 0;
+  padding: 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: 1.2rem;
+  color: var(--foreground);
+  background: var(--card);
+  box-shadow: 0 3px 14px rgba(16, 24, 40, 0.035);
 }
 
 .settlement-hero-heading {
@@ -3591,10 +3593,9 @@ html[data-theme="dark"] .audit-row time {
   align-items: center;
   justify-content: space-between;
   gap: 0.6rem;
-  color: rgba(255, 255, 255, 0.72);
-  font-size: 0.75rem;
-  font-weight: 680;
-  letter-spacing: 0.01em;
+  color: var(--muted-foreground);
+  font-size: .8rem;
+  font-weight: 650;
 }
 
 .settlement-hero-heading svg {
@@ -3605,52 +3606,48 @@ html[data-theme="dark"] .audit-row time {
 .settlement-hero-result {
   display: grid;
   gap: 0.3rem;
-  margin-top: 1.1rem;
+  margin-top: .85rem;
 }
 
 .settlement-hero-result span {
-  color: rgba(255, 255, 255, 0.88);
-  font-size: 0.94rem;
+  color: var(--foreground);
+  font-size: .9rem;
 }
 
 .settlement-hero-result strong {
-  font-size: clamp(2.1rem, 9vw, 3.4rem);
-  font-variant-numeric: tabular-nums;
-  font-weight: 820;
-  letter-spacing: -0.055em;
-  line-height: 1.08;
-  overflow-wrap: anywhere;
-}
-
-.settlement-hero-breakdown {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.55rem;
-  margin-top: 1.2rem;
-  padding: 1rem 0 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.2);
-}
-
-.settlement-hero-breakdown > div {
-  display: grid;
-  align-content: start;
-  gap: 0.24rem;
   min-width: 0;
-}
-
-.settlement-hero-breakdown span {
-  color: rgba(255, 255, 255, 0.7);
-  font-size: 0.68rem;
-  line-height: 1.25;
-}
-
-.settlement-hero-breakdown strong {
-  font-size: clamp(0.82rem, 3.2vw, 1rem);
+  font-size: clamp(2rem, 8vw, 3rem);
   font-variant-numeric: tabular-nums;
-  font-weight: 760;
-  line-height: 1.2;
+  font-weight: 790;
+  letter-spacing: -.035em;
+  line-height: 1.15;
   overflow-wrap: anywhere;
 }
+
+.settlement-hero-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .5rem .85rem;
+  margin-top: 1rem;
+}
+
+button.settlement-primary-action,
+button.settlement-primary-action[data-slot="button"] {
+  height: auto;
+  min-height: 2.9rem;
+  min-width: 0;
+  max-width: 100%;
+  padding: .7rem 1rem;
+  border: 1px solid #176fc2;
+  color: #fff;
+  background: #176fc2;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+button.settlement-primary-action:hover:not(:disabled) { border-color: #105898; background: #105898; }
 
 .settlement-hero-link {
   display: inline-flex;
@@ -3658,14 +3655,19 @@ html[data-theme="dark"] .audit-row time {
   cursor: pointer;
   align-items: center;
   gap: 0.3rem;
-  margin: 0.75rem 0 -0.4rem -0.25rem;
-  padding: 0.5rem 0.25rem;
+  max-width: 100%;
+  margin: 0;
+  padding: .5rem .25rem;
   border: 0;
-  color: #d3eaff;
+  color: var(--muted-foreground);
   background: transparent;
   font-size: 0.82rem;
-  font-weight: 740;
+  font-weight: 650;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
+.settlement-hero-link:hover { color: var(--foreground); }
 
 .settlement-hero-link svg {
   width: 1rem;
@@ -3675,6 +3677,71 @@ html[data-theme="dark"] .audit-row time {
 
 .settlement-hero-link:active svg {
   transform: translateX(3px);
+}
+
+.summary-next-action {
+  display: grid;
+  min-width: 0;
+  justify-items: start;
+  gap: .3rem;
+  margin-top: .85rem;
+  padding-top: .85rem;
+  border-top: 1px solid var(--border);
+}
+.summary-next-action > small { color: var(--muted-foreground); font-size: .78rem; line-height: 1.45; overflow-wrap: anywhere; }
+.summary-next-action button[data-slot="button"] { height: auto; min-width: 0; max-width: 100%; padding: .35rem 0; justify-content: flex-start; text-align: left; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; }
+
+button.summary-calendar,
+button.summary-calendar[data-slot="button"] {
+  display: flex;
+  width: 100%;
+  height: auto;
+  min-width: 0;
+  min-height: 4.4rem;
+  align-items: center;
+  justify-content: flex-start;
+  gap: .8rem;
+  padding: .85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  color: var(--foreground);
+  background: var(--card);
+  box-shadow: none;
+  text-align: left;
+  white-space: normal;
+}
+.summary-calendar > svg { width: 1.2rem; height: 1.2rem; flex: 0 0 auto; color: var(--muted-foreground); }
+.summary-calendar > svg:last-child { width: 1rem; height: 1rem; margin-left: auto; }
+.summary-calendar > div { display: grid; min-width: 0; gap: .15rem; }
+.summary-calendar strong { font-size: .9rem; line-height: 1.35; overflow-wrap: anywhere; }
+.summary-calendar small { color: var(--muted-foreground); font-size: .78rem; font-weight: 500; line-height: 1.35; overflow-wrap: anywhere; }
+button.summary-calendar:hover:not(:disabled) { background: var(--muted); }
+.summary-missing-days { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: .4rem; padding-inline: .25rem; }
+.summary-missing-days button[data-slot="button"],
+button.summary-missing-days[data-slot="button"] { height: auto; min-width: 0; max-width: 100%; color: var(--muted-foreground); font-size: .8rem; line-height: 1.4; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+
+.invoice-workspace-toolbar,
+.settings-data-actions { display: flex; min-width: 0; flex-wrap: wrap; gap: .5rem; }
+.invoice-workspace-toolbar button[data-slot="button"],
+.settings-data-actions button[data-slot="button"] { height: auto; min-width: 0; max-width: 100%; flex: 1 1 11rem; padding: .65rem .8rem; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; }
+.invoice-list-heading { display: flex; min-width: 0; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .4rem .75rem; }
+.invoice-list-heading h2 { margin: 0; font-size: 1rem; font-weight: 750; line-height: 1.4; }
+.invoice-list-heading > span { color: var(--muted-foreground); font-size: .8rem; }
+.documents-workspace { min-width: 0; scroll-margin-top: 6rem; }
+details.documents-workspace > summary { min-height: 2.75rem; align-content: center; color: var(--foreground); font-size: 1rem; font-weight: 750; line-height: 1.4; cursor: pointer; overflow-wrap: anywhere; }
+details.documents-workspace[open] > summary { margin-bottom: .85rem; }
+
+html[data-theme="dark"] .settlement-hero,
+html[data-theme="dark"] .month-bar { background: var(--card); box-shadow: none; }
+html[data-theme="dark"] button.settlement-primary-action { border-color: #74baff; color: #081c31; background: #74baff; }
+html[data-theme="dark"] button.settlement-primary-action:hover:not(:disabled) { border-color: #a3d0ff; background: #a3d0ff; }
+
+@media (max-width: 480px) {
+  .settlement-hero-actions { align-items: stretch; flex-direction: column; gap: .35rem; }
+  .settlement-hero-actions .settlement-primary-action { width: 100%; }
+  .settlement-hero-link { align-self: flex-start; }
+  button.summary-calendar { gap: .6rem; }
+  .invoice-workspace-toolbar button[data-slot="button"] { flex-basis: 100%; }
 }
 
 .dashboard-actions {
@@ -3872,10 +3939,6 @@ html[data-theme="dark"] .month-tools-cash strong.negative {
     padding: 1.05rem;
   }
 
-  .settlement-hero-breakdown {
-    gap: 0.35rem;
-  }
-
   .month-tools-actions {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -3883,4 +3946,478 @@ html[data-theme="dark"] .month-tools-cash strong.negative {
   .month-tools-actions button:last-child:nth-child(3) {
     grid-column: auto;
   }
+}
+.tax-summary { display:flex; align-items:center; justify-content:space-between; gap:1rem; }
+.tax-summary > div { display:grid; gap:.2rem; }
+.tax-summary strong { font-size:1.55rem; font-variant-numeric:tabular-nums; }
+.tax-summary small { color:var(--muted-foreground); font-size:.85rem; }
+.tax-dialog-scroll { overflow-y:auto; max-height:min(70vh, 680px); padding-right:.25rem; }
+.tax-figures { display:grid; gap:.55rem; padding:.8rem 0; }
+.tax-figures > div, .tax-records > div { display:flex; align-items:center; justify-content:space-between; gap:.7rem; }
+.tax-figures strong, .tax-records strong { white-space:nowrap; font-variant-numeric:tabular-nums; }
+.tax-due { border-top:1px solid var(--border); padding-top:.7rem; font-weight:700; }
+.tax-form { border-top:1px solid var(--border); padding:1rem 0; }
+.tax-checkbox { display:flex!important; align-items:center; gap:.6rem; }
+.tax-checkbox input { width:1.15rem; height:1.15rem; flex:none; }
+.tax-records { display:grid; gap:.55rem; }
+.tax-records > div { border-top:1px solid var(--border); padding-top:.6rem; font-size:.87rem; }
+.tax-records span { flex:1; min-width:0; }
+@media(max-width:480px) { .tax-summary { align-items:flex-start; flex-direction:column; } }
+
+/* Локальные документы и просмотр листа A4 */
+.document-workspace { display: grid; gap: 1rem; }
+.document-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+.document-fields label { display: grid; gap: .35rem; min-width: 0; }
+.document-fields input { min-width: 0; }
+.document-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.document-actions button { white-space: normal; min-height: 2.75rem; }
+.document-archive { border-top: 1px solid var(--border); padding-top: .8rem; }
+.document-archive summary { cursor: pointer; font-weight: 700; }
+.document-archive-row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; border-top: 1px solid var(--border); padding: .7rem 0; }
+.document-archive-row > div { display: grid; gap: .15rem; flex: 1 1 12rem; }
+.document-archive-row small { color: var(--muted-foreground); }
+.document-preview-dialog { width: min(96vw, 850px) !important; max-width: 850px !important; max-height: 94dvh !important; }
+.document-preview-frame { overflow: auto; max-height: min(64dvh, 830px); background: #ddd; border: 1px solid #bbb; }
+.document-preview-paper { position: relative; margin: 0 auto; }
+.document-preview-frame iframe { position: absolute; display: block; width: 794px; border: 0; background: white; transform-origin: top left; }
+@media (max-width: 560px) {
+  .document-fields { grid-template-columns: 1fr 1fr; }
+  .document-preview-frame { height: min(64dvh, 440px); }
+  .document-actions button { flex: 1 1 100%; }
+}
+
+/* Размеры месяца и раскрываемая история на экране телефона. */
+.month-picker {
+  position: relative;
+  display: inline-flex;
+  min-height: 2.75rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: .4rem;
+  padding: .6rem .75rem;
+  border: 1px solid var(--border);
+  border-radius: .9rem;
+  color: var(--foreground);
+  background: var(--muted);
+  font-size: .85rem;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.month-picker > svg { width: 1rem; height: 1rem; flex: 0 0 auto; }
+.month-picker:focus-within { outline: 2px solid #2688eb; outline-offset: 2px; }
+.month-picker .month-native {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 100% !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: inherit;
+  background: transparent !important;
+  box-shadow: none !important;
+  opacity: 0;
+  cursor: pointer;
+}
+.month-bar {
+  min-width: 0;
+  min-height: 3.8rem;
+  padding: .55rem .75rem;
+  border-radius: 1rem;
+  box-shadow: none;
+}
+.month-bar .month-picker { min-width: 0; max-width: 100%; flex: 0 1 auto; }
+.month-status { display: inline-flex; min-width: 0; align-items: center; gap: .3rem; color: var(--muted-foreground); font-size: .75rem; font-weight: 550; line-height: 1.3; text-align: right; }
+.month-status svg { width: .85rem; height: .85rem; flex: 0 0 auto; }
+.month-native::-webkit-calendar-picker-indicator {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+}
+.entry-history-heading { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+.entry-history-toggle[data-slot="button"] {
+  display: flex;
+  min-width: 0;
+  height: auto;
+  flex: 1 1 13rem;
+  align-items: center;
+  justify-content: flex-start;
+  gap: .65rem;
+  padding: .35rem 0;
+  color: var(--foreground);
+  background: transparent;
+  text-align: left;
+  white-space: normal;
+}
+.entry-history-toggle > div { min-width: 0; flex: 1; }
+.entry-history-toggle strong { display: block; font-size: 1rem; line-height: 1.3; }
+.entry-history-toggle .eyebrow { display: block; margin-bottom: .1rem; }
+.entry-history-toggle > small { flex: 0 0 auto; color: var(--muted-foreground); font-size: .75rem; }
+.entry-history-toggle > svg { width: 1rem; flex: 0 0 auto; transition: transform 150ms ease; }
+.entry-history-toggle[aria-expanded="true"] > svg { transform: rotate(180deg); }
+.entry-history-list { margin-top: .75rem; border-top: 1px solid var(--border); }
+.entry-history .record-row { min-width: 0; }
+.entry-history .entry-record-actions { display: flex; flex: 0 0 auto; align-items: center; gap: .3rem; }
+.entry-history .entry-record-value { min-width: 0; }
+.entry-history .entry-record-value strong,
+.entry-history .entry-record-value > span,
+.entry-history .record-amount { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+/* Полный месяц: дата, количество бутылей и сумма видны в каждой ячейке. */
+.month-calendar-dialog { width: min(96vw, 560px); max-width: 560px; }
+.month-calendar-weekdays,
+.month-calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: .3rem; }
+.month-calendar-weekdays { color: var(--muted-foreground); font-size: .7rem; font-weight: 700; text-align: center; }
+.month-calendar-grid { min-width: 0; }
+.month-day {
+  display: grid;
+  min-width: 0;
+  min-height: 4.4rem;
+  align-content: center;
+  justify-items: center;
+  gap: .2rem;
+  padding: .4rem .12rem;
+  border: 1px solid var(--border);
+  border-radius: .7rem;
+  color: var(--foreground);
+  background: var(--muted);
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.month-day strong { font-size: .95rem; line-height: 1.15; }
+.month-day-units { max-width: 100%; color: #267dc9; font-size: .75rem; font-weight: 750; line-height: 1.15; white-space: nowrap; }
+.month-day-amount { max-width: 100%; color: var(--muted-foreground); font-size: .65rem; line-height: 1.15; white-space: nowrap; }
+.month-day-empty { background: var(--background); }
+.month-day-missing:not(.month-day-selected) { border-color: #edc1c5; background: #fff4f4; }
+.month-day-missing .month-day-units { color: #b94d58; }
+.month-day-selected { border-color: #2688eb; color: #fff; background: linear-gradient(145deg, #2293ee, #3677e8); }
+.month-day-selected .month-day-units,
+.month-day-selected .month-day-amount { color: #fff; }
+.month-day-outside { opacity: .3; cursor: default; }
+.month-day:focus-visible { outline: 2px solid #2688eb; outline-offset: 2px; }
+.month-calendar-legend { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem .9rem; color: var(--muted-foreground); font-size: .72rem; }
+.month-calendar-legend > span { display: inline-flex; align-items: center; gap: .3rem; }
+.month-calendar-legend i { width: .6rem; height: .6rem; border: 1px solid var(--border); border-radius: .2rem; background: var(--muted); }
+.month-calendar-legend i.month-day-missing { border-color: #edc1c5; background: #fff4f4; }
+.month-calendar-legend i.month-day-selected { border-color: #2688eb; background: #2688eb; }
+.month-calendar-dialog .week-totals strong { overflow-wrap: anywhere; }
+
+/* Настройка быстрых расходов сохраняет удобную ширину полей. */
+.expense-shortcuts-settings { min-width: 0; }
+.expense-shortcut-editor { display: grid; min-width: 0; gap: .75rem; padding: .8rem; border: 1px solid var(--border); border-radius: .8rem; background: var(--card); }
+.expense-shortcut-editor-heading { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: .5rem; }
+.expense-shortcut-editor-heading strong { min-width: 0; overflow-wrap: anywhere; }
+.expense-shortcut-editor-heading button { flex: 0 0 auto; }
+.expense-shortcut-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; }
+.expense-shortcut-fields label { display: grid; min-width: 0; gap: .3rem; }
+.expense-shortcut-fields input,
+.expense-shortcut-fields select,
+.expense-shortcut-fields [data-slot="select-trigger"] { width: 100%; min-width: 0; }
+.expense-shortcut-fields select { min-height: 3rem; padding: .6rem .7rem; border: 1px solid var(--border); border-radius: .9rem; color: var(--foreground); background: var(--muted); font-size: .85rem; color-scheme: light; }
+.expense-shortcut-fields [data-slot="select-trigger"] { height: auto; min-height: 3rem; white-space: normal; }
+
+html[data-theme="dark"] .month-picker { background: #202c3c; border-color: #2d3b4d; }
+html[data-theme="dark"] .month-day-units { color: #73baff; }
+html[data-theme="dark"] .month-day-missing:not(.month-day-selected) { border-color: #75434a; background: #3b272f; }
+html[data-theme="dark"] .month-day-missing .month-day-units { color: #ffa3ae; }
+html[data-theme="dark"] .month-day-selected .month-day-units,
+html[data-theme="dark"] .month-day-selected .month-day-amount { color: #fff; }
+html[data-theme="dark"] .month-calendar-legend i.month-day-missing { border-color: #75434a; background: #3b272f; }
+html[data-theme="dark"] .expense-shortcut-fields select { color-scheme: dark; }
+
+@media (max-width: 480px) {
+  .month-bar { gap: .5rem; }
+  .month-copy { min-width: 0; }
+  .month-copy > div { min-width: 0; }
+  .month-copy strong { overflow: visible; font-size: .9rem; line-height: 1.25; text-overflow: clip; white-space: normal; }
+  .month-picker { gap: .3rem; padding-inline: .6rem; font-size: .78rem; }
+  .entry-history-heading > button:not(.entry-history-toggle) { margin-left: auto; }
+  .entry-history .record-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .3rem .5rem; padding-block: .8rem; }
+  .entry-history .record-date { grid-column: 1; width: auto; font-size: .77rem; }
+  .entry-history .entry-record-value { grid-column: 1; font-size: .9rem; }
+  .entry-history .entry-record-value p { font-size: .76rem; }
+  .entry-history .entry-record-actions { grid-column: 2; grid-row: 1 / 3; align-self: center; }
+  .entry-history .entry-record-actions button[data-slot="button"] { width: 2.6rem; min-width: 2.6rem; padding: 0; }
+  .entry-edit-label { display: none; }
+  .month-calendar-weekdays,
+  .month-calendar-grid { gap: .2rem; }
+  .month-day { min-height: 4.15rem; padding-inline: .05rem; border-radius: .55rem; }
+  .month-day strong { font-size: .83rem; }
+  .month-day-units { font-size: .69rem; }
+  .month-day-amount { font-size: .6rem; letter-spacing: -.02em; }
+  .expense-shortcut-fields { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 390px) {
+  .month-bar { padding-inline: .75rem; }
+  .month-status { max-width: 38%; font-size: .7rem; }
+  .month-copy { gap: .5rem; }
+  .month-copy .month-icon { width: 2.4rem; height: 2.4rem; }
+  .month-copy strong { font-size: .82rem; }
+  .month-picker { padding-inline: .5rem; font-size: .74rem; }
+  .month-day-amount { font-size: .56rem; }
+}
+
+/* Краткие статусы в документах и формах. */
+.workflow-badge {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: .35rem;
+  padding: .4rem .6rem;
+  border: 1px solid var(--border);
+  border-radius: .65rem;
+  color: var(--muted-foreground);
+  background: var(--card);
+  font-size: .75rem;
+  font-weight: 650;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.workflow-badge[data-state="current"] { border-color: #bfdaf4; color: #145992; background: #eaf4ff; }
+.workflow-badge[data-state="done"] { border-color: #c5e5d4; color: #196144; background: #edf8f1; }
+.workflow-badge[data-state="warning"] { border-color: #ecd599; color: #7b5611; background: #fff6df; }
+.workflow-badge > svg { width: .9rem; height: .9rem; flex: 0 0 auto; }
+
+/* Предлагаемый период счёта явно выделяется после выбора. */
+button.invoice-period-choice,
+button.invoice-period-choice[data-slot="button"] { height: auto; min-width: 0; min-height: 2.75rem; white-space: normal; overflow-wrap: anywhere; }
+button.invoice-period-choice[aria-pressed="true"],
+button.invoice-period-choice[aria-pressed="true"][data-slot="button"] {
+  border: 1px solid #176fc2;
+  color: #fff;
+  background: #176fc2;
+  box-shadow: inset 0 0 0 1px #176fc2;
+}
+.invoice-period-choice[aria-pressed="true"] :is(small, span, strong) { color: inherit; }
+button.invoice-period-choice[aria-pressed="true"]:hover:not(:disabled) { background: #105898; }
+.document-summary { display: grid; min-width: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem; }
+.document-summary > div { display: grid; min-width: 0; align-content: start; gap: .25rem; padding: .8rem; border: 1px solid var(--border); border-radius: .8rem; background: var(--muted); }
+.document-summary small,
+.document-summary > div > span { color: var(--muted-foreground); font-size: .75rem; line-height: 1.35; }
+.document-summary strong { color: var(--foreground); font-size: .95rem; line-height: 1.35; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+details.document-options { min-width: 0; padding: .8rem; border: 1px solid var(--border); border-radius: .85rem; background: var(--card); }
+.document-options > summary { min-height: 2rem; color: var(--foreground); font-size: .85rem; font-weight: 750; line-height: 1.4; cursor: pointer; overflow-wrap: anywhere; }
+.document-options[open] > summary { margin-bottom: .75rem; }
+.document-options .document-fields { min-width: 0; }
+.document-options > label { display: grid; min-width: 0; gap: .35rem; margin-top: .65rem; }
+.document-options .calculation-list > div { min-width: 0; }
+.document-options .calculation-list :is(span, strong) { min-width: 0; overflow-wrap: anywhere; }
+.invoice-payments > summary,
+.expense-chart-details > summary,
+.expense-shortcuts-settings > summary { min-height: 2.75rem; align-content: center; }
+.expense-chart-details > .expense-visual { min-width: 0; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.settings-dialog .help-note,
+html[data-theme="dark"] .settings-dialog .help-note { padding: 0; border: 0; border-radius: 0; color: var(--muted-foreground); background: transparent; box-shadow: none; font-size: .8rem; line-height: 1.45; overflow-wrap: anywhere; }
+.contract-summary { min-width: 0; }
+.contract-summary dl { display: grid; min-width: 0; gap: .65rem; margin: .75rem 0 0; font-size: .83rem; line-height: 1.45; }
+.contract-summary dl > div { display: grid; min-width: 0; grid-template-columns: minmax(0, .8fr) minmax(0, 1.3fr); gap: .2rem .9rem; }
+.contract-summary dt { color: var(--muted-foreground); }
+.contract-summary dd { min-width: 0; margin: 0; color: var(--foreground); font-weight: 650; overflow-wrap: anywhere; }
+.settings-app-section { display: grid; min-width: 0; gap: .8rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+.settings-app-section > summary { min-height: 2.75rem; align-content: center; color: var(--foreground); font-size: .95rem; font-weight: 750; line-height: 1.4; cursor: pointer; overflow-wrap: anywhere; }
+.settings-app-section > strong { color: var(--foreground); font-size: .95rem; }
+.settings-app-section > p { margin: 0; color: var(--muted-foreground); font-size: .8rem; line-height: 1.45; }
+.document-readiness { display: grid; min-width: 0; gap: .6rem; padding: .8rem; border: 1px solid #ead69d; border-radius: .85rem; color: #785611; background: #fff8e6; font-size: .82rem; line-height: 1.45; }
+.document-readiness > p { margin: 0; overflow-wrap: anywhere; }
+.document-readiness button { max-width: 100%; min-height: 2.75rem; align-self: start; justify-self: start; white-space: normal; overflow-wrap: anywhere; }
+button.action-attention,
+button.action-attention[data-slot="button"] { min-height: 2.75rem; border: 1px solid #d2ab4d; color: #76520f; background: #fff5d9; white-space: normal; }
+button.action-attention:hover:not(:disabled) { border-color: #b78d2e; background: #ffecc0; }
+button.settlement-primary-action:focus-visible,
+.settlement-hero-link:focus-visible,
+button.summary-calendar:focus-visible,
+details.documents-workspace > summary:focus-visible,
+button.invoice-period-choice:focus-visible,
+button.action-attention:focus-visible,
+.document-options > summary:focus-visible { outline: 3px solid #3b8cd7; outline-offset: 3px; }
+
+html[data-theme="dark"] button.invoice-period-choice[aria-pressed="true"] { border-color: #74baff; color: #081c31; background: #74baff; }
+html[data-theme="dark"] button.invoice-period-choice[aria-pressed="true"]:hover:not(:disabled) { border-color: #a3d0ff; background: #a3d0ff; }
+html[data-theme="dark"] .workflow-badge[data-state="current"] { border-color: #385e83; color: #b9dfff; background: #1e4266; }
+html[data-theme="dark"] .workflow-badge[data-state="done"] { border-color: #375e50; color: #b5e5cf; background: #1b382f; }
+html[data-theme="dark"] .workflow-badge[data-state="warning"],
+html[data-theme="dark"] .document-readiness { border-color: #69572e; color: #f1d789; background: #342d1d; }
+html[data-theme="dark"] button.action-attention { border-color: #9b7b3e; color: #f1d789; background: #40331b; }
+html[data-theme="dark"] button.action-attention:hover:not(:disabled) { background: #53411f; }
+html[data-theme="dark"] button.settlement-primary-action:focus-visible,
+html[data-theme="dark"] .settlement-hero-link:focus-visible,
+html[data-theme="dark"] button.summary-calendar:focus-visible,
+html[data-theme="dark"] details.documents-workspace > summary:focus-visible,
+html[data-theme="dark"] button.invoice-period-choice:focus-visible,
+html[data-theme="dark"] button.action-attention:focus-visible,
+html[data-theme="dark"] .document-options > summary:focus-visible { outline-color: #b5dbff; }
+
+@media (max-width: 390px) {
+  .document-summary { gap: .45rem; }
+  .document-summary > div { padding: .65rem; }
+  .contract-summary dl > div { grid-template-columns: minmax(0, 1fr); gap: .2rem; }
+  .contract-summary dd { margin-bottom: .45rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  button.settlement-primary-action,
+  .settlement-hero-link,
+  .settlement-hero-link svg,
+  button.summary-calendar,
+  button.invoice-period-choice,
+  button.action-attention { animation: none; transition: none; }
+  button.settlement-primary-action:active,
+  .settlement-hero-link:active svg,
+  button.summary-calendar:active,
+  button.invoice-period-choice:active,
+  button.action-attention:active { transform: none; }
+}
+
+/* Выбранный день: простой, отсутствие записи и действия по дате. */
+.week-day.calendar-day-empty:not(.week-day-selected),
+.month-day.calendar-day-empty:not(.month-day-selected) { border-style: dashed; background: #f5f7fa; }
+.week-day.calendar-day-downtime:not(.week-day-selected),
+.month-day.calendar-day-downtime:not(.month-day-selected) { border-color: #ddbd75; border-style: solid; color: #725116; background: #fff6df; }
+.week-day.calendar-day-downtime:not(.week-day-selected) small,
+.month-day.calendar-day-downtime:not(.month-day-selected) .month-day-units { color: #87601a; }
+.week-day.calendar-day-downtime:not(.week-day-selected) .week-day-chart { background: #edddb7; }
+.week-day.calendar-day-downtime small { display: grid; justify-items: center; gap: .1rem; overflow: visible; font-size: .6rem; line-height: 1.2; white-space: normal; }
+.week-day.calendar-day-downtime small > svg { width: .85rem; height: .85rem; }
+.month-day-units > svg { display: block; width: .85rem; height: .85rem; margin-inline: auto; }
+.month-calendar-legend svg { width: .85rem; height: .85rem; flex: 0 0 auto; }
+.calendar-day-details {
+  display: grid;
+  min-width: 0;
+  gap: .65rem;
+  padding: .9rem;
+  border: 1px solid var(--border);
+  border-radius: .9rem;
+  background: var(--card);
+}
+.calendar-day-details-heading,
+.calendar-day-details > header { display: flex; min-width: 0; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: .3rem .7rem; }
+.calendar-day-details :is(h3, h4, strong) { min-width: 0; color: var(--foreground); line-height: 1.35; overflow-wrap: anywhere; }
+.calendar-day-details :is(h3, h4) { margin: 0; font-size: .95rem; }
+.calendar-day-details :is(p, small) { margin: 0; color: var(--muted-foreground); font-size: .8rem; line-height: 1.45; overflow-wrap: anywhere; }
+.calendar-day-details .calendar-day-status { color: var(--foreground); font-size: .85rem; }
+.calendar-day-details .calendar-day-status { display: flex; align-items: center; gap: .45rem; }
+.calendar-day-status > svg { width: 1rem; height: 1rem; flex: 0 0 auto; }
+.calendar-day-details[data-slot="dialog-content"] { gap: .85rem; padding: 1.15rem; }
+.calendar-day-actions { display: flex; min-width: 0; flex-wrap: wrap; gap: .5rem; }
+.calendar-day-actions button,
+.calendar-day-actions button[data-slot="button"] { height: auto; min-width: 0; min-height: 2.75rem; flex: 1 1 9rem; padding: .65rem .75rem; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; }
+.calendar-day-details .calendar-day-actions button svg { flex: 0 0 auto; }
+
+/* Оплата: видно, на какие даты и суммы она распределяется. */
+.invoice-allocation-preview { display: grid; min-width: 0; gap: .6rem; padding: .9rem; border: 1px solid var(--border); border-radius: .9rem; background: var(--muted); }
+.invoice-allocation-preview > strong { color: var(--foreground); font-size: .9rem; line-height: 1.35; }
+.invoice-allocation-row { display: flex; min-width: 0; align-items: flex-start; justify-content: space-between; gap: .5rem .8rem; padding: .55rem 0; border-top: 1px solid var(--border); font-size: .82rem; line-height: 1.4; }
+.invoice-allocation-row > div { display: grid; min-width: 0; gap: .15rem; }
+.invoice-allocation-row strong { min-width: 0; color: var(--foreground); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.invoice-allocation-row > :last-child { min-width: 0; flex: 0 1 auto; text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.invoice-allocation-row small { display: block; color: var(--muted-foreground); font-size: .75rem; line-height: 1.4; }
+.invoice-allocation-days { display: grid; min-width: 0; gap: .7rem; }
+.invoice-allocation-days > div { min-width: 0; }
+.invoice-allocation-days :is(p, strong) { overflow-wrap: anywhere; }
+.invoice-allocation-days > div > strong { display: block; color: var(--foreground); font-size: .85rem; }
+.invoice-allocation-days > div > p:not(.help-note) { display: flex; justify-content: space-between; flex-wrap: wrap; gap: .3rem .7rem; font-size: .83rem; }
+.invoice-allocation-summary { display: grid; min-width: 0; gap: .4rem; padding-top: .65rem; border-top: 1px solid var(--border); color: var(--foreground); font-size: .83rem; line-height: 1.45; overflow-wrap: anywhere; }
+.invoice-allocation-summary > div { display: flex; min-width: 0; align-items: baseline; justify-content: space-between; gap: .7rem; }
+.invoice-allocation-summary strong { min-width: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.invoice-allocation-warning,
+.invoice-review-notice { min-width: 0; padding: .85rem; border: 1px solid #e4ca8b; border-radius: .85rem; color: #795614; background: #fff7e3; font-size: .82rem; line-height: 1.45; overflow-wrap: anywhere; }
+.invoice-review-notice { display: grid; gap: .65rem; }
+.invoice-review-notice :is(p, strong),
+.invoice-allocation-warning p { margin: 0; }
+.invoice-review-notice > div { display: flex; min-width: 0; flex-wrap: wrap; gap: .5rem; }
+.invoice-review-notice button { height: auto; min-width: 0; min-height: 2.75rem; padding: .65rem .8rem; white-space: normal; overflow-wrap: anywhere; }
+
+/* Подтверждения и сохранение остаются текстовыми и занимают устойчивое место. */
+.entry-saved-state { display: flex; min-width: 0; align-items: flex-start; gap: .55rem; padding: .75rem .85rem; border: 1px solid #badfc9; border-radius: .8rem; color: #196243; background: #eef9f2; font-size: .82rem; line-height: 1.45; }
+.entry-saved-state > svg { width: 1.1rem; height: 1.1rem; flex: 0 0 auto; margin-top: .08rem; }
+.entry-saved-state > :not(svg) { min-width: 0; overflow-wrap: anywhere; }
+.entry-saved-state :is(p, small) { margin: 0; color: inherit; }
+.pdf-save-state,
+.loading-state { display: flex; min-width: 0; align-items: center; gap: .55rem; padding: .75rem .85rem; border-left: 3px solid #438bd0; color: #235c8e; background: #eef6ff; font-size: .82rem; line-height: 1.45; }
+.pdf-save-state > svg,
+.loading-state > svg { width: 1rem; height: 1rem; flex: 0 0 auto; }
+.pdf-save-state > :not(svg),
+.loading-state > :not(svg) { min-width: 0; overflow-wrap: anywhere; }
+.pdf-save-state :is(p, small),
+.loading-state :is(p, small) { margin: 0; color: inherit; }
+.motion-settings-row { display: flex; min-width: 0; min-height: 2.75rem; align-items: center; justify-content: space-between; gap: .9rem; }
+.motion-settings-row > div { min-width: 0; }
+.motion-settings-row > span { display: grid; min-width: 0; gap: .2rem; }
+.motion-settings-row small { color: var(--muted-foreground); font-size: .78rem; line-height: 1.45; }
+.motion-settings-row strong { color: var(--foreground); font-size: .88rem; line-height: 1.35; }
+.motion-settings-row p { margin: .2rem 0 0; color: var(--muted-foreground); font-size: .78rem; line-height: 1.45; }
+.motion-settings-row label { display: flex; min-width: 0; align-items: center; gap: .65rem; line-height: 1.4; cursor: pointer; }
+.motion-settings-row input[type="checkbox"] { width: 1.25rem; height: 1.25rem; min-height: 1.25rem; flex: 0 0 auto; accent-color: #176fc2; cursor: pointer; }
+.motion-settings-row [data-slot="switch"] { flex: 0 0 auto; }
+.motion-settings-row input:focus-visible,
+.motion-settings-row [data-slot="switch"]:focus-visible { outline: 3px solid #438bd0; outline-offset: 3px; }
+
+html[data-theme="dark"] .week-day.calendar-day-empty:not(.week-day-selected),
+html[data-theme="dark"] .month-day.calendar-day-empty:not(.month-day-selected) { border-color: #415069; background: #182332; }
+html[data-theme="dark"] .week-day.calendar-day-downtime:not(.week-day-selected),
+html[data-theme="dark"] .month-day.calendar-day-downtime:not(.month-day-selected) { border-color: #907440; color: #f2d58c; background: #382f20; }
+html[data-theme="dark"] .week-day.calendar-day-downtime:not(.week-day-selected) small,
+html[data-theme="dark"] .month-day.calendar-day-downtime:not(.month-day-selected) .month-day-units { color: #f2d58c; }
+html[data-theme="dark"] .week-day.calendar-day-downtime:not(.week-day-selected) .week-day-chart { background: #5c4d2d; }
+html[data-theme="dark"] .invoice-allocation-warning,
+html[data-theme="dark"] .invoice-review-notice { border-color: #776038; color: #f0d18a; background: #352d20; }
+html[data-theme="dark"] .entry-saved-state { border-color: #3c6a54; color: #afe3c5; background: #1e382d; }
+html[data-theme="dark"] .pdf-save-state,
+html[data-theme="dark"] .loading-state { border-color: #77b6f1; color: #b7ddff; background: #1b334c; }
+html[data-theme="dark"] .motion-settings-row input[type="checkbox"] { accent-color: #74baff; }
+html[data-theme="dark"] .motion-settings-row input:focus-visible,
+html[data-theme="dark"] .motion-settings-row [data-slot="switch"]:focus-visible { outline-color: #b5dbff; }
+
+/* Короткая плавность локальных состояний; числа и длинные списки не анимируются. */
+@keyframes app-state-enter { from { opacity: .75; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes app-fade-enter { from { opacity: .84; } to { opacity: 1; } }
+@keyframes app-fade-exit { from { opacity: 1; } to { opacity: 0; } }
+.calendar-day-details,
+.invoice-allocation-preview,
+.invoice-review-notice,
+.entry-saved-state { animation: app-state-enter 180ms ease-out; }
+.week-day-selected,
+.month-day-selected { animation: app-fade-enter 160ms ease-out; }
+.month-day { transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease; }
+[data-slot="dialog-content"][data-state="open"],
+[data-slot="alert-dialog-content"][data-state="open"] { animation: app-fade-enter 200ms ease-out; }
+[data-slot="dialog-content"][data-state="closed"],
+[data-slot="alert-dialog-content"][data-state="closed"] { animation: app-fade-exit 150ms ease-in; }
+.record-row,
+.expense-row,
+.invoice-card { animation: none; }
+
+@media (max-width: 390px) {
+  .calendar-day-details,
+  .invoice-allocation-preview { padding: .75rem; }
+  .calendar-day-actions { gap: .4rem; }
+  .calendar-day-actions button { flex-basis: 100%; }
+  .invoice-review-notice > div { flex-direction: column; }
+  .invoice-review-notice button { width: 100%; }
+  .invoice-allocation-row { gap: .4rem; font-size: .78rem; }
+}
+
+@media (max-width: 640px) {
+  .calendar-day-details[data-slot="dialog-content"] { padding: 1.1rem 1rem calc(1.1rem + env(safe-area-inset-bottom)); }
+}
+
+:root[data-app-motion="off"] *,
+:root[data-app-motion="off"] *::before,
+:root[data-app-motion="off"] *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
+:root[data-app-motion="off"] :is([data-slot="button"], .dashboard-actions button, .week-day, .month-day):active { transform: none !important; }
+:root[data-app-motion="off"] .settlement-hero-link:active svg { transform: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  .calendar-day-details,
+  .invoice-allocation-preview,
+  .invoice-review-notice,
+  .entry-saved-state,
+  .week-day-selected,
+  .month-day-selected,
+  [data-slot="dialog-content"],
+  [data-slot="alert-dialog-content"] { animation: none !important; }
+  .month-day { transition: none; }
 }

@@ -29,31 +29,41 @@ test("Android keeps content clear of system bars and resizes for the keyboard", 
 });
 
 test("quick entry always exposes the historical date and advances after save", () => {
-  assert.match(app, /className="fast-entry-date-input"/);
+  assert.match(app, /<Dialog open=\{quickEntryOpen\}[\s\S]*?type="date"/);
   assert.match(app, /min=\{monthBounds\.start\}/);
   assert.match(app, /const followingDate = nextIsoDate\(entryDate\)/);
   assert.match(app, /selectEntryDate\(followingDate\)/);
   assert.doesNotMatch(app, /entryOptionsOpen/);
 });
 
-test("quick entry controls keep a stable mobile layout", () => {
-  assert.match(app, /quick-entry-title">Быстрая запись/);
-  assert.match(app, /className="fast-entry-date-row"/);
-  assert.match(app, /className="fast-entry-quantity"[\s\S]*?className="fast-entry-row"/);
-  assert.doesNotMatch(app, /entry-live-total/);
-  assert.doesNotMatch(app, /today-button/);
-  assert.match(styles, /\.fast-entry-row\s*\{[\s\S]*?align-items:\s*stretch/);
-  assert.match(styles, /\.fast-entry-row button\s*\{[\s\S]*?width:\s*8\.4rem/);
-  assert.match(styles, /\.fast-entry-date-control\s*\{[\s\S]*?grid-template-columns:\s*auto minmax\(0, 1fr\)/);
+test("quick entry is available in the dialog without a duplicate Home form", () => {
+  assert.doesNotMatch(app, /quick-entry-primary|fast-entry-form|entryUnitsRef/);
+  assert.match(app, /<Dialog open=\{quickEntryOpen\}[\s\S]*?className="dialog-form quick-entry-dialog-form"/);
+  assert.match(app, /ref=\{quickEntryUnitsRef\}/);
 });
 
-test("quick entry stays compact on Home and opens from the center action", () => {
-  assert.match(app, /tab === "summary"/);
-  assert.doesNotMatch(app, /tab === "summary" \|\| tab === "entries"/);
+test("quick entry opens from the center action while calendar days open their details", () => {
   assert.match(app, /className="app-tabs grid h-auto w-full grid-cols-5/);
   assert.match(app, /className="app-quick-action"/);
   assert.match(app, /<Dialog open=\{quickEntryOpen\}/);
+  assert.match(app, /onClick=\{\(\) => openDayDetails\(day\.date\)\}/);
+  assert.match(app, /setMonthCalendarOpen\(false\); openDayDetails\(day\.date\)/);
   assert.match(styles, /\.app-quick-action > span\s*\{[\s\S]*?border-radius:\s*999px/);
+});
+
+test("calendar details expose bottle, expense and explicit no-trip actions with readable status", () => {
+  const card = app.split("<Dialog open={dayDetailsOpen}")[1]?.split("<Dialog open={quickEntryOpen}")[0];
+  assert.ok(card, "The selected date needs its own action dialog");
+  assert.match(card, /className="calendar-day-status"[\s\S]*?selectedEntry\.units/);
+  assert.match(card, /selectedEntry \? "Изменить бутыли" : "Записать бутыли"/);
+  assert.match(card, /disabled=\{selectedDowntime\?\.kind === "no_trip"\}/);
+  assert.match(card, /openDowntime\(selectedDowntime, entryDate\)/);
+  assert.match(card, /Без выезда — простой/);
+  assert.match(card, /action: "delete_downtime_day", date: entryDate/);
+  assert.match(card, /openExpense\(entryDate\)/);
+  assert.match(card, /Добавить расход за день/);
+  assert.match(styles, /\.calendar-day-actions button[\s\S]*?min-height:\s*2\.75rem/);
+  assert.match(app, /Пустая дата сама простоем не считается/);
 });
 
 test("theme control lives in settings and destructive edits can be undone", () => {
@@ -112,7 +122,7 @@ test("expense categories can be renamed, added, and deleted in the offline app",
 
 test("modern dashboard highlights missing days and protects month closing", () => {
   assert.match(app, /const missingMonthDays = useMemo/);
-  assert.match(app, /className="missing-days-callout"/);
+  assert.match(app, /className="missing-days-callout(?: [^"]*)?"/);
   assert.match(app, /open=\{closeMonthOpen\}/);
   assert.match(app, /Проверка перед закрытием/);
   assert.match(app, /month-close-checklist/);
@@ -130,7 +140,8 @@ test("expenses include category visualization and quick templates", () => {
   assert.match(app, /const expenseBreakdown = useMemo/);
   assert.match(app, /className="expense-donut"/);
   assert.match(app, /Топливо заказчика/);
-  assert.match(app, /openExpenseTemplate\("repair"\)/);
+  assert.match(app, /expenseShortcuts\.map/);
+  assert.match(app, /openExpenseTemplate\(shortcut\)/);
   assert.match(styles, /\.expense-donut\s*\{/);
 });
 

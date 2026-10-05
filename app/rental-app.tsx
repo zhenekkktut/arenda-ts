@@ -33,10 +33,12 @@ import {
   Wrench,
 } from "lucide-react";
 import { toast } from "sonner";
+import { calculateTaxYear, type TaxAdjustment, type TaxYearOptions } from "@/app/tax-calculation";
+import { normalizeExpenseShortcuts, validateExpenseShortcuts, type ExpenseShortcut } from "@/app/expense-shortcuts";
+import { linkedAsOfDate, missingEntryDates, nextInvoiceNumber } from "@/app/workflow-tools";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
@@ -65,18 +67,24 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Toaster } from "@/components/ui/sonner";
 import {
-  buildDocumentPackageHtml,
   buildReconciliationHtml,
   buildRentActHtml,
+  calculateFuelAdjustment,
   calculateRental,
+  calculateSettlement,
   defaultDocumentMeta,
   DEFAULT_DOCUMENT_SETTINGS,
   periodBounds,
+  reconciliationDateError,
+  reconciliationSummary,
+  sharedBottlePeriodParts,
   type DocumentCalculation,
   type DocumentMeta,
   type DocumentSettings,
   type Downtime,
 } from "@/app/document-tools";
+import { proposeInvoiceAllocation, validateInvoiceAllocation, type InvoiceBottleAllocation,
+  type InvoiceAllocationInput, type InvoiceAllocationProposal } from "@/app/invoice-allocation";
 
 type Entry = {
   id: number;
@@ -91,7 +99,13 @@ type Invoice = {
   invoiceNumber: string;
   invoiceDate: string;
   kind: "fixed" | "variable" | "other";
+  actNumber?: string;
   amountKopecks: number;
+  bottleStartDate?: string;
+  bottleEndDate?: string;
+  allocationVersion?: number;
+  bottleAllocations?: InvoiceBottleAllocation[];
+  rentalSupplementKopecks?: number;
   dueDate: string | null;
   note: string;
 };
@@ -99,6 +113,7 @@ type Invoice = {
 type Payment = {
   id: number;
   invoiceId: number;
+  groupId?: number;
   paymentDate: string;
   amountKopecks: number;
   method: "bank" | "cash";
@@ -127,7 +142,7 @@ type AuditEvent = {
   id: number;
   at: string;
   period: string;
-  entity: "entry" | "invoice" | "payment" | "expense" | "downtime" | "month" | "settings";
+  entity: "entry" | "invoice" | "payment" | "expense" | "downtime" | "month" | "settings" | "document";
   title: string;
   detail: string;
 };
@@ -156,8 +171,10 @@ type DashboardData = {
   entries: Entry[];
   invoices: Invoice[];
   payments: Payment[];
+  openingPayments?: Payment[];
   expenses: Expense[];
   expenseCategories?: ExpenseCategory[];
+  expenseShortcuts?: ExpenseShortcut[];
   closure: Closure | null;
   rules: {
     baseKopecks: number;
@@ -167,33 +184,58 @@ type DashboardData = {
   settings?: DocumentSettings;
   downtimes?: Downtime[];
   documentMeta?: DocumentMeta;
+  documentArchive?: ArchivedDocument[];
   auditLog?: AuditEvent[];
+  taxPayments?: Payment[];
+  taxAdjustments?: TaxAdjustment[];
+  taxOptions?: TaxYearOptions[];
+};
+
+type ArchivedDocument = {
+  id: number;
+  period: string;
+  kind: "act" | "reconciliation" | "daily" | "ledger";
+  number: string;
+  version: number;
+  generatedAt: string;
+  inputSnapshot: string;
+  html: string;
+  pdfUri?: string;
 };
 
 type OfflineStore = {
-  version: 5;
+  version: 6;
   entries: Entry[];
   invoices: Invoice[];
   payments: Payment[];
   expenses: Expense[];
   expenseCategories: ExpenseCategory[];
+  expenseShortcuts: ExpenseShortcut[];
   closures: Closure[];
   settings: DocumentSettings;
   downtimes: Downtime[];
   documents: DocumentMeta[];
+  documentArchive: ArchivedDocument[];
   auditLog: AuditEvent[];
+  taxAdjustments: TaxAdjustment[];
+  taxOptions: TaxYearOptions[];
 };
 
 type AndroidAppBridge = {
   copyText: (text: string) => void;
   saveBase64File: (base64: string, fileName: string, mimeType: string) => void;
   saveHtmlAsPdf: (html: string, fileName: string) => void;
+  saveArchivedHtmlAsPdf?: (html: string, fileName: string, archiveId: string) => void;
+  openArchivedPdf?: (uri: string) => void;
+  shareArchivedPdf?: (uri: string) => void;
   setTheme?: (theme: "light" | "dark") => void;
 };
 
 declare global {
   interface Window {
     AndroidApp?: AndroidAppBridge;
+    onArchivePdfSaved?: (id: string, uri: string) => void;
+    onArchivePdfSaveEnded?: (id: string, status: string) => void;
   }
 }
 
@@ -265,12 +307,23 @@ function normalizeExpenseCategories(value: unknown, allowEmpty = false): Expense
 
 const OFFLINE_STORAGE_KEY = "arenda-ts-offline-v1";
 const THEME_STORAGE_KEY = "arenda-ts-theme-v1";
+const MOTION_STORAGE_KEY = "arenda-ts-motion-v1";
 const LAST_BACKUP_STORAGE_KEY = "arenda-ts-last-backup-v1";
 const DOCUMENT_TEXT_FIELDS = [
-  "city", "contractNumber", "lessorFull", "lessorShort", "lessorSignerShort", "lessorInn",
+  "city", "contractNumber", "rentalStart", "rentalEnd", "lessorFull", "lessorShort", "lessorSignerShort", "lessorDative", "lessorInn",
   "lesseeFull", "lesseeShort", "lesseeInn", "lesseeKpp", "lesseeDirector",
-  "lesseeDirectorShort", "vehicleModel", "vehicleVin", "vehiclePlate",
+  "lesseeDirectorShort", "vehicleModel", "vehicleYear", "vehicleVin", "vehiclePlate", "vatLabel",
 ] as const satisfies readonly (keyof DocumentSettings)[];
+
+const DOCUMENT_FIELD_LABELS: Record<(typeof DOCUMENT_TEXT_FIELDS)[number], string> = {
+  city: "Город", contractNumber: "Номер договора", rentalStart: "Начало аренды", rentalEnd: "Конец аренды",
+  lessorFull: "Арендодатель — полное наименование", lessorShort: "Арендодатель — краткое наименование",
+  lessorSignerShort: "ФИО арендодателя для подписи", lessorDative: "Арендодатель в дательном падеже", lessorInn: "ИНН арендодателя",
+  lesseeFull: "Арендатор — полное наименование", lesseeShort: "Арендатор — краткое наименование",
+  lesseeInn: "ИНН арендатора", lesseeKpp: "КПП арендатора", lesseeDirector: "Директор в тексте «в лице…»",
+  lesseeDirectorShort: "ФИО директора для подписи", vehicleModel: "Автомобиль", vehicleYear: "Год автомобиля",
+  vehicleVin: "VIN автомобиля", vehiclePlate: "Госномер", vatLabel: "НДС",
+};
 
 function normalizeDocumentSettings(value: unknown): DocumentSettings {
   const supplied = value && typeof value === "object" ? value as Partial<DocumentSettings> : {};
@@ -308,17 +361,21 @@ function appendAudit(store: OfflineStore, event: Omit<AuditEvent, "id" | "at">) 
 
 function emptyOfflineStore(): OfflineStore {
   return {
-    version: 5,
+    version: 6,
     entries: [],
     invoices: [],
     payments: [],
     expenses: [],
     expenseCategories: normalizeExpenseCategories(undefined),
+    expenseShortcuts: normalizeExpenseShortcuts(undefined, normalizeExpenseCategories(undefined)),
     closures: [],
     settings: normalizeDocumentSettings(undefined),
     downtimes: [],
     documents: [],
+    documentArchive: [],
     auditLog: [],
+    taxAdjustments: [],
+    taxOptions: [],
   };
 }
 
@@ -340,17 +397,29 @@ function normalizeOfflineStore(value: unknown): OfflineStore {
     throw new Error("В резервной копии не хватает данных");
   }
   return {
-    version: 5,
+    version: 6,
     entries: store.entries,
     invoices: store.invoices,
     payments: store.payments,
     expenses: store.expenses,
     expenseCategories: normalizeExpenseCategories(store.expenseCategories),
+    expenseShortcuts: normalizeExpenseShortcuts(store.expenseShortcuts, normalizeExpenseCategories(store.expenseCategories)),
     closures: store.closures,
     settings: normalizeDocumentSettings(store.settings),
     downtimes: Array.isArray(store.downtimes) ? store.downtimes : [],
     documents: Array.isArray(store.documents) ? store.documents : [],
+    documentArchive: Array.isArray(store.documentArchive) ? store.documentArchive : [],
     auditLog: Array.isArray(store.auditLog) ? store.auditLog.slice(0, 300) : [],
+    taxAdjustments: Array.isArray(store.taxAdjustments) ? store.taxAdjustments.filter((row) =>
+      row && Number.isSafeInteger(row.id) && validIsoDate(row.date) &&
+      Number.isSafeInteger(row.amountKopecks) && row.amountKopecks > 0 &&
+      (row.kind === "income" || row.kind === "tax_paid")
+    ) : [],
+    taxOptions: Array.isArray(store.taxOptions) ? store.taxOptions.filter((row) =>
+      row && Number.isInteger(row.year) && row.year >= 2020 && row.year <= 2100 &&
+      Number.isSafeInteger(row.deductionKopecks) && row.deductionKopecks >= 0 &&
+      typeof row.hasWorkers === "boolean"
+    ) : [],
   };
 }
 
@@ -378,7 +447,21 @@ function validIsoDate(value: unknown): value is string {
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
-function offlineDashboard(period: string): DashboardData {
+function automaticOpeningBalance(store: OfflineStore, period: string) {
+  let balance = 0;
+  for (let cursor = store.settings.rentalStart.slice(0, 7); cursor < period;) {
+    const gross = calculateRental(cursor, store.entries, store.downtimes, store.settings);
+    balance += calculateFuelAdjustment(cursor, gross, store.expenses).calculation.totalKopecks;
+    const [year, month] = cursor.split("-").map(Number);
+    cursor = `${year + (month === 12 ? 1 : 0)}-${String(month === 12 ? 1 : month + 1).padStart(2, "0")}`;
+  }
+  const priorInvoiceIds = new Set(store.invoices.filter((i) => i.period < period).map((i) => i.id));
+  balance -= store.payments.filter((p) => priorInvoiceIds.has(p.invoiceId) && p.paymentDate < `${period}-01`)
+    .reduce((sum, p) => sum + p.amountKopecks, 0);
+  return balance;
+}
+
+export function offlineDashboard(period: string): DashboardData {
   const store = readOfflineStore();
   const from = `${period}-01`;
   const to = `${period}-31`;
@@ -392,21 +475,27 @@ function offlineDashboard(period: string): DashboardData {
   const payments = store.payments
     .filter((payment) => invoiceIds.has(payment.invoiceId))
     .sort((a, b) => b.paymentDate.localeCompare(a.paymentDate) || b.id - a.id);
+  const priorInvoiceIds = new Set(store.invoices.filter((invoice) => invoice.period < period).map((invoice) => invoice.id));
+  const openingPayments = store.payments.filter((payment) => priorInvoiceIds.has(payment.invoiceId) && payment.paymentDate >= from);
   const expenses = store.expenses
     .filter((expense) => expense.expenseDate >= from && expense.expenseDate <= to)
     .sort((a, b) => b.expenseDate.localeCompare(a.expenseDate) || b.id - a.id);
   const downtimes = store.downtimes
     .filter((downtime) => downtime.startDate <= to && downtime.endDate >= from)
     .sort((a, b) => b.startDate.localeCompare(a.startDate) || b.id - a.id);
-  const documentMeta = store.documents.find((document) => document.period === period)
-    ?? defaultDocumentMeta(period, store.documents.length + 1, localIsoDate());
+  const savedMeta = store.documents.find((document) => document.period === period);
+  const documentMeta = { ...(savedMeta ?? defaultDocumentMeta(period, store.documents.length + 1, localIsoDate())),
+    openingBalanceKopecks: savedMeta && Number.isSafeInteger(savedMeta.openingBalanceKopecks)
+      ? savedMeta.openingBalanceKopecks : automaticOpeningBalance(store, period) };
 
   return {
     entries,
     invoices,
     payments,
+    openingPayments,
     expenses,
     expenseCategories: store.expenseCategories,
+    expenseShortcuts: store.expenseShortcuts,
     closure: store.closures.find((closure) => closure.period === period) ?? null,
     rules: {
       baseKopecks: store.settings.baseKopecks,
@@ -416,7 +505,11 @@ function offlineDashboard(period: string): DashboardData {
     settings: store.settings,
     downtimes,
     documentMeta,
+    documentArchive: store.documentArchive.filter((document) => document.period === period).sort((a, b) => b.id - a.id),
     auditLog: store.auditLog.filter((event) => event.period === period).slice(0, 100),
+    taxPayments: store.payments,
+    taxAdjustments: store.taxAdjustments,
+    taxOptions: store.taxOptions,
   };
 }
 
@@ -430,8 +523,9 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
     if (!validIsoDate(entryDate) || !Number.isSafeInteger(units) || units < 0) {
       throw new Error("Проверьте дату и количество");
     }
-    if (store.closures.some((closure) => closure.period === entryDate.slice(0, 7))) {
-      throw new Error("Месяц закрыт. Сначала откройте его заново.");
+    if (units > 0 && store.downtimes.some((day) => day.kind === "no_trip" &&
+      day.startDate <= entryDate && day.endDate >= entryDate)) {
+      throw new Error("Этот день отмечен без выезда. Сначала снимите простой за день, затем внесите бутыли");
     }
     const note = typeof payload.note === "string" ? payload.note.trim().slice(0, 300) : "";
     const existing = store.entries.find((entry) => entry.entryDate === entryDate);
@@ -468,8 +562,9 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
       if (!validIsoDate(entryDate) || !Number.isSafeInteger(units) || units < 0) {
         throw new Error("В файле есть неверная дата или количество");
       }
-      if (store.closures.some((closure) => closure.period === entryDate.slice(0, 7))) {
-        throw new Error(`Нельзя изменить закрытый месяц ${entryDate.slice(0, 7)}`);
+      if (units > 0 && store.downtimes.some((day) => day.kind === "no_trip" &&
+        day.startDate <= entryDate && day.endDate >= entryDate)) {
+        throw new Error(`За ${dateLabel(entryDate)} отмечен день без выезда. Снимите простой перед импортом бутылей`);
       }
       const note = typeof row.note === "string" ? row.note.trim().slice(0, 300) : "";
       importedPeriod ||= entryDate.slice(0, 7);
@@ -492,9 +587,6 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
     const id = Number(payload.id);
     const entry = store.entries.find((row) => row.id === id);
     if (!entry) throw new Error("Запись не найдена");
-    if (store.closures.some((closure) => closure.period === entry.entryDate.slice(0, 7))) {
-      throw new Error("Месяц закрыт");
-    }
     store.entries = store.entries.filter((row) => row.id !== id);
     appendAudit(store, {
       period: entry.entryDate.slice(0, 7),
@@ -520,6 +612,37 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
     const editId = action === "update_invoice" ? Number(payload.id) : null;
     const previousInvoice = editId === null ? null : store.invoices.find((row) => row.id === editId) ?? null;
     if (editId !== null && !store.invoices.some((row) => row.id === editId)) throw new Error("Запись не найдена");
+    let bottleStartDate = typeof payload.bottleStartDate === "string" ? payload.bottleStartDate : "";
+    let bottleEndDate = typeof payload.bottleEndDate === "string" ? payload.bottleEndDate : "";
+    const usesAllocation = payload.allocationVersion !== undefined || payload.bottleAllocations !== undefined || payload.rentalSupplementKopecks !== undefined;
+    let allocation: ReturnType<typeof validateInvoiceAllocation> | undefined;
+    if (usesAllocation) {
+      const raw = calculateRental(payload.period, store.entries, store.downtimes, store.settings);
+      const settlement = calculateSettlement(payload.period, raw, store.invoices, store.expenses);
+      allocation = validateInvoiceAllocation({
+        period: payload.period, invoiceDate: payload.invoiceDate, amountKopecks,
+        kind: payload.kind as Invoice["kind"], entries: store.entries, invoices: store.invoices,
+        settings: store.settings, fixedTargetKopecks: settlement.fixedTargetKopecks,
+        netRentKopecks: settlement.netRentKopecks, excludeInvoiceId: editId ?? undefined,
+        allowRentalSupplement: localIsoDate() >= periodBounds(payload.period).end,
+      }, payload);
+      bottleStartDate = allocation.bottleAllocations[0]?.date ?? "";
+      bottleEndDate = allocation.bottleAllocations.at(-1)?.date ?? "";
+    } else if (previousInvoice?.allocationVersion === 1) {
+      throw new Error("Для изменения этого счёта подтвердите распределение суммы по датам");
+    }
+    if ((bottleStartDate || bottleEndDate) &&
+        (!validIsoDate(bottleStartDate) || !validIsoDate(bottleEndDate) ||
+          bottleStartDate > bottleEndDate || bottleStartDate.slice(0, 7) !== payload.period ||
+          bottleEndDate.slice(0, 7) !== payload.period)) {
+      throw new Error("Укажите даты бутылей внутри выбранного месяца");
+    }
+    if (!usesAllocation && bottleStartDate && store.invoices.some((invoice) => invoice.id !== editId &&
+      invoice.period === payload.period && invoice.bottleStartDate && invoice.bottleEndDate &&
+      invoice.bottleStartDate <= bottleEndDate && invoice.bottleEndDate >= bottleStartDate &&
+      !sharedBottlePeriodParts(invoice, { kind: String(payload.kind), bottleStartDate, bottleEndDate }))) {
+      throw new Error("Периоды бутылей по счетам не должны пересекаться");
+    }
     const recordId = editId ?? nextId(store.invoices);
     if (editId !== null) store.invoices = store.invoices.filter((row) => row.id !== editId);
     store.invoices.push({
@@ -528,7 +651,10 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
       invoiceNumber: payload.invoiceNumber.trim().slice(0, 60),
       invoiceDate: payload.invoiceDate,
       kind: payload.kind as Invoice["kind"],
+      actNumber: String(payload.actNumber ?? "").trim().slice(0, 40),
       amountKopecks,
+      ...(bottleStartDate ? { bottleStartDate, bottleEndDate } : {}),
+      ...(allocation ?? {}),
       dueDate,
       note: typeof payload.note === "string" ? payload.note.trim().slice(0, 300) : "",
     });
@@ -574,6 +700,17 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
     const restoredId = store.invoices.some((row) => row.id === invoice.id)
       ? nextId(store.invoices)
       : invoice.id;
+    if (invoice.allocationVersion !== undefined) {
+      const raw = calculateRental(invoice.period, store.entries, store.downtimes, store.settings);
+      const settlement = calculateSettlement(invoice.period, raw, store.invoices, store.expenses);
+      validateInvoiceAllocation({
+        period: invoice.period, invoiceDate: invoice.invoiceDate, amountKopecks: invoice.amountKopecks,
+        kind: invoice.kind, entries: store.entries,
+        invoices: [...store.invoices, { ...invoice, id: restoredId }], excludeInvoiceId: restoredId,
+        settings: store.settings, fixedTargetKopecks: settlement.fixedTargetKopecks,
+        netRentKopecks: settlement.netRentKopecks, allowRentalSupplement: localIsoDate() >= periodBounds(invoice.period).end,
+      }, invoice);
+    }
     store.invoices.push({ ...invoice, id: restoredId });
     for (const payment of payments) {
       store.payments.push({
@@ -587,6 +724,31 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
       entity: "invoice",
       title: `Восстановлен счёт №${invoice.invoiceNumber}`,
       detail: `${money(invoice.amountKopecks)} · ${number(payments.length)} оплат`,
+    });
+  } else if (action === "create_payment_split") {
+    const allocations = payload.allocations as { invoiceId: number; amountKopecks: number }[];
+    const amountKopecks = Number(payload.amountKopecks);
+    if (!Array.isArray(allocations) || allocations.length < 2 || !validIsoDate(payload.paymentDate) ||
+      !["bank", "cash"].includes(String(payload.method)) ||
+      !Number.isSafeInteger(amountKopecks) || amountKopecks <= 0 ||
+      allocations.some((row) => !store.invoices.some((i) => i.id === row.invoiceId) ||
+        !Number.isSafeInteger(row.amountKopecks) || row.amountKopecks <= 0) ||
+      new Set(allocations.map((row) => row.invoiceId)).size !== allocations.length ||
+      allocations.reduce((sum, row) => sum + row.amountKopecks, 0) !== amountKopecks) {
+      throw new Error("Проверьте распределение платежа по счетам");
+    }
+    const groupId = Date.now();
+    for (const row of allocations) {
+      store.payments.push({ id: nextId(store.payments), groupId, invoiceId: row.invoiceId,
+        paymentDate: String(payload.paymentDate), amountKopecks: row.amountKopecks,
+        method: payload.method as Payment["method"],
+        documentNumber: String(payload.documentNumber ?? "").trim().slice(0, 80),
+        note: String(payload.note ?? "").trim().slice(0, 300),
+      });
+    }
+    appendAudit(store, { period: store.invoices.find((i) => i.id === allocations[0].invoiceId)?.period ?? "",
+      entity: "payment", title: "Платёж распределён по счетам",
+      detail: `${money(amountKopecks)} · ${allocations.length} счёта`,
     });
   } else if (action === "create_payment" || action === "update_payment") {
     const invoiceId = Number(payload.invoiceId);
@@ -697,12 +859,17 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
         : { ...expense, category: fallbackCategory.id, payer: "self" }
     ));
     store.expenseCategories = categories;
+    store.expenseShortcuts = normalizeExpenseShortcuts(store.expenseShortcuts, categories);
     appendAudit(store, {
       period: localIsoDate().slice(0, 7),
       entity: "settings",
       title: "Изменены категории расходов",
       detail: `${number(categories.length)} категорий`,
     });
+  } else if (action === "save_expense_shortcuts") {
+    store.expenseShortcuts = validateExpenseShortcuts(payload.shortcuts, store.expenseCategories);
+    appendAudit(store, { period: localIsoDate().slice(0, 7), entity: "settings",
+      title: "Изменены быстрые кнопки расходов", detail: `${number(store.expenseShortcuts.length)} кнопок` });
   } else if (action === "save_settings") {
     const value = payload.settings;
     if (!value || typeof value !== "object") throw new Error("Проверьте настройки договора");
@@ -712,6 +879,8 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
     const rateKopecks = Number(settings.rateKopecks);
     if (
       !validIsoDate(settings.contractDate) ||
+      !validIsoDate(settings.rentalStart) || !validIsoDate(settings.rentalEnd) ||
+      settings.rentalStart > settings.rentalEnd ||
       !Number.isSafeInteger(baseKopecks) || baseKopecks <= 0 ||
       !Number.isSafeInteger(includedUnits) || includedUnits < 0 ||
       !Number.isSafeInteger(rateKopecks) || rateKopecks < 0
@@ -719,16 +888,19 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
       throw new Error("Проверьте дату договора и условия расчёта");
     }
     for (const field of DOCUMENT_TEXT_FIELDS) {
-      if (typeof settings[field] !== "string" || !String(settings[field]).trim()) {
+      if (typeof settings[field] !== "string" || (field !== "lessorDative" && !String(settings[field]).trim())) {
         throw new Error("Заполните все реквизиты договора");
       }
     }
+    const shortcuts = payload.shortcuts === undefined ? store.expenseShortcuts
+      : validateExpenseShortcuts(payload.shortcuts, store.expenseCategories);
     store.settings = {
       ...(settings as DocumentSettings),
       baseKopecks,
       includedUnits,
       rateKopecks,
     };
+    store.expenseShortcuts = shortcuts;
     appendAudit(store, {
       period: localIsoDate().slice(0, 7),
       entity: "settings",
@@ -754,24 +926,53 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
       documentDate: String(payload.documentDate),
       basis: String(payload.basis ?? "").trim().slice(0, 400),
       openingBalanceKopecks,
+      asOfDate: validIsoDate(payload.asOfDate) ? String(payload.asOfDate) : String(payload.documentDate),
+      adjustments: String(payload.adjustments ?? "").trim().slice(0, 300),
     };
     store.documents = [...store.documents.filter((item) => item.period !== period), document];
+  } else if (action === "archive_document") {
+    const document = payload.document as ArchivedDocument;
+    if (!document || !Number.isSafeInteger(document.id) || document.id <= 0 || !/^\d{4}-\d{2}$/.test(document.period) ||
+      !["act", "reconciliation", "daily", "ledger"].includes(document.kind) ||
+      typeof document.html !== "string" || !document.html.startsWith("<!doctype html>")) {
+      throw new Error("Неверные данные документа");
+    }
+    if (store.documentArchive.some((item) => item.id === document.id)) throw new Error("Документ уже существует");
+    store.documentArchive.push(document);
+  } else if (action === "delete_document") {
+    const id = Number(payload.id);
+    if (!Number.isSafeInteger(id) || id <= 0) throw new Error("Неверный номер документа");
+    const document = store.documentArchive.find((item) => item.id === id);
+    if (!document) throw new Error("Документ не найден");
+    store.documentArchive = store.documentArchive.filter((item) => item.id !== id);
+    appendAudit(store, { period: document.period, entity: "document", title: "Документ удалён из архива",
+      detail: `№${document.number} · версия ${document.version}` });
+  } else if (action === "link_document_pdf") {
+    const document = store.documentArchive.find((item) => item.id === Number(payload.id));
+    if (document && typeof payload.uri === "string" && payload.uri.startsWith("content://")) {
+      document.pdfUri = payload.uri;
+    }
   } else if (action === "create_downtime" || action === "update_downtime") {
     const startDate = String(payload.startDate ?? "");
     const endDate = String(payload.endDate ?? "");
     if (!validIsoDate(startDate) || !validIsoDate(endDate) || startDate > endDate) {
       throw new Error("Проверьте даты простоя");
     }
+    const kind = payload.kind === "no_trip" ? "no_trip" : "technical";
+    if (kind === "no_trip" && (startDate < store.settings.rentalStart || endDate > store.settings.rentalEnd || endDate > localIsoDate())) {
+      throw new Error("День без выезда должен быть в сроке аренды и не позже сегодняшнего дня");
+    }
+    if (kind === "no_trip" && store.entries.some((entry) => entry.entryDate >= startDate && entry.entryDate <= endDate && entry.units > 0)) {
+      throw new Error("В этом периоде есть развезённые бутыли. Проверьте записи или выберите дни, когда машина не выезжала");
+    }
+    if (kind !== "no_trip" && (!String(payload.reason ?? "").trim() || !String(payload.basis ?? "").trim())) {
+      throw new Error("Укажите причину и подтверждение технического простоя");
+    }
     const start = new Date(`${startDate}T12:00:00Z`);
     const end = new Date(`${endDate}T12:00:00Z`);
     if ((end.getTime() - start.getTime()) / 86_400_000 > 366) {
       throw new Error("Один период простоя не может быть длиннее года");
     }
-    const locked = store.closures.some((closure) => {
-      const bounds = periodBounds(closure.period);
-      return startDate <= bounds.end && endDate >= bounds.start;
-    });
-    if (locked) throw new Error("Простой затрагивает закрытый месяц");
     const editId = action === "update_downtime" ? Number(payload.id) : null;
     if (editId !== null && !store.downtimes.some((row) => row.id === editId)) {
       throw new Error("Период простоя не найден");
@@ -780,9 +981,11 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
     store.downtimes = store.downtimes.filter((row) => row.id !== editId);
     store.downtimes.push({
       id: recordId,
+      kind,
       startDate,
       endDate,
-      reason: String(payload.reason ?? "Простой автомобиля").trim().slice(0, 160),
+      reason: String(payload.reason || (kind === "no_trip" ? "Без выезда" : "")).trim().slice(0, 160),
+      basis: String(payload.basis || (kind === "no_trip" ? "Отметка в календаре" : "")).trim().slice(0, 300),
       note: String(payload.note ?? "").trim().slice(0, 300),
     });
     appendAudit(store, {
@@ -791,15 +994,24 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
       title: editId === null ? "Добавлен простой" : "Изменён простой",
       detail: startDate === endDate ? dateLabel(startDate) : `${dateLabel(startDate)} — ${dateLabel(endDate)}`,
     });
+  } else if (action === "delete_downtime_day") {
+    const date = payload.date;
+    if (!validIsoDate(date)) throw new Error("Проверьте дату простоя");
+    const covering = store.downtimes.filter((day) => day.kind === "no_trip" && day.startDate <= date && day.endDate >= date);
+    if (!covering.length) throw new Error("День без выезда не найден");
+    let id = nextId(store.downtimes);
+    store.downtimes = store.downtimes.flatMap((day) => {
+      if (!covering.includes(day)) return [day];
+      const parts: Downtime[] = [];
+      if (day.startDate < date) parts.push({ ...day, endDate: addIsoDays(date, -1) });
+      if (day.endDate > date) parts.push({ ...day, id: parts.length ? id++ : day.id, startDate: addIsoDays(date, 1) });
+      return parts;
+    });
+    appendAudit(store, { period: date.slice(0, 7), entity: "downtime", title: "Снят день без выезда", detail: dateLabel(date) });
   } else if (action === "delete_downtime") {
     const id = Number(payload.id);
     const downtime = store.downtimes.find((row) => row.id === id);
     if (!downtime) throw new Error("Период простоя не найден");
-    const locked = store.closures.some((closure) => {
-      const bounds = periodBounds(closure.period);
-      return downtime.startDate <= bounds.end && downtime.endDate >= bounds.start;
-    });
-    if (locked) throw new Error("Простой относится к закрытому месяцу");
     store.downtimes = store.downtimes.filter((row) => row.id !== id);
     appendAudit(store, {
       period: downtime.startDate.slice(0, 7),
@@ -834,6 +1046,25 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
       title: `Открыт ${monthLabel(period).toLowerCase()}`,
       detail: "Редактирование снова доступно",
     });
+  } else if (action === "save_tax_adjustment") {
+    const date = String(payload.date ?? "");
+    const amountKopecks = Number(payload.amountKopecks);
+    const kind = payload.kind;
+    if (!validIsoDate(date) || !Number.isSafeInteger(amountKopecks) || amountKopecks <= 0 ||
+      (kind !== "income" && kind !== "tax_paid")) throw new Error("Проверьте налоговую запись");
+    const id = Number(payload.id) || nextId(store.taxAdjustments);
+    store.taxAdjustments = store.taxAdjustments.filter((row) => row.id !== id);
+    store.taxAdjustments.push({ id, date, amountKopecks, kind, note: String(payload.note ?? "").trim().slice(0, 120) });
+  } else if (action === "delete_tax_adjustment") {
+    store.taxAdjustments = store.taxAdjustments.filter((row) => row.id !== Number(payload.id));
+  } else if (action === "save_tax_options") {
+    const year = Number(payload.year);
+    const deductionKopecks = Number(payload.deductionKopecks);
+    if (!Number.isInteger(year) || year < 2020 || year > 2100 ||
+      !Number.isSafeInteger(deductionKopecks) || deductionKopecks < 0 ||
+      typeof payload.hasWorkers !== "boolean") throw new Error("Проверьте налоговые настройки");
+    store.taxOptions = store.taxOptions.filter((row) => row.year !== year);
+    store.taxOptions.push({ year, deductionKopecks, hasWorkers: payload.hasWorkers });
   } else {
     throw new Error("Неизвестное действие");
   }
@@ -956,7 +1187,9 @@ function invoiceLine(invoice: Invoice, settings: DocumentSettings) {
       : invoice.kind === "variable"
         ? "Переменная часть арендной платы"
         : "Арендная плата";
-  return `${part} за ${documentPeriod(invoice.period)} по договору аренды транспортного средства без экипажа № ${settings.contractNumber} от ${dateLabel(settings.contractDate)}, автомобиль ${settings.vehicleModel}, VIN ${settings.vehicleVin}.`;
+  const days = invoice.bottleStartDate && invoice.bottleEndDate
+    ? `, бутыли за ${dateLabel(invoice.bottleStartDate)}–${dateLabel(invoice.bottleEndDate)}` : "";
+  return `${part} за ${documentPeriod(invoice.period)}${days} по договору аренды транспортного средства без экипажа № ${settings.contractNumber} от ${dateLabel(settings.contractDate)}, автомобиль ${settings.vehicleModel}, VIN ${settings.vehicleVin}.`;
 }
 
 function paymentPurpose(invoice: Invoice, settings: DocumentSettings) {
@@ -1077,6 +1310,27 @@ function normalizedHeader(value: unknown) {
     .replace(/[^a-zа-я0-9]/g, "");
 }
 
+function DocumentPreviewPages({ html }: { html: string }) {
+  const frameRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(794);
+  const pageCount = Math.max(1, (html.match(/<section class="page">/g) ?? []).length);
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!frame) return;
+    const resize = () => setWidth(Math.min(794, frame.clientWidth));
+    resize();
+    const observer = new ResizeObserver(resize);
+    observer.observe(frame);
+    return () => observer.disconnect();
+  }, []);
+  const scale = width / 794;
+  return <div className="document-preview-frame" ref={frameRef}>
+    <div className="document-preview-paper" style={{ width, height: 1123 * pageCount * scale }}>
+      <iframe title="Предпросмотр PDF" srcDoc={html} sandbox="" style={{ height: 1123 * pageCount, transform: `scale(${scale})` }} />
+    </div>
+  </div>;
+}
+
 function FieldLabel({ children }: { children: React.ReactNode }) {
   return <span className="field-label">{children}</span>;
 }
@@ -1122,13 +1376,25 @@ export default function RentalApp() {
   const [quickEntryOpen, setQuickEntryOpen] = useState(false);
   const [closeMonthOpen, setCloseMonthOpen] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
+  const [entryHistoryOpen, setEntryHistoryOpen] = useState(false);
+  const [monthCalendarOpen, setMonthCalendarOpen] = useState(false);
+  const [dayDetailsOpen, setDayDetailsOpen] = useState(false);
+  const [entrySavedMessage, setEntrySavedMessage] = useState("");
+  const [pdfSavingId, setPdfSavingId] = useState<number | null>(null);
+  const [taxOpen, setTaxOpen] = useState(false);
+  const [taxKind, setTaxKind] = useState<TaxAdjustment["kind"]>("income");
+  const [taxDate, setTaxDate] = useState(today);
+  const [taxAmount, setTaxAmount] = useState("");
+  const [taxNote, setTaxNote] = useState("");
+  const [taxDeduction, setTaxDeduction] = useState("0");
+  const [taxHasWorkers, setTaxHasWorkers] = useState(false);
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [themeMode, setThemeMode] = useState<ThemeMode>("system");
+  const [motionEnabled, setMotionEnabled] = useState(true);
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
 
   const [entryDate, setEntryDate] = useState(today);
-  const entryUnitsRef = useRef<HTMLInputElement>(null);
   const quickEntryUnitsRef = useRef<HTMLInputElement>(null);
   const [editingEntry, setEditingEntry] = useState<Entry | null>(null);
   const [editUnits, setEditUnits] = useState("");
@@ -1147,8 +1413,13 @@ export default function RentalApp() {
   const [invoiceOpen, setInvoiceOpen] = useState(false);
   const [invoiceKind, setInvoiceKind] = useState<Invoice["kind"]>("fixed");
   const [invoiceNumber, setInvoiceNumber] = useState("");
+  const [invoiceActNumber, setInvoiceActNumber] = useState("");
   const [invoiceDate, setInvoiceDate] = useState(today);
   const [invoiceDueDate, setInvoiceDueDate] = useState("");
+  const [invoiceStartDate, setInvoiceStartDate] = useState(today);
+  const [invoiceEndDate, setInvoiceEndDate] = useState(today);
+  const [invoicePeriodAutomatic, setInvoicePeriodAutomatic] = useState(true);
+  const [invoiceReplan, setInvoiceReplan] = useState(true);
   const [invoiceAmount, setInvoiceAmount] = useState("80000");
   const [invoiceNote, setInvoiceNote] = useState("");
 
@@ -1157,6 +1428,7 @@ export default function RentalApp() {
   const [paymentInvoiceId, setPaymentInvoiceId] = useState<number | null>(null);
   const [paymentDate, setPaymentDate] = useState(today);
   const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentSplits, setPaymentSplits] = useState<Record<number, string> | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<Payment["method"]>("bank");
   const [paymentDocument, setPaymentDocument] = useState("");
   const [paymentNote, setPaymentNote] = useState("");
@@ -1166,6 +1438,7 @@ export default function RentalApp() {
   const [expenseOpen, setExpenseOpen] = useState(false);
   const [expenseCategoriesOpen, setExpenseCategoriesOpen] = useState(false);
   const [expenseCategoriesDraft, setExpenseCategoriesDraft] = useState<ExpenseCategory[]>(() => normalizeExpenseCategories(undefined));
+  const [expenseShortcutsDraft, setExpenseShortcutsDraft] = useState<ExpenseShortcut[]>([]);
   const [expenseDate, setExpenseDate] = useState(today);
   const [expenseCategory, setExpenseCategory] = useState("base_lease");
   const [expenseAmount, setExpenseAmount] = useState("20000");
@@ -1174,18 +1447,31 @@ export default function RentalApp() {
   const [expenseNote, setExpenseNote] = useState("");
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [documentsOpen, setDocumentsOpen] = useState(false);
+  const [monthToolsOpen, setMonthToolsOpen] = useState(false);
+  const [requisitesOpen, setRequisitesOpen] = useState(false);
   const [settingsDraft, setSettingsDraft] = useState<DocumentSettings>({ ...DEFAULT_DOCUMENT_SETTINGS });
   const [actNumber, setActNumber] = useState("1");
-  const [reconciliationNumber, setReconciliationNumber] = useState("1");
   const [documentDate, setDocumentDate] = useState(today);
-  const [documentBasis, setDocumentBasis] = useState("");
-  const [openingBalance, setOpeningBalance] = useState("0");
+  const [asOfDate, setAsOfDate] = useState(today);
+  const [documentAdjustments, setDocumentAdjustments] = useState("");
+  const [documentOpeningBalance, setDocumentOpeningBalance] = useState("0");
+  const [documentDraftRevision, setDocumentDraftRevision] = useState(0);
+  const documentWorkspaceRef = useRef<HTMLElement>(null);
+  const [editingArchivedId, setEditingArchivedId] = useState<number | null>(null);
 
   const [downtimeListOpen, setDowntimeListOpen] = useState(false);
   const [downtimeOpen, setDowntimeOpen] = useState(false);
   const [editingDowntimeId, setEditingDowntimeId] = useState<number | null>(null);
   const [downtimeStart, setDowntimeStart] = useState(today);
   const [downtimeEnd, setDowntimeEnd] = useState(today);
+  const [downtimeReason, setDowntimeReason] = useState("");
+  const [downtimeBasis, setDowntimeBasis] = useState("");
+  const [downtimeNote, setDowntimeNote] = useState("");
+  const [downtimeKind, setDowntimeKind] = useState<"no_trip" | "technical">("no_trip");
+  const [documentPreview, setDocumentPreview] = useState<{
+    kind: ArchivedDocument["kind"]; html: string; number: string; meta: DocumentMeta; inputSnapshot: string;
+  } | null>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -1237,8 +1523,19 @@ export default function RentalApp() {
     const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
     const nextMode: ThemeMode = savedTheme === "dark" || savedTheme === "light" ? savedTheme : "system";
     setThemeMode(nextMode);
+    setMotionEnabled(window.localStorage.getItem(MOTION_STORAGE_KEY) !== "off");
     setLastBackupAt(window.localStorage.getItem(LAST_BACKUP_STORAGE_KEY));
   }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.appMotion = motionEnabled ? "on" : "off";
+  }, [motionEnabled]);
+
+  useEffect(() => {
+    if (!entrySavedMessage) return;
+    const timer = window.setTimeout(() => setEntrySavedMessage(""), 2400);
+    return () => window.clearTimeout(timer);
+  }, [entrySavedMessage]);
 
   useEffect(() => {
     const media = window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -1253,15 +1550,74 @@ export default function RentalApp() {
   }, [themeMode]);
 
   useEffect(() => {
-    if (!data) return;
-    const meta = data.documentMeta ?? defaultDocumentMeta(month, 1, today);
-    setSettingsDraft({ ...(data.settings ?? DEFAULT_DOCUMENT_SETTINGS) });
+    if (data && !requisitesOpen) setSettingsDraft({ ...(data.settings ?? DEFAULT_DOCUMENT_SETTINGS) });
+  }, [data, requisitesOpen]);
+
+  // Reloading days, invoices or payments must keep an unsaved document draft.
+  const documentMetaSnapshot = data
+    ? JSON.stringify(data.documentMeta ?? defaultDocumentMeta(month, 1, today)) : null;
+  useEffect(() => {
+    if (!documentMetaSnapshot) return;
+    const meta = JSON.parse(documentMetaSnapshot) as DocumentMeta;
     setActNumber(meta.actNumber);
-    setReconciliationNumber(meta.reconciliationNumber);
     setDocumentDate(meta.documentDate);
-    setDocumentBasis(meta.basis);
-    setOpeningBalance(String(meta.openingBalanceKopecks / 100));
-  }, [data, month, today]);
+    setAsOfDate(meta.asOfDate ?? meta.documentDate);
+    setDocumentAdjustments(meta.adjustments ?? "");
+    setDocumentOpeningBalance(String(meta.openingBalanceKopecks / 100));
+    setEditingArchivedId(null);
+  }, [documentMetaSnapshot, documentDraftRevision]);
+
+  useEffect(() => {
+    window.onArchivePdfSaved = (id, uri) => {
+      try {
+        saveOfflineAction({ action: "link_document_pdf", id: Number(id), uri });
+        setPdfSavingId((pending) => pending === Number(id) ? null : pending);
+        void loadData();
+      } catch { toast.error("PDF сохранён, но ссылка в архиве не обновилась"); }
+    };
+    window.onArchivePdfSaveEnded = (id, status) => {
+      setPdfSavingId((pending) => pending === Number(id) ? null : pending);
+      if (status === "saved") toast.success("PDF сохранён на телефоне");
+      if (status === "cancelled") toast.info("Сохранение PDF отменено. Документ остался в архиве");
+      if (status === "error") toast.error("PDF не сохранён. Документ остался в архиве — можно повторить сохранение");
+    };
+    return () => { delete window.onArchivePdfSaved; delete window.onArchivePdfSaveEnded; };
+  }, [loadData]);
+
+  const taxYear = Number(month.slice(0, 4));
+  const taxQuarter = Math.ceil(Number(month.slice(5, 7)) / 3);
+  const taxOptions = data?.taxOptions?.find((item) => item.year === taxYear)
+    ?? { year: taxYear, deductionKopecks: 0, hasWorkers: false };
+  const tax = calculateTaxYear(taxYear, taxQuarter, data?.taxPayments ?? [],
+    data?.taxAdjustments ?? [], taxOptions);
+
+  function openTax() {
+    setTaxDeduction(String(taxOptions.deductionKopecks / 100));
+    setTaxHasWorkers(taxOptions.hasWorkers);
+    setTaxDate(month === today.slice(0, 7) ? today : `${month}-01`);
+    setTaxKind("income");
+    setTaxAmount("");
+    setTaxNote("");
+    setTaxOpen(true);
+  }
+
+  async function saveTaxOptions(event: FormEvent) {
+    event.preventDefault();
+    const deductionKopecks = toSignedKopecks(taxDeduction);
+    if (deductionKopecks === null || deductionKopecks < 0) { toast.error("Проверьте сумму взносов"); return; }
+    await request({ action: "save_tax_options", year: taxYear, deductionKopecks, hasWorkers: taxHasWorkers }, "Расчёт налога обновлён");
+  }
+
+  async function saveTaxAdjustment(event: FormEvent) {
+    event.preventDefault();
+    const amountKopecks = toKopecks(taxAmount);
+    if (!amountKopecks || !validIsoDate(taxDate) || !taxDate.startsWith(String(taxYear))) {
+      toast.error("Проверьте сумму и дату в выбранном году"); return;
+    }
+    const ok = await request({ action: "save_tax_adjustment", date: taxDate,
+      amountKopecks, kind: taxKind, note: taxNote }, "Запись учтена");
+    if (ok) { setTaxAmount(""); setTaxNote(""); }
+  }
 
   useEffect(() => {
     if (!offlineMode || window.sessionStorage.getItem("arenda-ts-backup-reminder-shown")) return;
@@ -1278,6 +1634,31 @@ export default function RentalApp() {
     return () => window.clearTimeout(timer);
   }, [lastBackupAt, offlineMode]);
 
+  useEffect(() => {
+    if (!quickEntryOpen) return;
+    const viewport = window.visualViewport;
+    const root = document.documentElement;
+    const updateVisibleArea = () => {
+      const height = viewport?.height ?? window.innerHeight;
+      const bottom = Math.max(0, window.innerHeight - height - (viewport?.offsetTop ?? 0));
+      root.style.setProperty("--app-visible-height", `${Math.round(height)}px`);
+      root.style.setProperty("--app-keyboard-offset", `${Math.round(bottom)}px`);
+      root.dataset.entryKeyboardOpen = bottom > 100 ? "true" : "false";
+    };
+    updateVisibleArea();
+    viewport?.addEventListener("resize", updateVisibleArea);
+    viewport?.addEventListener("scroll", updateVisibleArea);
+    window.addEventListener("resize", updateVisibleArea);
+    return () => {
+      viewport?.removeEventListener("resize", updateVisibleArea);
+      viewport?.removeEventListener("scroll", updateVisibleArea);
+      window.removeEventListener("resize", updateVisibleArea);
+      root.style.removeProperty("--app-visible-height");
+      root.style.removeProperty("--app-keyboard-offset");
+      delete root.dataset.entryKeyboardOpen;
+    };
+  }, [quickEntryOpen]);
+
   const request = useCallback(
     async (payload: Record<string, unknown>, success: string) => {
       setBusy(true);
@@ -1285,6 +1666,10 @@ export default function RentalApp() {
         if (isOfflineRuntime()) {
           saveOfflineAction(payload);
           if (success) toast.success(success);
+          if (["save_entry", "delete_entry", "import_entries", "create_downtime", "update_downtime", "delete_downtime", "delete_downtime_day", "save_settings"].includes(String(payload.action)) &&
+            data?.documentArchive?.some((item) => item.kind === "act")) {
+            toast.warning("Исходные данные изменены после формирования акта-расчёта. Проверьте документ и создайте новую версию.");
+          }
           await loadData();
           return true;
         }
@@ -1305,7 +1690,7 @@ export default function RentalApp() {
         setBusy(false);
       }
     },
-    [loadData],
+    [loadData, data?.documentArchive],
   );
 
   function showDeletedWithUndo(message: string, restore: () => Promise<unknown>) {
@@ -1336,15 +1721,15 @@ export default function RentalApp() {
     documentSettings.vehicleModel,
     documentSettings.vehicleVin,
   ].every((value) => value.trim() && !value.includes("["));
+  const missingDocumentFields = DOCUMENT_TEXT_FIELDS.filter((field) =>
+    field !== "lessorDative" && !documentSettings[field].trim());
   const liveCalculation = calculateRental(
     month,
     data?.entries ?? [],
     data?.downtimes ?? [],
     documentSettings,
   );
-  // Закрытие месяца блокирует редактирование, но расчёт всегда строится по
-  // действующей договорной формуле. Так старые сохранённые итоги не сохраняют
-  // ошибочную логику после обновления приложения.
+  // Закрытие фиксирует проверку, но исходные записи можно исправить и выпустить новую версию документа.
   const calculation: DocumentCalculation = liveCalculation;
 
   const paidByInvoice = useMemo(() => {
@@ -1358,25 +1743,65 @@ export default function RentalApp() {
   const totalPaid = data?.payments.reduce((sum, payment) => sum + payment.amountKopecks, 0) ?? 0;
   const totalInvoiced = data?.invoices.reduce((sum, invoice) => sum + invoice.amountKopecks, 0) ?? 0;
   const totalExpenses = data?.expenses.reduce((sum, expense) => sum + expense.amountKopecks, 0) ?? 0;
-  const customerFuel = data?.expenses.filter((e) => e.category === "fuel" && e.payer === "customer").reduce((sum, e) => sum + e.amountKopecks, 0) ?? 0;
+  const settlement = calculateSettlement(month, calculation, data?.invoices ?? [], data?.expenses ?? []);
+  const customerFuel = settlement.customerFuelKopecks;
+  const fuelDeduction = settlement.fuelDeductionKopecks;
+  const actCalculation = settlement.calculation;
   const selfExpenses = totalExpenses - customerFuel;
-  const fixedInvoiced = data?.invoices.filter((invoice) => invoice.kind === "fixed").reduce((sum, invoice) => sum + invoice.amountKopecks, 0) ?? 0;
-  const variableInvoiced = data?.invoices.filter((invoice) => invoice.kind === "variable").reduce((sum, invoice) => sum + invoice.amountKopecks, 0) ?? 0;
-  const fixedTargetKopecks = Math.max(0, calculation.baseKopecks - customerFuel);
-  const fixedRemainingKopecks = Math.max(0, fixedTargetKopecks - fixedInvoiced);
-  const variableRemainingKopecks = Math.max(0, calculation.variableKopecks - variableInvoiced);
+  const { fixedTargetKopecks, variableTargetKopecks, fixedRemainingKopecks, variableRemainingKopecks } = settlement;
   const filteredExpenses = data?.expenses.filter((expense) => expenseFilter === "all" || expense.category === expenseFilter) ?? [];
   const filteredExpenseTotal = filteredExpenses.reduce((sum, expense) => sum + expense.amountKopecks, 0);
   const filteredCustomerFuel = filteredExpenses.filter((expense) => expense.category === "fuel" && expense.payer === "customer").reduce((sum, expense) => sum + expense.amountKopecks, 0);
   const filteredSelfFuel = filteredExpenses.filter((expense) => expense.category === "fuel" && expense.payer !== "customer").reduce((sum, expense) => sum + expense.amountKopecks, 0);
-  const netRent = Math.max(0, calculation.totalKopecks - customerFuel);
-  const remainingToInvoice = Math.max(0, netRent - totalInvoiced);
+  const netRent = settlement.netRentKopecks;
+  const remainingToInvoice = settlement.remainingToInvoiceKopecks;
+  const editingInvoice = data?.invoices.find((invoice) => invoice.id === editingInvoiceId);
+  const invoiceAllocationInput = useMemo<InvoiceAllocationInput>(() => ({ period: month, kind: invoiceKind,
+    invoiceDate, amountKopecks: toKopecks(invoiceAmount), entries: data?.entries ?? [], invoices: data?.invoices ?? [],
+    settings: documentSettings, fixedTargetKopecks, netRentKopecks: netRent,
+    excludeInvoiceId: editingInvoiceId ?? undefined, allowRentalSupplement: today >= periodBounds(month).end,
+    ...(!invoicePeriodAutomatic ? { startDate: invoiceStartDate, endDate: invoiceEndDate } : {}) }),
+    [month, invoiceKind, invoiceDate, invoiceAmount, data?.entries, data?.invoices, documentSettings,
+      fixedTargetKopecks, netRent, editingInvoiceId, today, invoicePeriodAutomatic, invoiceStartDate, invoiceEndDate]);
+  const invoiceAllocationState = useMemo(() => {
+    const proposal = proposeInvoiceAllocation(invoiceAllocationInput);
+    if (invoiceReplan || editingInvoice?.allocationVersion !== 1) return { proposal, error: "", preserving: false };
+    const candidate = { allocationVersion: 1, bottleAllocations: editingInvoice.bottleAllocations,
+      rentalSupplementKopecks: editingInvoice.rentalSupplementKopecks ?? 0 };
+    let error = "";
+    try { validateInvoiceAllocation(invoiceAllocationInput, candidate); }
+    catch (reason) { error = reason instanceof Error ? reason.message : "Проверьте сохранённую привязку суммы"; }
+    const saved = Array.isArray(editingInvoice.bottleAllocations)
+      ? editingInvoice.bottleAllocations.filter((row) => row && typeof row.date === "string" && Number.isSafeInteger(row.amountKopecks) && row.amountKopecks > 0) : [];
+    const actualDays = proposal.days.map((day) => {
+      const amountKopecks = saved.find((row) => row.date === day.date)?.amountKopecks ?? 0;
+      return { ...day, amountKopecks, remainingKopecks: Math.max(0, day.grossKopecks - day.alreadyAllocatedKopecks - amountKopecks) };
+    });
+    const last = saved.at(-1);
+    const preserved: InvoiceAllocationProposal = { ...proposal, bottleAllocations: saved,
+      rentalSupplementKopecks: candidate.rentalSupplementKopecks,
+      coveredKopecks: saved.reduce((sum, row) => sum + row.amountKopecks, candidate.rentalSupplementKopecks),
+      uncoveredKopecks: error ? proposal.uncoveredKopecks : 0,
+      startDate: saved[0]?.date ?? "", endDate: last?.date ?? "",
+      lastDayRemainingKopecks: actualDays.find((day) => day.date === last?.date)?.remainingKopecks ?? 0,
+      ready: !error, days: actualDays };
+    return { proposal: preserved, error, preserving: true };
+  }, [invoiceAllocationInput, invoiceReplan, editingInvoice]);
+  const invoiceAllocation = invoiceAllocationState.proposal;
+  const invoiceUsesAllocation = invoiceReplan || editingInvoice?.allocationVersion === 1;
+  const invoiceReviewNumbers = new Set([...invoiceAllocation.legacyInvoiceNumbers, ...invoiceAllocation.invalidInvoiceNumbers]);
+  const nextInvoiceForReview = [...(data?.invoices ?? [])].filter((invoice) => invoice.id !== editingInvoiceId && invoiceReviewNumbers.has(invoice.invoiceNumber.trim() || String(invoice.id)))
+    .sort((first, second) => first.invoiceDate.localeCompare(second.invoiceDate) || first.id - second.id)[0];
   const cashResult = totalPaid - selfExpenses;
-  const progress = calculation.includedUnits > 0
-    ? Math.min(100, (calculation.actualUnits / calculation.includedUnits) * 100)
-    : 100;
   const importTotalUnits = importRows.reduce((sum, row) => sum + row.units, 0);
   const selectedEntry = data?.entries.find((entry) => entry.entryDate === entryDate);
+  const selectedDowntimes = data?.downtimes?.filter((day) => day.startDate <= entryDate && day.endDate >= entryDate) ?? [];
+  const selectedDowntime = selectedDowntimes.find((day) => day.kind === "no_trip") ?? selectedDowntimes[0];
+  const selectedDayClaims = (data?.invoices ?? []).flatMap((invoice) =>
+    invoice.allocationVersion === 1 ? (invoice.bottleAllocations ?? [])
+      .filter((row) => row.date === entryDate).map((row) => ({ invoice, amountKopecks: row.amountKopecks })) : []);
+  const selectedDayAllocated = selectedDayClaims.reduce((sum, row) => sum + row.amountKopecks, 0);
+  const selectedDayLegacy = (data?.invoices ?? []).filter((invoice) => invoice.allocationVersion !== 1);
   const expenseCategories = useMemo(
     () => normalizeExpenseCategories(data?.expenseCategories),
     [data?.expenseCategories],
@@ -1386,6 +1811,8 @@ export default function RentalApp() {
     [expenseCategories],
   );
   const expenseCategoryName = (category: string) => expenseCategoryNames.get(category) ?? "Другая категория";
+  const expenseShortcuts = useMemo(() => normalizeExpenseShortcuts(data?.expenseShortcuts, expenseCategories),
+    [data?.expenseShortcuts, expenseCategories]);
   const expenseBreakdown = useMemo(() => expenseCategories
     .map((category, index) => ({
       ...category,
@@ -1404,23 +1831,38 @@ export default function RentalApp() {
     }).join(", ")})`
     : "conic-gradient(#e7ecf2 0 100%)";
   const monthBounds = periodBounds(month);
-  const missingCutoff = month === today.slice(0, 7) ? today : monthBounds.end;
+  const documentDateIssue = reconciliationDateError({ period: month, documentDate, asOfDate });
+  const missingMonthDays = useMemo(() => missingEntryDates(month, today, documentSettings,
+    data?.entries ?? [], data?.downtimes ?? []),
+  [month, today, documentSettings, data?.entries, data?.downtimes]);
+  const missingDates = useMemo(() => new Set(missingMonthDays), [missingMonthDays]);
   const currentWeekStart = weekStart(entryDate);
+  const monthCalendarDays = useMemo(() => {
+    const entriesByDate = new Map((data?.entries ?? []).map((entry) => [entry.entryDate, entry]));
+    const first = weekStart(monthBounds.start);
+    const last = addIsoDays(weekStart(monthBounds.end), 6);
+    const days = [];
+    for (let date = first; date <= last; date = addIsoDays(date, 1)) {
+      const inMonth = date.slice(0, 7) === month;
+      const entry = entriesByDate.get(date);
+      days.push({ date, inMonth, entry, missing: missingDates.has(date) });
+    }
+    return days;
+  }, [data?.entries, month, monthBounds.start, monthBounds.end, missingDates]);
   const currentWeekDays = useMemo(() => {
     const entriesByDate = new Map((data?.entries ?? []).map((entry) => [entry.entryDate, entry]));
     return Array.from({ length: 7 }, (_, index) => {
       const date = addIsoDays(currentWeekStart, index);
       const inMonth = date.slice(0, 7) === month;
       const entry = entriesByDate.get(date);
-      const isSunday = new Date(`${date}T12:00:00Z`).getUTCDay() === 0;
       return {
         date,
         inMonth,
         entry,
-        missing: inMonth && date <= missingCutoff && !isSunday && !entry,
+        missing: missingDates.has(date),
       };
     });
-  }, [currentWeekStart, data?.entries, missingCutoff, month]);
+  }, [currentWeekStart, data?.entries, missingDates, month]);
   const weekUnits = currentWeekDays.reduce((sum, day) => sum + (day.entry?.units ?? 0), 0);
   const weekAmountKopecks = weekUnits * documentSettings.rateKopecks;
   const maxWeekUnits = Math.max(1, ...currentWeekDays.map((day) => day.entry?.units ?? 0));
@@ -1428,18 +1870,8 @@ export default function RentalApp() {
   const weekEntries = currentWeekDays
     .flatMap((day) => day.entry ? [day.entry] : [])
     .sort((a, b) => b.entryDate.localeCompare(a.entryDate));
-  const missingMonthDays = useMemo(() => {
-    const entries = new Set((data?.entries ?? []).map((entry) => entry.entryDate));
-    const missing: string[] = [];
-    for (let date = monthBounds.start; date <= missingCutoff; date = addIsoDays(date, 1)) {
-      const isSunday = new Date(`${date}T12:00:00Z`).getUTCDay() === 0;
-      if (!isSunday && !entries.has(date)) missing.push(date);
-    }
-    return missing;
-  }, [data?.entries, missingCutoff, monthBounds.start]);
   const canGoToPreviousWeek = addIsoDays(entryDate, -7) >= monthBounds.start;
   const canGoToNextWeek = addIsoDays(entryDate, 7) <= monthBounds.end;
-  const unitsUntilControl = Math.max(0, calculation.includedUnits - calculation.actualUnits);
   const auditEvents = data?.auditLog ?? [];
   const lastBackupLabel = lastBackupAt
     ? `Последняя копия: ${new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long" }).format(new Date(lastBackupAt))}`
@@ -1451,6 +1883,21 @@ export default function RentalApp() {
     setEntryDate(nextDate);
     setEntryUnits(existing ? String(existing.units) : "");
     setEntryNote(existing?.note ?? "");
+  }
+
+  function openEntryForDate(nextDate: string) {
+    selectEntryDate(nextDate);
+    setQuickEntryOpen(true);
+  }
+
+  function openDayDetails(nextDate: string) {
+    selectEntryDate(nextDate);
+    setDayDetailsOpen(true);
+  }
+
+  function changeMotion(enabled: boolean) {
+    setMotionEnabled(enabled);
+    window.localStorage.setItem(MOTION_STORAGE_KEY, enabled ? "on" : "off");
   }
 
   function moveEntryWeek(offset: -1 | 1) {
@@ -1470,15 +1917,17 @@ export default function RentalApp() {
       selectedEntry ? `Обновлено: ${number(units)} бутылок` : `Записано: ${number(units)} бутылок`,
     );
     if (ok) {
+      const savedDate = entryDate;
+      setEntrySavedMessage(`${dateLabel(savedDate)} · ${number(units)} бутылей сохранено`);
+      if (units === 0) toast.info("Машина не выезжала в этот день? Можно отметить простой", {
+        action: { label: "Отметить", onClick: () => { setQuickEntryOpen(false); openDowntime(undefined, savedDate); } },
+      });
       navigator.vibrate?.(12);
       const followingDate = nextIsoDate(entryDate);
       setEntryUnits("");
       setEntryNote("");
       if (followingDate.slice(0, 7) === month) selectEntryDate(followingDate);
-      window.requestAnimationFrame(() => {
-        if (quickEntryOpen) quickEntryUnitsRef.current?.focus();
-        else entryUnitsRef.current?.focus();
-      });
+      window.requestAnimationFrame(() => quickEntryUnitsRef.current?.focus());
     }
   }
 
@@ -1632,7 +2081,7 @@ export default function RentalApp() {
 
   function openInvoice(requestedKind?: Invoice["kind"]) {
     setEditingInvoiceId(null);
-    const selectedDate = month === today.slice(0, 7) ? today : `${month}-01`;
+    const selectedDate = today;
     const kind = requestedKind ?? (
       fixedRemainingKopecks > 0
         ? "fixed"
@@ -1641,15 +2090,20 @@ export default function RentalApp() {
           : "fixed"
     );
     const suggestedAmount = kind === "fixed"
-      ? Math.min(fixedRemainingKopecks || calculation.baseKopecks, remainingToInvoice || calculation.baseKopecks)
+      ? fixedRemainingKopecks
       : kind === "variable"
-        ? Math.min(variableRemainingKopecks, remainingToInvoice || variableRemainingKopecks)
+        ? variableRemainingKopecks
         : remainingToInvoice;
     setInvoiceKind(kind);
     setInvoiceAmount(suggestedAmount > 0 ? String(suggestedAmount / 100) : "");
-    setInvoiceNumber("");
+    setInvoiceNumber(nextInvoiceNumber(isOfflineRuntime() ? readOfflineStore().invoices : data?.invoices ?? []));
+    setInvoiceActNumber(actNumber);
     setInvoiceDate(selectedDate);
     setInvoiceDueDate("");
+    setInvoicePeriodAutomatic(true);
+    setInvoiceReplan(true);
+    setInvoiceStartDate("");
+    setInvoiceEndDate("");
     setInvoiceNote("");
     setInvoiceOpen(true);
   }
@@ -1660,6 +2114,19 @@ export default function RentalApp() {
     if (!invoiceNumber.trim() || !amountKopecks) {
       toast.error("Укажите номер и сумму счёта");
       return;
+    }
+    let allocation: ReturnType<typeof validateInvoiceAllocation> | undefined;
+    if (invoiceUsesAllocation) {
+      if (!invoiceAllocation.ready) {
+        toast.error(invoiceAllocationState.error || (invoiceAllocation.needsReview
+          ? "Сначала проверьте привязку старых счетов по порядку"
+          : "Записей или остатка аренды недостаточно для этой суммы счёта"));
+        return;
+      }
+      try { allocation = validateInvoiceAllocation(invoiceAllocationInput, { allocationVersion: 1,
+        bottleAllocations: invoiceAllocation.bottleAllocations,
+        rentalSupplementKopecks: invoiceAllocation.rentalSupplementKopecks }); }
+      catch (error) { toast.error(error instanceof Error ? error.message : "Проверьте распределение суммы"); return; }
     }
     if (editingInvoiceId === null && invoiceKind === "variable" && !data?.closure) {
       toast.error("Переменная часть выставляется после закрытия месяца");
@@ -1677,7 +2144,11 @@ export default function RentalApp() {
         invoiceNumber,
         invoiceDate,
         kind: invoiceKind,
+        actNumber: invoiceActNumber,
         amountKopecks,
+        bottleStartDate: allocation ? allocation.bottleAllocations[0]?.date ?? "" : invoiceStartDate,
+        bottleEndDate: allocation ? allocation.bottleAllocations.at(-1)?.date ?? "" : invoiceEndDate,
+        ...(allocation ?? {}),
         dueDate: invoiceDueDate,
         note: invoiceNote,
       },
@@ -1690,6 +2161,7 @@ export default function RentalApp() {
     setEditingPaymentId(null);
     const alreadyPaid = paidByInvoice.get(invoice.id) ?? 0;
     setPaymentInvoiceId(invoice.id);
+    setPaymentSplits(null);
     setPaymentDate(today);
     setPaymentAmount(String(Math.max(0, invoice.amountKopecks - alreadyPaid) / 100));
     setPaymentMethod("bank");
@@ -1705,11 +2177,21 @@ export default function RentalApp() {
       toast.error("Укажите сумму оплаты");
       return;
     }
+    const allocations = paymentSplits ? Object.entries(paymentSplits)
+      .map(([invoiceId, rubles]) => ({ invoiceId: Number(invoiceId), amountKopecks: toKopecks(rubles) ?? 0 }))
+      .filter((row) => row.amountKopecks > 0) : [];
+    if (paymentSplits && (allocations.length < 2 ||
+      allocations.reduce((sum, row) => sum + row.amountKopecks, 0) !== amountKopecks)) {
+      toast.error("Распределите всю сумму минимум по двум счетам");
+      return;
+    }
     const ok = await request(
       {
-        action: editingPaymentId === null ? "create_payment" : "update_payment",
+        action: paymentSplits && editingPaymentId === null ? "create_payment_split"
+          : editingPaymentId === null ? "create_payment" : "update_payment",
         id: editingPaymentId,
         invoiceId: paymentInvoiceId,
+        allocations,
         paymentDate,
         amountKopecks,
         method: paymentMethod,
@@ -1721,22 +2203,23 @@ export default function RentalApp() {
     if (ok) setPaymentOpen(false);
   }
 
-  function openExpense() {
+  function openExpense(selectedDate?: unknown) {
     const initialCategory = expenseFilter !== "all" && expenseCategories.some((category) => category.id === expenseFilter)
       ? expenseFilter
       : expenseCategories.find((category) => category.id === "base_lease")?.id ?? expenseCategories[0]?.id ?? "other";
     setEditingExpenseId(null);
-    setExpenseDate(month === today.slice(0, 7) ? today : `${month}-01`);
+    setExpenseDate(typeof selectedDate === "string" ? selectedDate : month === today.slice(0, 7) ? today : `${month}-01`);
     setExpensePayer("self");
     setExpenseCategory(initialCategory);
-    setExpenseAmount(initialCategory === "base_lease" ? "20000" : "");
+    setExpenseAmount("");
     setExpenseMethod("bank");
     setExpenseDocument("");
     setExpenseNote("");
     setExpenseOpen(true);
   }
 
-  function openExpenseTemplate(category: string, payer: "self" | "customer" = "self") {
+  function openExpenseTemplate(shortcut: ExpenseShortcut) {
+    const { category, payer } = shortcut;
     if (!expenseCategories.some((item) => item.id === category)) {
       openExpense();
       return;
@@ -1745,7 +2228,7 @@ export default function RentalApp() {
     setExpenseDate(month === today.slice(0, 7) ? today : `${month}-01`);
     setExpensePayer(payer);
     setExpenseCategory(category);
-    setExpenseAmount("");
+    setExpenseAmount(shortcut.amountKopecks > 0 ? String(shortcut.amountKopecks / 100) : "");
     setExpenseMethod("bank");
     setExpenseDocument("");
     setExpenseNote("");
@@ -1832,16 +2315,22 @@ export default function RentalApp() {
     if (ok) setExpenseOpen(false);
   }
 
-  function editInvoice(invoice: Invoice) {
+  function editInvoice(invoice: Invoice, reviewAllocation = false) {
     setEditingInvoiceId(invoice.id);
+    setInvoicePeriodAutomatic(true);
+    setInvoiceReplan(reviewAllocation);
     setInvoiceKind(invoice.kind); setInvoiceNumber(invoice.invoiceNumber);
+    setInvoiceActNumber(invoice.actNumber ?? data?.documentMeta?.actNumber ?? "");
     setInvoiceDate(invoice.invoiceDate); setInvoiceDueDate(invoice.dueDate ?? "");
+    setInvoiceStartDate(invoice.bottleStartDate ?? "");
+    setInvoiceEndDate(invoice.bottleEndDate ?? "");
     setInvoiceAmount(String(invoice.amountKopecks / 100)); setInvoiceNote(invoice.note);
     setInvoiceOpen(true);
   }
 
   function editPayment(payment: Payment) {
     setEditingPaymentId(payment.id); setPaymentInvoiceId(payment.invoiceId);
+    setPaymentSplits(null);
     setPaymentDate(payment.paymentDate); setPaymentAmount(String(payment.amountKopecks / 100));
     setPaymentMethod(payment.method); setPaymentDocument(payment.documentNumber);
     setPaymentNote(payment.note); setPaymentOpen(true);
@@ -1857,24 +2346,56 @@ export default function RentalApp() {
 
   function openSettings() {
     setSettingsDraft({ ...documentSettings });
+    setExpenseShortcutsDraft(expenseShortcuts.map((shortcut) => ({ ...shortcut })));
     setSettingsOpen(true);
   }
 
   async function saveSettings(event: FormEvent) {
     event.preventDefault();
     const ok = await request(
-      { action: "save_settings", settings: settingsDraft },
-      "Настройки расчёта сохранены",
+      { action: "save_expense_shortcuts", shortcuts: expenseShortcutsDraft },
+      "Настройки приложения сохранены",
     );
     if (ok) setSettingsOpen(false);
   }
 
-  function openDowntime(downtime?: Downtime) {
+  function openRequisites() {
+    setSettingsDraft({ ...documentSettings });
+    setSettingsOpen(false);
+    setRequisitesOpen(true);
+  }
+
+  async function saveRequisites(event: FormEvent) {
+    event.preventDefault();
+    const settings = { ...documentSettings };
+    for (const field of missingDocumentFields) settings[field] = settingsDraft[field].trim();
+    const ok = await request({ action: "save_settings", settings }, "Реквизиты заполнены и подставлены в документы");
+    if (ok) setRequisitesOpen(false);
+  }
+
+  function addExpenseShortcut() {
+    if (expenseShortcutsDraft.length >= 8 || !expenseCategories.length) return;
+    setExpenseShortcutsDraft((items) => [...items, {
+      id: `shortcut-${Date.now().toString(36)}`, title: "Новая кнопка", category: expenseCategories[0].id,
+      payer: "self", amountKopecks: 0,
+    }]);
+  }
+
+  function updateExpenseShortcut(id: string, patch: Partial<ExpenseShortcut>) {
+    setExpenseShortcutsDraft((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item));
+  }
+
+  function openDowntime(downtime?: Downtime, dayDate?: string) {
     const bounds = periodBounds(month);
-    const selectedDate = month === today.slice(0, 7) ? today : bounds.start;
+    const selectedDate = dayDate ?? (month === today.slice(0, 7) ? today : bounds.start);
+    const kind = downtime ? downtime.kind ?? "technical" : "no_trip";
+    setDowntimeKind(kind);
     setEditingDowntimeId(downtime?.id ?? null);
     setDowntimeStart(downtime?.startDate ?? selectedDate);
     setDowntimeEnd(downtime?.endDate ?? selectedDate);
+    setDowntimeReason(downtime?.reason === "Простой автомобиля" ? "" : downtime?.reason ?? "Без выезда");
+    setDowntimeBasis(downtime?.basis ?? (kind === "no_trip" ? "Отметка в календаре" : ""));
+    setDowntimeNote(downtime?.note ?? "");
     setDowntimeOpen(true);
   }
 
@@ -1884,10 +2405,12 @@ export default function RentalApp() {
       {
         action: editingDowntimeId === null ? "create_downtime" : "update_downtime",
         id: editingDowntimeId,
+        kind: downtimeKind,
         startDate: downtimeStart,
         endDate: downtimeEnd,
-        reason: "Простой автомобиля",
-        note: "",
+        reason: downtimeReason,
+        basis: downtimeBasis,
+        note: downtimeNote,
       },
       editingDowntimeId === null ? "Простой добавлен" : "Простой изменён",
     );
@@ -1905,9 +2428,11 @@ export default function RentalApp() {
         if (ok) {
           showDeletedWithUndo("Простой удалён", () => request({
             action: "create_downtime",
+            kind: downtime.kind,
             startDate: downtime.startDate,
             endDate: downtime.endDate,
             reason: downtime.reason,
+            basis: downtime.basis,
             note: downtime.note,
           }, "Простой восстановлен"));
         }
@@ -1916,38 +2441,94 @@ export default function RentalApp() {
   }
 
   function currentDocumentMeta() {
-    const openingBalanceKopecks = toSignedKopecks(openingBalance);
-    if (openingBalanceKopecks === null) {
-      toast.error("Проверьте начальное сальдо");
-      return null;
-    }
-    if (!actNumber.trim() || !reconciliationNumber.trim() || !validIsoDate(documentDate)) {
-      toast.error("Заполните номера и дату документов");
+    const openingBalanceKopecks = documentOpeningBalance.trim() ? toSignedKopecks(documentOpeningBalance) : null;
+    if (!actNumber.trim() || !validIsoDate(documentDate) || !validIsoDate(asOfDate) ||
+        openingBalanceKopecks === null || !Number.isSafeInteger(openingBalanceKopecks)) {
+      toast.error("Заполните номер, дату и начальный долг документов");
       return null;
     }
     return {
       period: month,
       actNumber: actNumber.trim(),
-      reconciliationNumber: reconciliationNumber.trim(),
+      reconciliationNumber: actNumber.trim(),
       documentDate,
-      basis: documentBasis.trim(),
+      basis: data?.documentMeta?.basis ?? "",
       openingBalanceKopecks,
+      asOfDate,
+      adjustments: documentAdjustments.trim(),
     } satisfies DocumentMeta;
   }
 
-  async function saveDocumentParameters() {
-    const meta = currentDocumentMeta();
-    if (!meta) return false;
-    return request({ action: "save_document_meta", ...meta }, "Параметры документов сохранены");
+  function documentInputSnapshot(kind: ArchivedDocument["kind"], meta: DocumentMeta) {
+    return JSON.stringify({ kind, meta, settings: documentSettings, calculation, fuelCalculation: "whole-bottles-variable-first-v2",
+      entries: data?.entries ?? [], downtimes: data?.downtimes ?? [],
+      ...(kind === "act" ? { expenses: (data?.expenses ?? []).filter((expense) => expense.category === "fuel" && expense.payer === "customer") } : {}),
+      ...(kind === "reconciliation" || kind === "ledger"
+        ? { invoices: data?.invoices ?? [], payments: data?.payments ?? [], openingPayments: data?.openingPayments ?? [], expenses: data?.expenses ?? [] } : {}),
+    });
   }
 
-  async function saveOfficialPdf(kind: "act" | "reconciliation" | "package") {
+  function archiveIsStale(item: ArchivedDocument) {
+    try {
+      const stored = JSON.parse(item.inputSnapshot) as { meta: DocumentMeta };
+      const currentMeta = { ...stored.meta,
+        openingBalanceKopecks: data?.documentMeta?.openingBalanceKopecks ?? stored.meta.openingBalanceKopecks };
+      return item.inputSnapshot !== documentInputSnapshot(item.kind, currentMeta);
+    } catch { return true; }
+  }
+
+  function editArchivedDocument(item: ArchivedDocument) {
+    try {
+      const snapshot = JSON.parse(item.inputSnapshot) as { meta?: DocumentMeta };
+      const meta = snapshot.meta ?? data?.documentMeta;
+      if (!meta || !validIsoDate(meta.documentDate) || !validIsoDate(meta.asOfDate ?? meta.documentDate) ||
+          !Number.isSafeInteger(meta.openingBalanceKopecks)) throw new Error("Некорректные реквизиты документа");
+      setActNumber(item.number || (item.kind === "reconciliation" ? meta.reconciliationNumber : meta.actNumber) || meta.actNumber);
+      setDocumentDate(meta.documentDate);
+      setAsOfDate(meta.asOfDate ?? meta.documentDate);
+      setDocumentOpeningBalance(String(meta.openingBalanceKopecks / 100));
+      setDocumentAdjustments(meta.adjustments ?? "");
+      setEditingArchivedId(item.id);
+      setDocumentPreview(null);
+      setTab("invoices");
+      setDocumentsOpen(true);
+      window.setTimeout(() => documentWorkspaceRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
+      toast.info("Реквизиты загружены. Исправьте их и создайте новую версию по текущим данным.");
+    } catch {
+      toast.error("Не удалось прочитать старый документ. Заполните форму документов и создайте его заново.");
+    }
+  }
+
+  function askDeleteDocument(item: ArchivedDocument) {
+    setConfirm({ title: `Удалить документ №${item.number}, версия ${item.version}?`,
+      description: "Версия будет удалена из архива приложения. Сохранённый PDF остаётся отдельным файлом в «Загрузках».",
+      actionLabel: "Удалить из архива", destructive: true,
+      run: async () => {
+        const ok = await request({ action: "delete_document", id: item.id }, "");
+        if (ok) {
+          if (editingArchivedId === item.id) setEditingArchivedId(null);
+          showDeletedWithUndo("Документ удалён из архива", () => request({ action: "archive_document", document: item }, "Документ восстановлен"));
+        }
+      },
+    });
+  }
+
+  function prepareDocument(kind: "act" | "reconciliation") {
     if (!data) return;
+    if (DOCUMENT_TEXT_FIELDS.some((field) => field !== "lessorDative" && !documentSettings[field].trim())) {
+      toast.error("Не хватает реквизитов для PDF. Восстановите копию или заполните недостающие поля.");
+      openRequisites();
+      return;
+    }
     const meta = currentDocumentMeta();
     if (!meta) return;
-
+    if (isOfflineRuntime()) {
+      const number = kind === "act" ? meta.actNumber : meta.reconciliationNumber;
+      const previous = readOfflineStore().documentArchive.filter((item) => item.kind === kind && item.number === number);
+      if (previous.some((item) => item.period !== month)) toast.warning(`Документ №${number} уже есть за другой период`);
+      if (previous.some((item) => item.period === month)) toast.info("За этот период уже есть документ. Новая копия получит следующий номер версии.");
+    }
     try {
-      if (isOfflineRuntime()) saveOfflineAction({ action: "save_document_meta", ...meta });
       const input = {
         settings: documentSettings,
         meta,
@@ -1955,31 +2536,56 @@ export default function RentalApp() {
         downtimes: data.downtimes ?? [],
         invoices: data.invoices,
         payments: data.payments,
+        openingPayments: data.openingPayments,
         expenses: data.expenses,
+        entries: data.entries,
       };
-      const html = kind === "act"
-        ? buildRentActHtml(input)
-        : kind === "reconciliation"
-          ? buildReconciliationHtml(input)
-          : buildDocumentPackageHtml(input);
-      const fileName = kind === "act"
-        ? `akt_arendy_${month}.pdf`
-        : kind === "reconciliation"
-          ? `akt_sverki_${month}.pdf`
-          : `dokumenty_arendy_${month}.pdf`;
-
-      const androidSave = Boolean(window.AndroidApp?.saveHtmlAsPdf);
-      if (androidSave) {
-        window.AndroidApp?.saveHtmlAsPdf?.(html, fileName);
-      } else {
-        printHtmlInBrowser(html);
+      const html = kind === "act" ? buildRentActHtml(input) : buildReconciliationHtml(input);
+      if (kind === "reconciliation" && reconciliationSummary(input).balance < 0) {
+        toast.error("Образец акта сверки описывает задолженность. При переплате проверьте расчёты до подписания.");
+        return;
       }
-      await loadData();
-      if (!androidSave) {
-        toast.success(kind === "package" ? "Пакет открыт для печати" : "Документ открыт для печати");
-      }
+      setDocumentPreview({ kind, html, meta, number: kind === "act" ? meta.actNumber : meta.reconciliationNumber,
+        inputSnapshot: documentInputSnapshot(kind, meta) });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Не удалось сформировать PDF");
+    }
+  }
+
+  async function savePreviewedDocument() {
+    if (!documentPreview) return;
+    const { kind, html, meta, number, inputSnapshot } = documentPreview;
+    const previous = data?.documentArchive ?? [];
+    const version = Math.max(0, ...previous.filter((item) => item.kind === kind && item.number === number)
+      .map((item) => item.version)) + 1;
+    const id = Date.now();
+    const archived: ArchivedDocument = { id, kind, period: month, number, version,
+      generatedAt: new Date().toISOString(), inputSnapshot, html };
+    if (isOfflineRuntime()) {
+      const ok = await request({ action: "save_document_meta", ...meta }, "");
+      if (!ok) return;
+      const saved = await request({ action: "archive_document", document: archived }, "Документ добавлен в архив");
+      if (!saved) return;
+    }
+    const fileName = `${kind}_${month}_v${version}_${id}.pdf`;
+    if (window.AndroidApp?.saveArchivedHtmlAsPdf) {
+      saveArchivedPdf(archived, fileName);
+    } else if (window.AndroidApp?.saveHtmlAsPdf) {
+      window.AndroidApp.saveHtmlAsPdf(html, fileName);
+    } else printHtmlInBrowser(html);
+    setDocumentPreview(null);
+  }
+
+  function saveArchivedPdf(document: ArchivedDocument, fileName?: string) {
+    if (pdfSavingId !== null) return;
+    try {
+      if (!window.AndroidApp?.saveArchivedHtmlAsPdf) { printHtmlInBrowser(document.html); return; }
+      setPdfSavingId(document.id);
+      window.AndroidApp.saveArchivedHtmlAsPdf(document.html,
+        fileName ?? `${document.kind}_${document.period}_v${document.version}_${document.id}.pdf`, String(document.id));
+    } catch {
+      setPdfSavingId(null);
+      toast.error("Не получилось начать сохранение PDF. Документ остался в архиве");
     }
   }
 
@@ -2074,6 +2680,10 @@ export default function RentalApp() {
   }
 
   function askCloseMonth() {
+    if (monthBounds.end > today) {
+      toast.info("Закрыть месяц можно после его окончания. Сейчас продолжайте вносить записи и постоянные счета.");
+      return;
+    }
     setCloseMonthOpen(true);
   }
 
@@ -2129,7 +2739,15 @@ export default function RentalApp() {
         ["Переменная часть И − Ф, ₽", calculation.variableKopecks / 100],
         ["ИТОГО — большая из Ф и И, ₽", calculation.totalKopecks / 100],
         ["Топливо оплачено заказчиком, ₽", customerFuel / 100],
-        ["Аренда после вычета топлива, ₽", netRent / 100],
+        ["Вычтено на топливо, бутылей", settlement.fuelUnits],
+        ["Корректировка округления топлива, ₽", settlement.roundingKopecks / 100],
+        ["Вычет топлива с округлением, ₽", fuelDeduction / 100],
+        ["Вычет топлива из переменной части, ₽", settlement.variableFuelKopecks / 100],
+        ["Остаток вычета из постоянной части, ₽", settlement.fixedFuelKopecks / 100],
+        ["Учтено в акте-расчёте, ед.", actCalculation.actualUnits],
+        ["Постоянная часть в акте-расчёте, ₽", actCalculation.baseKopecks / 100],
+        ["Переменная часть в акте-расчёте, ₽", actCalculation.variableKopecks / 100],
+        ["К оплате после вычета топлива, ₽", netRent / 100],
         ["Уже выставлено, ₽", totalInvoiced / 100],
         ["Осталось выставить, ₽", remainingToInvoice / 100],
         ["Собственные расходы, ₽", selfExpenses / 100],
@@ -2144,7 +2762,9 @@ export default function RentalApp() {
           "Счёт №",
           "Дата счёта",
           "Вид начисления",
-          "Сумма, ₽",
+          "Первый день бутылей",
+          "Последний день бутылей",
+          "Сумма счёта после вычета топлива, ₽",
           "Оплачено, ₽",
           "Остаток, ₽",
           "Срок оплаты",
@@ -2165,6 +2785,8 @@ export default function RentalApp() {
             invoice.invoiceNumber,
             dateLabel(invoice.invoiceDate),
             invoiceLabels[invoice.kind],
+            dateLabel(invoice.bottleStartDate ?? null),
+            dateLabel(invoice.bottleEndDate ?? null),
             invoice.amountKopecks / 100,
             paid / 100,
             Math.max(0, invoice.amountKopecks - paid) / 100,
@@ -2179,12 +2801,15 @@ export default function RentalApp() {
             emailText(invoice, documentSettings),
           ];
         }),
-        ["ИТОГО", "", "", totalInvoiced / 100, totalPaid / 100, Math.max(0, totalInvoiced - totalPaid) / 100, "", "", "", "", "", "", "", "", ""],
+        ["ИТОГО", "", "", "", "", totalInvoiced / 100, totalPaid / 100,
+          Math.max(0, totalInvoiced - totalPaid) / 100,
+          "", "", "", "", "", "", "", "", ""],
       ];
       const invoicesSheet = XLSX.utils.aoa_to_sheet(invoiceRows);
       invoicesSheet["!cols"] = [
-        { wch: 14 }, { wch: 14 }, { wch: 24 }, { wch: 15 }, { wch: 15 },
-        { wch: 15 }, { wch: 15 }, { wch: 15 }, { wch: 20 }, { wch: 24 }, { wch: 38 },
+        { wch: 14 }, { wch: 14 }, { wch: 24 }, { wch: 19 }, { wch: 19 },
+        { wch: 26 }, { wch: 15 }, { wch: 15 },
+        { wch: 15 }, { wch: 15 }, { wch: 20 }, { wch: 24 }, { wch: 38 },
         { wch: 48 }, { wch: 62 }, { wch: 46 }, { wch: 70 },
       ];
       XLSX.utils.book_append_sheet(workbook, invoicesSheet, "Счета и оплаты");
@@ -2270,8 +2895,11 @@ export default function RentalApp() {
     try {
       if (file.size > 10 * 1024 * 1024) throw new Error("Файл слишком большой");
       const store = normalizeOfflineStore(JSON.parse(await file.text()));
+      store.documentArchive = store.documentArchive.map(({ pdfUri: _oldDeviceUri, ...document }) => document);
       writeOfflineStore(store);
       await loadData();
+      setDocumentDraftRevision((revision) => revision + 1);
+      setDocumentPreview(null);
       toast.success("Данные восстановлены");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Не удалось восстановить данные");
@@ -2282,13 +2910,13 @@ export default function RentalApp() {
     return <div className="settlement-details">
       <div className="calculation-list mt-3">
         <div><span>Аренда по договору</span><strong>{money(calculation.totalKopecks)}</strong></div>
-        <div><span>Минус топливо заказчика</span><strong>{money(customerFuel)}</strong></div>
-        <div><span>К выставлению после топлива</span><strong>{money(netRent)}</strong></div>
+        <div><span>Вычет топлива заказчика</span><strong>−{money(fuelDeduction)}</strong></div>
+        <div><span>К оплате после вычета топлива</span><strong>{money(netRent)}</strong></div>
         <div><span>Уже выставлено</span><strong>{money(totalInvoiced)}</strong></div>
         <div className="calculation-total"><span>Осталось выставить</span><strong>{money(remainingToInvoice)}</strong></div>
       </div>
-      {customerFuel > calculation.totalKopecks && <p className="help-note">Топливо превышает начисление на {money(customerFuel - calculation.totalKopecks)}. Перенос на другой месяц не выполняется автоматически.</p>}
-      {totalInvoiced > netRent && <p className="help-note">Выставлено больше расчётной суммы на {money(totalInvoiced - netRent)}. Проверьте ранее выставленные счета.</p>}
+      {customerFuel > 0 && <p className="help-note">Топливо заказчика: {money(customerFuel)}. {settlement.fuelUnits > 0 ? `Для расчёта вычтено ${number(settlement.fuelUnits)} бутылей, с округлением вверх: ${money(fuelDeduction)}.` : `Вычет при нулевой ставке: ${money(fuelDeduction)}.`} Из переменной части: {money(settlement.variableFuelKopecks)}.{settlement.fixedFuelKopecks > 0 && ` Остаток вычета из постоянной части: ${money(settlement.fixedFuelKopecks)}.`} По дням оно видно в акте сверки.</p>}
+      {totalInvoiced > netRent && <p className="help-note">Выставлено больше суммы после вычета топлива на {money(totalInvoiced - netRent)}. Проверьте ранее выставленные счета.</p>}
       <Button className="mt-4 w-full" type="button" disabled={remainingToInvoice <= 0} onClick={() => {
         setSettlementOpen(false);
         openInvoice();
@@ -2314,6 +2942,47 @@ export default function RentalApp() {
     expenses: { title: "Расходы", description: "Топливо, ремонт и остальные затраты" },
   };
   const activeView = viewMeta[tab] ?? viewMeta.summary;
+
+  function showDocuments() {
+    setTab("invoices");
+    setDocumentsOpen(true);
+    window.setTimeout(() => documentWorkspaceRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
+  }
+
+  function showInvoices() {
+    setDocumentsOpen(false);
+    setTab("invoices");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function showMissingDays() {
+    setTab("entries");
+    if (missingMonthDays[0]) selectEntryDate(missingMonthDays[0]);
+    setMonthCalendarOpen(true);
+  }
+
+  function showCurrentRentalMonth() {
+    const nextMonth = [documentSettings.rentalStart.slice(0, 7), today.slice(0, 7), documentSettings.rentalEnd.slice(0, 7)].sort()[1];
+    setMonth(nextMonth);
+    selectEntryDate(nextMonth === today.slice(0, 7) ? today : `${nextMonth}-01`);
+  }
+
+  const unpaidInvoices = data?.invoices.filter((invoice) =>
+    (paidByInvoice.get(invoice.id) ?? 0) < invoice.amountKopecks) ?? [];
+  const currentActsReady = (["act", "reconciliation"] as const).every((kind) =>
+    data?.documentArchive?.some((item) => item.kind === kind && !archiveIsStale(item)));
+  const canComposeInvoice = remainingToInvoice > 0 && (fixedRemainingKopecks > 0 || Boolean(data?.closure)) && monthBounds.start <= today && monthBounds.end >= documentSettings.rentalStart && monthBounds.start <= documentSettings.rentalEnd;
+  const workflowAction = (() => {
+    if (missingDocumentFields.length) return { step: 0, title: "Подтяните данные с телефона", text: "Восстановите JSON-копию или заполните недостающие реквизиты один раз.", label: "Подтянуть данные", run: openSettings };
+    if (monthBounds.start > today || monthBounds.end < documentSettings.rentalStart || monthBounds.start > documentSettings.rentalEnd) return { step: 0, title: "Выберите месяц работы", text: "Для этого месяца пока нет текущего расчёта в пределах договора. Данные и архив можно просматривать.", label: "Перейти к текущему месяцу", run: showCurrentRentalMonth };
+    if (month === today.slice(0, 7) && missingDates.has(today)) return { step: 0, title: "Заполните сегодняшний день", text: "Запишите количество бутылей или отметьте «Без выезда — простой», если машина не ездила.", label: "Открыть сегодняшний день", run: () => openDayDetails(today) };
+    if (!data?.closure && monthBounds.end <= today) return { step: 0, title: "Проверьте и закройте месяц", text: missingMonthDays.length ? `Дни без записи: ${number(missingMonthDays.length)}. Проверьте календарь, расходы и простой перед итоговым расчётом.` : "Записи и простой учтены. Проверьте топливо и итоговую сумму перед закрытием.", label: "Проверить и закрыть месяц", run: askCloseMonth };
+    if (fixedRemainingKopecks > 0) return { step: 2, title: "Можно выставить постоянную часть", text: `Осталось ${money(fixedRemainingKopecks)}. Приложение предложит номер и распределение этой суммы по свободным деньгам дней.`, label: "Составить счёт", run: () => openInvoice("fixed") };
+    if (data?.closure && variableRemainingKopecks > 0) return { step: 2, title: "Можно выставить переменную часть", text: `Осталось ${money(variableRemainingKopecks)} после вычета топлива. Проверьте предложенные дни и сумму.`, label: "Составить счёт", run: () => openInvoice("variable") };
+    if (unpaidInvoices.length) return { step: 3, title: "Отметьте полученные оплаты", text: `Счета с остатком: ${unpaidInvoices.length}. Отмечайте фактически полученные деньги.`, label: "Открыть счета и оплаты", run: showInvoices };
+    if (!data?.closure) return { step: 0, title: "Продолжайте учёт месяца", text: "Постоянная часть выставлена. Добавляйте бутылки, расходы и полученные оплаты. По окончании месяца станет доступен итоговый расчёт.", label: "Открыть календарь", run: () => { setTab("entries"); setMonthCalendarOpen(true); } };
+    return { step: 4, title: currentActsReady ? "Акты сформированы" : "Подготовьте два акта", text: currentActsReady ? "Актуальные версии находятся в архиве. PDF можно открыть, отправить или создать заново после изменений." : "Акт-расчёт и акт сверки используют общие реквизиты и номер. Проверьте даты и предпросмотр перед сохранением PDF.", label: "Акты за месяц", run: showDocuments };
+  })();
 
   return (
     <div className="app-root min-h-screen">
@@ -2346,23 +3015,14 @@ export default function RentalApp() {
                 <span className="hidden sm:inline">Установить</span>
               </Button>
             )}
-            <Button
-              type="button"
-              onClick={exportExcel}
-              disabled={!data || loading}
-              className="export-button"
-              aria-label="Скачать отчёт в Excel"
-            >
-              <FileSpreadsheet className="size-5" />
-              <span className="hidden sm:inline">Excel</span>
-            </Button>
+            {!offlineMode && <Button type="button" onClick={exportExcel} disabled={!data || loading} className="export-button" aria-label="Скачать отчёт в Excel"><FileSpreadsheet className="size-5" /><span className="hidden sm:inline">Excel</span></Button>}
             {offlineMode && (
               <Button
                 type="button"
                 variant="ghost"
                 className="settings-button"
                 onClick={openSettings}
-                aria-label="Настройки расчёта"
+                aria-label="Настройки приложения"
               >
                 <Settings className="size-5" />
               </Button>
@@ -2373,14 +3033,9 @@ export default function RentalApp() {
 
       <main className="app-shell app-main">
         <section className="month-bar" aria-label="Выбор расчётного месяца">
-          <div className="month-copy">
-            <span className="month-icon" aria-hidden="true"><CalendarDays /></span>
-            <div>
-              <span className="eyebrow">Месяц</span>
-              <strong>{monthLabel(month)}</strong>
-            </div>
-          </div>
-          <Input
+          <label className="month-picker">
+            <span>{monthLabel(month).replace(" г.", "")}</span><CalendarDays aria-hidden="true" />
+            <Input
             type="month"
             value={month}
             onChange={(event) => {
@@ -2388,69 +3043,12 @@ export default function RentalApp() {
               setMonth(nextMonth);
               selectEntryDate(nextMonth === today.slice(0, 7) ? today : `${nextMonth}-01`);
             }}
-            className="h-11 w-[155px] border-slate-200 bg-white text-base font-semibold"
+            className="month-native"
             aria-label="Месяц"
           />
+          </label>
+          {data && !loading && <span className="month-status">{data.closure ? <LockKeyhole aria-hidden="true" /> : null}{data.closure ? "Месяц закрыт" : "Месяц открыт"}</span>}
         </section>
-
-        {data && !loading && !loadError && tab === "summary" && (
-          <section className="panel quick-entry quick-entry-primary">
-            {data.closure ? (
-              <div className="locked-note">
-                <LockKeyhole className="size-5" />
-                Месяц закрыт — новые записи недоступны.
-              </div>
-            ) : (
-              <form onSubmit={saveEntry} className="fast-entry-form">
-                <div className="fast-entry-meta">
-                  <strong className="quick-entry-title">Быстрая запись</strong>
-                  {selectedEntry && <span className="entry-existing-chip">Запись есть</span>}
-                </div>
-
-                <div className="fast-entry-date-row">
-                  <label className="fast-entry-date-control">
-                    <FieldLabel>Дата</FieldLabel>
-                    <Input
-                      className="fast-entry-date-input"
-                      type="date"
-                      value={entryDate}
-                      min={monthBounds.start}
-                      max={monthBounds.end}
-                      onChange={(event) => selectEntryDate(event.target.value)}
-                      aria-label="Дата доставки"
-                      required
-                    />
-                  </label>
-                </div>
-
-                <div className="fast-entry-quantity">
-                  <FieldLabel>Количество бутылок</FieldLabel>
-                  <div className="fast-entry-row">
-                    <Input
-                      ref={entryUnitsRef}
-                      type="number"
-                      min="0"
-                      step="1"
-                      inputMode="numeric"
-                      enterKeyHint="done"
-                      autoComplete="off"
-                      placeholder="Сколько бутылок"
-                      aria-label="Количество бутылок"
-                      value={entryUnits}
-                      onChange={(event) => setEntryUnits(event.target.value)}
-                      onFocus={(event) => event.currentTarget.select()}
-                      required
-                    />
-                    <Button type="submit" disabled={busy || !entryUnits}>
-                      {busy ? <LoaderCircle className="animate-spin" /> : selectedEntry ? <Pencil /> : <Plus />}
-                      {selectedEntry ? "Обновить" : "Записать"}
-                    </Button>
-                  </div>
-                </div>
-              </form>
-            )}
-          </section>
-        )}
 
         <Tabs
           value={tab}
@@ -2476,11 +3074,10 @@ export default function RentalApp() {
                 setQuickEntryOpen(true);
                 window.setTimeout(() => quickEntryUnitsRef.current?.focus(), 180);
               }}
-              disabled={Boolean(data?.closure)}
-              aria-label={data?.closure ? "Месяц закрыт" : "Добавить запись бутылок"}
+              aria-label="Добавить запись бутылок"
             >
               <span><Plus /></span>
-              <small>{data?.closure ? "Закрыт" : "Запись"}</small>
+              <small>Запись</small>
             </button>
             <TabsTrigger value="invoices" className="app-tab">
               <ReceiptText />
@@ -2505,103 +3102,18 @@ export default function RentalApp() {
             <>
               <TabsContent value="summary" className="space-y-4">
                 <section className="settlement-hero" aria-label="Расчёт с заказчиком за месяц">
-                  <div className="settlement-hero-heading">
-                    <span>Расчёт с заказчиком · {monthLabel(month)}</span>
-                    {data.closure ? <LockKeyhole aria-label="Месяц закрыт" /> : null}
+                  <div className="settlement-hero-heading"><span>Расчёт с заказчиком</span></div>
+                  <div className="settlement-hero-result"><span>Осталось выставить</span><strong>{money(remainingToInvoice)}</strong></div>
+                  <div className="settlement-hero-actions">
+                    <Button type="button" className="settlement-primary-action" disabled={!canComposeInvoice} onClick={() => openInvoice()}>Составить счёт<ChevronRight /></Button>
+                    <button type="button" className="settlement-hero-link" onClick={() => setSettlementOpen(true)}>Показать расчёт<ChevronRight /></button>
                   </div>
-                  <div className="settlement-hero-result">
-                    <span>Осталось выставить</span>
-                    <strong>{money(remainingToInvoice)}</strong>
-                  </div>
-                  <div className="settlement-hero-breakdown">
-                    <div><span>Начислено</span><strong>{money(calculation.totalKopecks)}</strong></div>
-                    <div><span>Топливо заказчика</span><strong>−{money(customerFuel)}</strong></div>
-                    <div><span>Уже выставлено</span><strong>−{money(totalInvoiced)}</strong></div>
-                  </div>
-                  <button type="button" className="settlement-hero-link" onClick={() => setSettlementOpen(true)}>
-                    Показать расчёт <ChevronRight />
-                  </button>
+                  {offlineMode && workflowAction.step !== 2 && <div className="summary-next-action"><Button type="button" variant="outline" onClick={workflowAction.run}>{workflowAction.label}<ChevronRight /></Button><small>{workflowAction.text}</small></div>}
                 </section>
-                <section className="dashboard-actions" aria-label="Быстрые действия">
-                  <button type="button" onClick={() => openInvoice()}>
-                    <span><ReceiptText /></span>
-                    <strong>Новый счёт</strong>
-                  </button>
-                  <button type="button" onClick={openExpense}>
-                    <span><WalletCards /></span>
-                    <strong>Расход</strong>
-                  </button>
-                  <button type="button" onClick={() => offlineMode ? setDowntimeListOpen(true) : void exportExcel()}>
-                    <span>{offlineMode ? <CirclePause /> : <FileSpreadsheet />}</span>
-                    <strong>{offlineMode ? "Простой" : "Выгрузить Excel"}</strong>
-                  </button>
-                </section>
-
-                <section className="panel month-progress-compact">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <span className="eyebrow">Объём месяца</span>
-                      <div className="mt-1 flex items-baseline gap-2">
-                        <strong className="text-3xl tracking-tight">{number(calculation.actualUnits)}</strong>
-                        <span className="text-muted-foreground">из {number(calculation.includedUnits)} ед.</span>
-                      </div>
-                    </div>
-                    <span className="month-progress-state">{data.closure ? "Месяц закрыт" : "Месяц открыт"}</span>
-                  </div>
-                  <Progress value={progress} className="mt-4 h-3 bg-slate-100 [&_[data-slot=progress-indicator]]:bg-amber-500" />
-                  <div className="month-progress-footer">
-                    <span>{unitsUntilControl > 0 ? `До ${number(calculation.includedUnits)} осталось ${number(unitsUntilControl)} ед.` : `Контрольный объём выполнен на ${Math.round(progress)}%`}</span>
-                  </div>
-                  {!data.closure && missingMonthDays.length > 0 && (
-                    <button
-                      type="button"
-                      className="missing-days-callout"
-                      onClick={() => {
-                        setTab("entries");
-                        selectEntryDate(missingMonthDays[0]);
-                      }}
-                    >
-                      <CalendarDays />
-                      <span>Без записи: {number(missingMonthDays.length)} рабочих дней</span>
-                      <ChevronRight />
-                    </button>
-                  )}
-                </section>
-
-                <details className="panel month-tools">
-                  <summary>
-                    <span><strong>Отчёты и управление месяцем</strong><small>Денежный результат, Excel, история</small></span>
-                    <ChevronDown aria-hidden="true" />
-                  </summary>
-                  <div className="month-tools-body">
-                    <div className="month-tools-cash">
-                      <Banknote aria-hidden="true" />
-                      <div>
-                        <span>Оплаты минус собственные расходы</span>
-                        <strong className={cashResult < 0 ? "negative" : ""}>{money(cashResult)}</strong>
-                      </div>
-                    </div>
-                    <div className="month-tools-actions">
-                      {data.closure ? (
-                        <Button type="button" variant="outline" onClick={askReopenMonth}>
-                          <UnlockKeyhole />Открыть месяц
-                        </Button>
-                      ) : (
-                        <Button type="button" variant="outline" onClick={askCloseMonth}>
-                          <LockKeyhole />Закрыть месяц
-                        </Button>
-                      )}
-                      <Button type="button" variant="outline" onClick={exportExcel}>
-                        <Download />Скачать Excel
-                      </Button>
-                      {offlineMode && (
-                        <Button type="button" variant="outline" onClick={() => setAuditOpen(true)}>
-                          <History />История изменений
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                </details>
+                <Button type="button" variant="outline" className="summary-calendar" onClick={() => { setTab("entries"); setMonthCalendarOpen(true); }}>
+                  <CalendarDays aria-hidden="true" /><div><strong>{number(calculation.actualUnits)} бутылей за месяц</strong><small>Открыть календарь</small></div><ChevronRight aria-hidden="true" />
+                </Button>
+                {missingMonthDays.length > 0 && <button type="button" className="missing-days-callout summary-missing-days" onClick={showMissingDays}><CalendarDays /><span>Дни без записи: {number(missingMonthDays.length)}</span><ChevronRight /></button>}
               </TabsContent>
 
               <TabsContent value="entries" className="space-y-4">
@@ -2621,17 +3133,9 @@ export default function RentalApp() {
                       <span>Неделя</span>
                       <strong>{shortWeekRange(currentWeekStart, addIsoDays(currentWeekStart, 6))}</strong>
                     </div>
-                    <label className="week-date-jump" aria-label="Выбрать неделю по дате">
+                    <Button type="button" variant="ghost" size="icon" onClick={() => setMonthCalendarOpen(true)} aria-label="Открыть месячный календарь">
                       <CalendarDays />
-                      <Input
-                        className="week-date-native"
-                        type="date"
-                        value={entryDate}
-                        min={monthBounds.start}
-                        max={monthBounds.end}
-                        onChange={(event) => selectEntryDate(event.target.value)}
-                      />
-                    </label>
+                    </Button>
                     <Button
                       type="button"
                       variant="ghost"
@@ -2645,7 +3149,9 @@ export default function RentalApp() {
                   </div>
 
                   <div className="week-days">
-                    {currentWeekDays.map((day, index) => (
+                    {currentWeekDays.map((day, index) => {
+                      const downtime = data?.downtimes?.some((row) => row.startDate <= day.date && row.endDate >= day.date);
+                      return (
                       <button
                         key={day.date}
                         type="button"
@@ -2653,34 +3159,32 @@ export default function RentalApp() {
                           "week-day",
                           day.date === entryDate ? "week-day-selected" : "",
                           day.missing ? "week-day-missing" : "",
+                          downtime ? "calendar-day-downtime" : !day.entry ? "calendar-day-empty" : "",
                         ].filter(Boolean).join(" ")}
                         disabled={!day.inMonth}
-                        onClick={() => selectEntryDate(day.date)}
+                        onClick={() => openDayDetails(day.date)}
                         aria-pressed={day.date === entryDate}
-                        aria-label={`${WEEKDAY_LABELS[index]}, ${dateLabel(day.date)}${day.entry ? `, ${day.entry.units} бутылок` : ", записи нет"}`}
+                        aria-label={`${WEEKDAY_LABELS[index]}, ${dateLabel(day.date)}${downtime ? ", простой" : day.entry ? `, ${day.entry.units} бутылок` : ", записи нет"}`}
                       >
                         <span>{WEEKDAY_LABELS[index]}</span>
                         <strong>{Number(day.date.slice(-2))}</strong>
                         <span className="week-day-chart" aria-hidden="true">
                           <i style={{ height: day.entry ? `${Math.max(12, (day.entry.units / maxWeekUnits) * 100)}%` : "0%" }} />
                         </span>
-                        <small>{day.entry ? number(day.entry.units) : day.missing ? "нет" : "—"}</small>
+                        <small>{downtime ? <><CirclePause aria-hidden="true" />Простой</> : day.entry ? number(day.entry.units) : day.missing ? "нет" : "—"}</small>
                       </button>
-                    ))}
+                    ); })}
                   </div>
 
                   <div className="week-totals">
                     <div><span>Бутылок за неделю</span><strong>{number(weekUnits)}</strong></div>
                     <div><span>По {number(documentSettings.rateKopecks / 100)} ₽ за единицу</span><strong>{money(weekAmountKopecks)}</strong></div>
                   </div>
-                  {missingWeekDays.length > 0 && !data.closure && (
+                  {missingWeekDays.length > 0 && (
                     <button
                       type="button"
                       className="week-missing-action"
-                      onClick={() => {
-                        selectEntryDate(missingWeekDays[0].date);
-                        setQuickEntryOpen(true);
-                      }}
+                      onClick={() => openEntryForDate(missingWeekDays[0].date)}
                     >
                       <span>Нужно заполнить: {number(missingWeekDays.length)}</span>
                       <strong>Внести запись <ChevronRight /></strong>
@@ -2688,14 +3192,16 @@ export default function RentalApp() {
                   )}
                 </section>
 
-                <section className="panel">
-                  <div className="section-heading">
+                <section className="panel entry-history">
+                  <div className="entry-history-heading">
+                    <Button type="button" variant="ghost" className="entry-history-toggle" onClick={() => setEntryHistoryOpen((open) => !open)} aria-expanded={entryHistoryOpen} aria-controls="entry-history-list">
                     <div>
                       <span className="eyebrow">{shortWeekRange(currentWeekStart, addIsoDays(currentWeekStart, 6))}</span>
-                      <h2>Записи недели</h2>
+                      <strong>История записей</strong>
                     </div>
+                    <small>{number(weekEntries.length)}</small><ChevronDown />
+                    </Button>
                     <div className="entry-heading-actions">
-                      <strong>{number(weekUnits)} ед.</strong>
                       <Button
                         type="button"
                         variant="outline"
@@ -2715,7 +3221,7 @@ export default function RentalApp() {
                       />
                     </div>
                   </div>
-                  {weekEntries.length === 0 ? (
+                  {entryHistoryOpen && <div className="entry-history-list" id="entry-history-list">{weekEntries.length === 0 ? (
                     <div className="empty-state">
                       <CalendarDays />
                       <p>За эту неделю записей пока нет.</p>
@@ -2731,10 +3237,10 @@ export default function RentalApp() {
                             <span>{money(entry.units * documentSettings.rateKopecks)}</span>
                             {entry.note && <p>{entry.note}</p>}
                           </div>
-                          {!data.closure && (
-                            <div className="flex items-center gap-1">
+                          {(
+                            <div className="entry-record-actions">
                               <Button type="button" variant="outline" size="sm" onClick={() => { setEditingEntry(entry); setEditUnits(String(entry.units)); setEditNote(entry.note); }} aria-label={`Изменить запись за ${dateLabel(entry.entryDate)}`}>
-                                <Pencil className="size-4" />Изменить
+                                <Pencil className="size-4" /><span className="entry-edit-label">Изменить</span>
                               </Button>
                               <Button type="button" variant="ghost" size="icon" onClick={() => askDeleteEntry(entry)} aria-label="Удалить запись"><Trash2 /></Button>
                             </div>
@@ -2742,31 +3248,88 @@ export default function RentalApp() {
                         </article>
                       ))}
                     </div>
-                  )}
+                  )}</div>}
                 </section>
               </TabsContent>
 
               <TabsContent value="invoices" className="space-y-4">
+                <div className="invoice-workspace-toolbar">
+                  {offlineMode && <Button type="button" variant="outline" aria-expanded={documentsOpen} onClick={() => documentsOpen ? setDocumentsOpen(false) : showDocuments()}><FileText />{documentsOpen ? "Свернуть акты" : "Акты за месяц"}</Button>}
+                  <Button type="button" variant="outline" onClick={() => setMonthToolsOpen(true)}><SlidersHorizontal />Управление месяцем</Button>
+                  {offlineMode && <Button type="button" variant="outline" onClick={openTax}><Calculator />УСН 6%</Button>}
+                </div>
+                {offlineMode && documentsOpen && <section ref={documentWorkspaceRef} className="panel document-workspace">
+                  <div className="flex items-center gap-3"><FileText className="size-6 text-primary" /><div>
+                    <h2 className="text-xl font-bold">Документы · {monthLabel(month)}</h2>
+                    <p className="text-sm text-muted-foreground">Данные берутся из дней, простоев, счетов и оплат.</p>
+                  </div></div>
+                  {pdfSavingId !== null && <p className="pdf-save-state" role="status"><LoaderCircle className="animate-spin" />PDF готовится на телефоне. Дождитесь результата сохранения.</p>}
+                  {editingArchivedId !== null && <p className="help-note">Редактирование архивного документа. Новая версия будет рассчитана по текущим дням, счетам и оплатам. Для изменения количества бутылей откройте «Дни», для счетов и оплат — «Счета».</p>}
+                  <div className="document-summary">
+                    <div><span>Номер обоих актов</span><strong>№{actNumber || "—"}</strong></div>
+                    <div><span>Дата составления</span><strong>{validIsoDate(documentDate) ? dateLabel(documentDate) : "Выберите дату"}</strong></div>
+                    <div><span>Сверка на дату</span><strong>{validIsoDate(asOfDate) ? dateLabel(asOfDate) : "Выберите дату"}</strong></div>
+                    <div><span>Итого за месяц</span><strong>{money(netRent)}</strong></div>
+                  </div>
+                  <details className="document-options" key={editingArchivedId ?? "new"} open={editingArchivedId !== null || undefined}>
+                    <summary>Изменить номер, даты и начальный долг</summary>
+                    <div className="document-fields">
+                    <label className="col-span-2"><FieldLabel>№ обоих актов</FieldLabel><Input value={actNumber} onChange={(e) => setActNumber(e.target.value)} /></label>
+                    <label><FieldLabel>Дата составления</FieldLabel><Input type="date" value={documentDate} onChange={(e) => { setAsOfDate(linkedAsOfDate(e.target.value, documentDate, asOfDate)); setDocumentDate(e.target.value); }} /></label>
+                    <label><FieldLabel>Сверка по состоянию на</FieldLabel><Input type="date" min={monthBounds.end} value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} /></label>
+                    <label className="col-span-2"><FieldLabel>Долг на начало периода, ₽</FieldLabel><Input type="number" step="0.01" inputMode="decimal" value={documentOpeningBalance} onChange={(e) => setDocumentOpeningBalance(e.target.value)} /></label>
+                    </div>
+                    <label className="document-note"><FieldLabel>Замечания и согласованные корректировки</FieldLabel><Input value={documentAdjustments} onChange={(e) => setDocumentAdjustments(e.target.value)} placeholder="Если нет — останется «отсутствуют»" /></label>
+                    <p className="help-note">Номер общий для двух актов. Даты и начальный долг можно изменить; сохранённые значения не заменяются автоматически. При нулевом начальном долге оплаты прошлых месяцев в этот акт не входят.</p>
+                  </details>
+                  <Button type="button" variant="outline" className={documentDateIssue ? "action-attention" : ""} disabled={monthBounds.end > today} onClick={() => { setDocumentDate(today); setAsOfDate(today); }}>Обновить даты на сегодня</Button>
+                  {monthBounds.end > today && <p className="help-note">Итоговая сверка за месяц доступна после {dateLabel(monthBounds.end)}. Пока можно проверять записи и предпросмотр акта-расчёта.</p>}
+                  {documentDateIssue && monthBounds.end <= today && <p className="document-readiness" role="alert">{documentDateIssue}</p>}
+                  {!documentDateIssue && (data.invoices.some((invoice) => invoice.invoiceDate > asOfDate) ||
+                    [...data.payments, ...((toSignedKopecks(documentOpeningBalance) ?? 0) > 0 ? data.openingPayments ?? [] : [])].some((payment) => payment.paymentDate > asOfDate)) &&
+                    <p className="document-readiness">В сверку на {dateLabel(asOfDate)} не войдут более поздние счета и оплаты. Для полного расчёта выберите нужную дату или обновите даты на сегодня.</p>}
+                  <details className="document-options"><summary>Как получилась сумма акта</summary>
+                    <div className="calculation-list"><div><span>Бутылей по записям</span><strong>{number(calculation.actualUnits)}</strong></div><div><span>Бутылей в акте-расчёте</span><strong>{number(actCalculation.actualUnits)}</strong></div><div><span>Постоянная часть</span><strong>{money(actCalculation.baseKopecks)}</strong></div><div><span>Переменная часть</span><strong>{money(actCalculation.variableKopecks)}</strong></div><div><span>Итого в акте</span><strong>{money(actCalculation.totalKopecks)}</strong></div></div>
+                    <p className="help-note">Оплачиваемых дней: {actCalculation.payableDays}; простой: {actCalculation.downtimeDays}. Топливо заказчика вычитается из переменной части, затем при необходимости из постоянной. Даты топлива и общий вычет показаны в акте сверки.</p>
+                  </details>
+                  {missingMonthDays.length > 0 && <div className="document-readiness"><p>Дни без записи: {number(missingMonthDays.length)}. Проверьте календарь до подписания акта.</p><Button type="button" variant="outline" onClick={showMissingDays}>Проверить дни</Button></div>}
+                  {unpaidInvoices.length > 0 &&
+                    <div className="document-readiness"><p>Есть неоплаченные или частично оплаченные счета. Остатки будут указаны в сверке.</p><Button type="button" variant="outline" onClick={showInvoices}>Проверить счета и оплаты</Button></div>}
+                  {data.payments.reduce((sum, payment) => sum + payment.amountKopecks, 0) > netRent &&
+                    <p className="help-note text-amber-700">Оплаты превышают сумму после вычета топлива: переплата {money(data.payments.reduce((sum, payment) => sum + payment.amountKopecks, 0) - netRent)}.</p>}
+                  <div className="document-actions">
+                    <Button type="button" onClick={() => prepareDocument("act")}>Предпросмотр акта-расчёта</Button>
+                    <Button type="button" variant="outline" disabled={monthBounds.end > today} onClick={() => prepareDocument("reconciliation")}>Предпросмотр акта сверки</Button>
+                  </div>
+                  <details className="document-archive"><summary>Архив документов · {(data.documentArchive ?? []).filter((item) => item.kind === "act" || item.kind === "reconciliation").length}</summary>
+                    {(data.documentArchive ?? []).filter((item) => item.kind === "act" || item.kind === "reconciliation").map((item) => {
+                      const stale = archiveIsStale(item);
+                      return <div key={item.id} className="document-archive-row"><div><strong>{item.kind === "act" ? "Акт-расчёт" : item.kind === "reconciliation" ? "Акт сверки" : item.kind === "daily" ? "Ведомость" : "Реестр"} №{item.number} · версия {item.version}</strong>
+                        <small>{new Date(item.generatedAt).toLocaleString("ru-RU")} {stale ? "· Данные изменились после формирования" : "· Актуально"}</small></div>
+                        {item.pdfUri && <Button type="button" variant="outline" onClick={() => window.AndroidApp?.openArchivedPdf?.(item.pdfUri!)}>Открыть PDF</Button>}
+                        {item.pdfUri && <Button type="button" variant="ghost" onClick={() => window.AndroidApp?.shareArchivedPdf?.(item.pdfUri!)}>Отправить</Button>}
+                        <Button type="button" variant="outline" disabled={pdfSavingId !== null} onClick={() => saveArchivedPdf(item)}>{pdfSavingId === item.id ? "PDF готовится…" : item.pdfUri ? "Повторить PDF" : "Сохранить PDF"}</Button>
+                        <Button type="button" variant="outline" onClick={() => editArchivedDocument(item)}><Pencil />Изменить и создать заново</Button>
+                        <Button type="button" variant="ghost" onClick={() => askDeleteDocument(item)}><Trash2 />Удалить из архива</Button>
+                      </div>;
+                    })}
+                  </details>
+                </section>}
                 <section className="finance-summary">
                   <div><span>Выставлено</span><strong>{money(totalInvoiced)}</strong></div>
                   <div><span>Получено</span><strong>{money(totalPaid)}</strong></div>
                   <div><span>Долг по счетам</span><strong>{money(Math.max(0, totalInvoiced - totalPaid))}</strong></div>
                 </section>
-                <section className="panel payment-schedule">
-                  <div className="section-heading">
-                    <div>
-                      <span className="eyebrow">Порядок по договору</span>
-                      <h2>Сначала постоянная, затем переменная</h2>
-                    </div>
-                  </div>
+                <details className="panel payment-schedule document-options">
+                  <summary>Остатки постоянной и переменной частей</summary>
                   <div className="schedule-grid">
-                    <div><span>Постоянная часть</span><strong>{money(fixedTargetKopecks)}</strong><small>можно несколькими счетами</small></div>
+                    <div><span>Постоянная часть</span><strong>{money(fixedTargetKopecks)}</strong><small>{settlement.fixedFuelKopecks > 0 ? "после остатка вычета топлива; можно несколькими счетами" : "по договору и дням простоя; можно несколькими счетами"}</small></div>
                     <div><span>Осталось постоянной части</span><strong>{money(fixedRemainingKopecks)}</strong></div>
-                    <div><span>Переменная часть</span><strong>{money(calculation.variableKopecks)}</strong><small>{data.closure ? "рассчитана по итогам месяца" : "после закрытия месяца"}</small></div>
+                    <div><span>Переменная часть</span><strong>{money(variableTargetKopecks)}</strong><small>{data.closure ? customerFuel > 0 ? "после вычета топлива" : "рассчитана по итогам месяца" : "после закрытия месяца"}</small></div>
                   </div>
-                </section>
+                </details>
                 <Button type="button" onClick={() => openInvoice()} className="h-12 w-full sm:w-auto">
-                  <Plus />Добавить выставленный счёт
+                  <Plus />Составить счёт
                 </Button>
 
                 {data.invoices.length === 0 ? (
@@ -2798,11 +3361,14 @@ export default function RentalApp() {
                             </Button>
                           </div>
                           <div className="invoice-amounts">
-                            <div><span>Сумма</span><strong>{money(invoice.amountKopecks)}</strong></div>
+                            <div><span>Сумма счёта</span><strong>{money(invoice.amountKopecks)}</strong></div>
                             <div><span>Оплачено</span><strong>{money(paid)}</strong></div>
                             <div><span>Остаток</span><strong>{money(Math.max(0, invoice.amountKopecks - paid))}</strong></div>
                           </div>
-                          {invoice.dueDate && <p className="due-line">Срок оплаты: <strong>{dateLabel(invoice.dueDate)}</strong></p>}
+                            {invoice.dueDate && <p className="due-line">Срок оплаты: <strong>{dateLabel(invoice.dueDate)}</strong></p>}
+                            <p className="due-line">Период: <strong>{monthLabel(invoice.period)}</strong>{invoice.actNumber && <> · акт-расчёт №{invoice.actNumber}</>}</p>
+                            <p className="due-line">Дни бутылей: <strong>{invoice.bottleStartDate && invoice.bottleEndDate
+                              ? `${dateLabel(invoice.bottleStartDate)} — ${dateLabel(invoice.bottleEndDate)}` : "не указаны"}</strong></p>
                           {invoice.note && <p className="record-note">{invoice.note}</p>}
 
                           <Button
@@ -2811,8 +3377,8 @@ export default function RentalApp() {
                             className="invoice-copy-button"
                             onClick={() => {
                               if (!invoiceTextReady) {
-                                toast.error("Сначала заполните данные договора в настройках");
-                                openSettings();
+                                toast.error("Не хватает реквизитов для текста счёта");
+                                openRequisites();
                                 return;
                               }
                               setCopiedKey("");
@@ -2823,7 +3389,7 @@ export default function RentalApp() {
                           </Button>
 
                           {invoicePayments.length > 0 && (
-                            <div className="payment-list">
+                            <details className="invoice-payments document-options"><summary>Оплаты · {invoicePayments.length}</summary><div className="payment-list">
                               {invoicePayments.map((payment) => (
                                 <div key={payment.id}>
                                   <span>{dateLabel(payment.paymentDate)} · {payment.method === "bank" ? "Безналичные" : "Наличные"}</span>
@@ -2832,7 +3398,7 @@ export default function RentalApp() {
                             <Button type="button" variant="ghost" size="icon" onClick={() => askDeletePayment(payment)} aria-label="Удалить оплату"><Trash2 /></Button>
                                 </div>
                               ))}
-                            </div>
+                            </div></details>
                           )}
                           <Button type="button" variant="outline" onClick={() => openPayment(invoice)} className="mt-4 w-full sm:w-auto">
                             <Plus />Добавить оплату
@@ -2871,7 +3437,7 @@ export default function RentalApp() {
                     </Button>
                   ))}
                 </div>
-                <section className="panel expense-visual" aria-label="Структура расходов за месяц">
+                <details className="panel expense-chart-details document-options"><summary>Структура расходов за месяц</summary><section className="expense-visual" aria-label="Структура расходов за месяц">
                   <div className="expense-donut" style={{ background: expenseDonutBackground }}>
                     <div>
                       <span>Всего</span>
@@ -2890,7 +3456,7 @@ export default function RentalApp() {
                       </button>
                     ))}
                   </div>
-                </section>
+                </section></details>
                 <section className="panel expense-total">
                   <div>
                     <span className="eyebrow">{expenseFilter === "all" ? "Расходы за месяц" : `${expenseCategoryName(expenseFilter)} за месяц`}</span>
@@ -2898,28 +3464,22 @@ export default function RentalApp() {
                   </div>
                   <WalletCards />
                 </section>
-                <div className="expense-templates" aria-label="Быстрое добавление расхода">
+                {expenseShortcuts.length > 0 && <div className="expense-templates" aria-label="Быстрое добавление расхода">
                   <span>Быстро добавить</span>
                   <div>
-                    {expenseCategories.some((category) => category.id === "fuel") && (
-                      <button type="button" onClick={() => openExpenseTemplate("fuel", "customer")}><Fuel />Топливо заказчика</button>
-                    )}
-                    {expenseCategories.some((category) => category.id === "fuel") && (
-                      <button type="button" onClick={() => openExpenseTemplate("fuel", "self")}><Fuel />Моё топливо</button>
-                    )}
-                    {expenseCategories.some((category) => category.id === "repair") && (
-                      <button type="button" onClick={() => openExpenseTemplate("repair")}><Wrench />Ремонт</button>
-                    )}
+                    {expenseShortcuts.map((shortcut) => <button key={shortcut.id} type="button" onClick={() => openExpenseTemplate(shortcut)}>
+                      {shortcut.category === "fuel" ? <Fuel /> : shortcut.category === "repair" ? <Wrench /> : <WalletCards />}{shortcut.title}
+                    </button>)}
                   </div>
-                </div>
+                </div>}
                 <Button type="button" onClick={openExpense} className="h-12 w-full sm:w-auto">
                   <Plus />Добавить расход
                 </Button>
                 {expenseFilter === "all" && (
-                  <p className="help-note">Собственные расходы: {money(selfExpenses)}. Топливо заказчика: {money(customerFuel)} — вычитается из начисленной аренды.</p>
+                  <p className="help-note">Собственные расходы: {money(selfExpenses)}. Топливо заказчика: {money(customerFuel)}. Вычет с округлением до целых бутылей: {money(fuelDeduction)}.</p>
                 )}
                 {expenseFilter === "fuel" && (
-                  <p className="help-note">Оплатил я: {money(filteredSelfFuel)}. Оплатил заказчик: {money(filteredCustomerFuel)} — вычитается из начисленной аренды.</p>
+                  <p className="help-note">Оплатил я: {money(filteredSelfFuel)}. Оплатил заказчик: {money(filteredCustomerFuel)} — вычитается из суммы к оплате.</p>
                 )}
 
                 {filteredExpenses.length === 0 ? (
@@ -2939,7 +3499,7 @@ export default function RentalApp() {
                             <h2>{expenseCategoryName(expense.category)}</h2>
                             <strong>{money(expense.amountKopecks)}</strong>
                           </div>
-                          <p>{expense.payer === "customer" ? "Заказчик · вычет из аренды" : "Оплатил я"} · {dateLabel(expense.expenseDate)} · {expense.method === "bank" ? "Безналичные" : "Наличные"}</p>
+                          <p>{expense.payer === "customer" ? "Оплатил заказчик" : "Оплатил я"} · {dateLabel(expense.expenseDate)} · {expense.method === "bank" ? "Безналичные" : "Наличные"}</p>
                           {(expense.documentNumber || expense.note) && (
                             <p>{[expense.documentNumber && `Документ: ${expense.documentNumber}`, expense.note].filter(Boolean).join(" · ")}</p>
                           )}
@@ -2956,40 +3516,25 @@ export default function RentalApp() {
           ) : null}
         </Tabs>
 
-        {offlineMode && tab === "summary" && (
-          <section className="panel offline-storage-panel mt-4">
-            <div>
-              <span className="eyebrow">Хранение данных</span>
-              <strong>Всё сохранено на этом телефоне</strong>
-              <p>Приложение работает без интернета. Иногда сохраняйте копию, чтобы не потерять записи при поломке или замене телефона.</p>
-              <span className={backupDue ? "backup-status backup-status-due" : "backup-status"}>
-                {backupDue ? "● " : "✓ "}{lastBackupLabel}
-              </span>
-            </div>
-            <div className="offline-storage-actions">
-              <Button type="button" variant="outline" onClick={exportBackup}>
-                <Download />Сохранить копию
-              </Button>
-              <Button type="button" variant="outline" onClick={() => backupInputRef.current?.click()}>
-                <Upload />Восстановить
-              </Button>
-              <input
-                ref={backupInputRef}
-                type="file"
-                accept=".json,application/json"
-                className="hidden"
-                onChange={(event) => void restoreBackup(event)}
-              />
-            </div>
-          </section>
-        )}
+        {offlineMode && <input ref={backupInputRef} type="file" accept=".json,application/json" className="hidden" onChange={(event) => void restoreBackup(event)} />}
       </main>
+
+      <Dialog open={Boolean(documentPreview)} onOpenChange={(open) => !open && setDocumentPreview(null)}>
+        <DialogContent className="dialog-card document-preview-dialog">
+          <DialogHeader><DialogTitle>Предпросмотр документа</DialogTitle>
+            <DialogDescription>Проверьте суммы, даты и текст перед сохранением PDF. Подписи останутся пустыми.</DialogDescription>
+          </DialogHeader>
+          {documentPreview && <DocumentPreviewPages html={documentPreview.html} />}
+          <DialogFooter><Button type="button" variant="outline" onClick={() => setDocumentPreview(null)}>Назад</Button>
+            <Button type="button" onClick={() => void savePreviewedDocument()}>Сохранить PDF</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={closeMonthOpen} onOpenChange={setCloseMonthOpen}>
         <DialogContent className="dialog-card close-month-dialog sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Проверка перед закрытием</DialogTitle>
-            <DialogDescription>{monthLabel(month)}. После закрытия ежедневные записи и простой будут защищены от случайных изменений.</DialogDescription>
+            <DialogDescription>{monthLabel(month)}. Проверьте расчёт перед формированием акта. Позже записи можно исправить, а документ выпустить новой версией.</DialogDescription>
           </DialogHeader>
           <div className="month-close-checklist">
             <div><span><CalendarDays />Учётные дни</span><strong>{number(data?.entries.length ?? 0)}</strong></div>
@@ -2997,11 +3542,16 @@ export default function RentalApp() {
               <span>{missingMonthDays.length ? <CalendarDays /> : <CheckCircle2 />}Дни без записи</span>
               <strong>{number(missingMonthDays.length)}</strong>
             </div>
-            <div><span><CarFront />Учётные единицы</span><strong>{number(calculation.actualUnits)}</strong></div>
+            <div><span><CarFront />Бутылей по записям</span><strong>{number(calculation.actualUnits)}</strong></div>
             <div><span><CirclePause />Дни простоя</span><strong>{number(calculation.downtimeDays)}</strong></div>
+            <div><span>Оплачиваемых дней</span><strong>{calculation.payableDays}</strong></div>
             <div><span><Fuel />Топливо заказчика</span><strong>{money(customerFuel)}</strong></div>
+            {customerFuel > 0 && <div><span>Вычет с округлением</span><strong>−{money(fuelDeduction)}</strong></div>}
+            <div><span>Бутылей в акте-расчёте</span><strong>{number(actCalculation.actualUnits)}</strong></div>
+            <div><span>Постоянная часть в акте</span><strong>{money(actCalculation.baseKopecks)}</strong></div>
+            <div><span>Переменная часть в акте</span><strong>{money(actCalculation.variableKopecks)}</strong></div>
             <div><span><ReceiptText />Уже выставлено</span><strong>{money(totalInvoiced)}</strong></div>
-            <div className="month-close-total"><span><Banknote />Начислено по договору</span><strong>{money(calculation.totalKopecks)}</strong></div>
+            <div className="month-close-total"><span><Banknote />Итого после вычета топлива</span><strong>{money(netRent)}</strong></div>
             <div className="month-close-total month-close-remaining"><span><ReceiptText />Осталось выставить</span><strong>{money(remainingToInvoice)}</strong></div>
           </div>
           {missingMonthDays.length > 0 && (
@@ -3017,13 +3567,14 @@ export default function RentalApp() {
               Проверить незаполненные дни <ChevronRight />
             </button>
           )}
-          <p className="help-note">Закрытие не создаёт счёт автоматически. Оно фиксирует расчёт и открывает выставление переменной части.</p>
+          <p className="help-note">После закрытия можно выставить переменную часть и подготовить два акта. Расходы и счета должны быть внесены за этот месяц.</p>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setCloseMonthOpen(false)}>Отмена</Button>
             <Button type="button" disabled={busy} onClick={() => void closeMonth()}>
               {busy ? <LoaderCircle className="animate-spin" /> : <LockKeyhole />}
               Закрыть месяц
             </Button>
+            <Button type="button" variant="outline" onClick={() => { setCloseMonthOpen(false); prepareDocument("act"); }}>Предпросмотр акта</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -3073,7 +3624,6 @@ export default function RentalApp() {
           <Button
             type="button"
             className="h-12 w-full"
-            disabled={Boolean(data?.closure)}
             onClick={() => {
               setDowntimeListOpen(false);
               window.setTimeout(() => openDowntime(), 120);
@@ -3091,7 +3641,7 @@ export default function RentalApp() {
               {(data?.downtimes ?? []).map((downtime) => (
                 <article className="downtime-row" key={downtime.id}>
                   <span><CirclePause />{downtimeLabel(downtime)}</span>
-                  {!data?.closure && (
+                  {(
                     <div>
                       <Button
                         type="button"
@@ -3123,7 +3673,56 @@ export default function RentalApp() {
               ))}
             </div>
           )}
-          {data?.closure && <p className="locked-note"><LockKeyhole />Месяц закрыт. Чтобы изменить простой, сначала откройте месяц.</p>}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={monthCalendarOpen} onOpenChange={setMonthCalendarOpen}>
+        <DialogContent className="dialog-card month-calendar-dialog">
+          <DialogHeader>
+            <DialogTitle>{monthLabel(month)} · по дням</DialogTitle>
+            <DialogDescription>Нажмите день: запишите бутыли, добавьте расход или отметьте «Без выезда — простой». Пустая дата сама простоем не считается.</DialogDescription>
+          </DialogHeader>
+          <div className="month-calendar-weekdays" aria-hidden="true">{WEEKDAY_LABELS.map((day) => <span key={day}>{day}</span>)}</div>
+          <div className="month-calendar-grid">
+            {monthCalendarDays.map((day) => { const downtime = data?.downtimes?.some((row) => row.startDate <= day.date && row.endDate >= day.date); return <button
+              key={day.date}
+              type="button"
+              className={["month-day", !day.inMonth ? "month-day-outside" : "", !day.entry ? "month-day-empty" : "", day.missing ? "month-day-missing" : "", downtime ? "calendar-day-downtime" : !day.entry ? "calendar-day-empty" : "", day.date === entryDate ? "month-day-selected" : ""].filter(Boolean).join(" ")}
+              disabled={!day.inMonth}
+              aria-pressed={day.date === entryDate}
+              aria-label={`${dateLabel(day.date)}${downtime ? ", простой" : day.entry ? `, ${day.entry.units} бутылей, ${money(day.entry.units * documentSettings.rateKopecks)}` : ", записи нет"}`}
+              onClick={() => { setMonthCalendarOpen(false); openDayDetails(day.date); }}
+            >
+              <strong>{Number(day.date.slice(-2))}</strong>
+              <span className="month-day-units">{downtime ? <CirclePause aria-label="Простой" /> : day.entry ? `${number(day.entry.units)} б.` : day.missing ? "нет" : "—"}</span>
+              <small className="month-day-amount">{downtime ? "Простой" : day.entry ? money(day.entry.units * documentSettings.rateKopecks) : "—"}</small>
+            </button>; })}
+          </div>
+          <div className="month-calendar-legend"><span><i className="month-day-selected" />Выбранный день</span><span><i />Запись есть</span><span><CirclePause />Простой</span><span><i className="month-day-missing" />Нужно заполнить</span><span>— Нет записи</span></div>
+          <div className="week-totals">
+            <div><span>Бутылей за месяц</span><strong>{number(calculation.actualUnits)}</strong></div>
+            <div><span>Количество × ставка</span><strong>{money(calculation.actualUnits * documentSettings.rateKopecks)}</strong></div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={dayDetailsOpen} onOpenChange={setDayDetailsOpen}>
+        <DialogContent className="dialog-card calendar-day-details sm:max-w-md">
+          <DialogHeader><DialogTitle>{dateLabel(entryDate)}</DialogTitle>
+            <DialogDescription>Выберите, что записать за этот день. Простой — полный день, когда машина не выезжала.</DialogDescription>
+          </DialogHeader>
+          <p className="calendar-day-status">{selectedDowntime ? <><CirclePause />{selectedDowntime.kind === "no_trip" ? "Без выезда — простой" : "Простой: " + selectedDowntime.reason}</> : selectedEntry ? <><CheckCircle2 />{number(selectedEntry.units)} бутылей · {money(selectedEntry.units * documentSettings.rateKopecks)}</> : "Записи пока нет"}</p>
+          {selectedDowntime && (selectedEntry?.units ?? 0) > 0 && <p className="help-note">В сохранённых данных за этот день также есть {number(selectedEntry!.units)} бутылей. Проверьте запись и период простоя.</p>}
+          {selectedDayClaims.length > 0 && <div className="invoice-allocation-summary"><strong>Включено в счета: {money(selectedDayAllocated)}</strong>{selectedDayClaims.map(({ invoice, amountKopecks }) => <p key={invoice.id}>Счёт №{invoice.invoiceNumber}: {money(amountKopecks)}</p>)}</div>}
+          {selectedEntry && <p className="help-note">{selectedDayLegacy.length ? "Часть старых счетов ещё требует проверки привязки. Остаток дня уточнится после подтверждения." : `Не включено в счета: ${money(Math.max(0, selectedEntry.units * documentSettings.rateKopecks - selectedDayAllocated))}.`}</p>}
+          <div className="calendar-day-actions">
+            <Button type="button" disabled={selectedDowntime?.kind === "no_trip"} onClick={() => { setDayDetailsOpen(false); openEntryForDate(entryDate); }}><Pencil />{selectedEntry ? "Изменить бутыли" : "Записать бутыли"}</Button>
+            <Button type="button" variant="outline" disabled={entryDate > today || entryDate < documentSettings.rentalStart || entryDate > documentSettings.rentalEnd || (!selectedDowntime && (selectedEntry?.units ?? 0) > 0)} onClick={() => { setDayDetailsOpen(false); openDowntime(selectedDowntime, entryDate); }}><CirclePause />{selectedDowntime ? "Изменить простой" : "Без выезда — простой"}</Button>
+            {selectedDowntimes.some((day) => day.kind === "no_trip") && <Button type="button" variant="outline" disabled={busy} onClick={async () => { await request({ action: "delete_downtime_day", date: entryDate }, "Простой за этот день снят"); }}><UnlockKeyhole />Снять простой за этот день</Button>}
+            <Button type="button" variant="outline" onClick={() => { setDayDetailsOpen(false); openExpense(entryDate); }}><WalletCards />Добавить расход за день</Button>
+          </div>
+          {(selectedEntry?.units ?? 0) > 0 && !selectedDowntime && <p className="help-note">Есть развезённые бутыли. Если машина не выезжала, сначала проверьте количество в записи.</p>}
+          {selectedDowntime?.kind === "no_trip" && <p className="help-note">Чтобы внести бутыли, сначала снимите простой за этот день.</p>}
         </DialogContent>
       </Dialog>
 
@@ -3139,12 +3738,8 @@ export default function RentalApp() {
             <DialogTitle>Быстрая запись</DialogTitle>
             <DialogDescription>Выберите день и укажите количество бутылок.</DialogDescription>
           </DialogHeader>
-          {data?.closure ? (
-            <div className="locked-note">
-              <LockKeyhole className="size-5" />
-              Месяц закрыт — новые записи недоступны.
-            </div>
-          ) : (
+          {entrySavedMessage && <p className="entry-saved-state" role="status"><CheckCircle2 />{entrySavedMessage}</p>}
+          {(
             <form onSubmit={saveEntry} className="dialog-form quick-entry-dialog-form">
               <label>
                 <FieldLabel>Дата</FieldLabel>
@@ -3184,6 +3779,61 @@ export default function RentalApp() {
               <p className="quick-dialog-hint">После сохранения дата автоматически перейдёт на следующий день.</p>
             </form>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={taxOpen} onOpenChange={setTaxOpen}>
+        <DialogContent className="dialog-card tax-dialog sm:max-w-lg">
+          <DialogHeader><DialogTitle>УСН 6% · {taxYear}</DialogTitle>
+            <DialogDescription>Оплаты учитываются по дате поступления денег, даже если счёт выставлен за другой месяц.</DialogDescription>
+          </DialogHeader>
+          <div className="tax-dialog-scroll">
+            <div className="tax-figures">
+              <div><span>Аренда с начала года</span><strong>{money(tax.rentalKopecks)}</strong></div>
+              <div><span>Прочие доходы ИП на УСН</span><strong>{money(tax.otherKopecks)}</strong></div>
+              <div><span>Резерв 6% с поступлений квартала</span><strong>{money(tax.reserveKopecks)}</strong></div>
+              <div><span>УСН 6% с начала года</span><strong>{money(tax.grossKopecks)}</strong></div>
+              <div><span>Вычет по взносам</span><strong>−{money(tax.deductionKopecks)}</strong></div>
+              <div><span>Отмечено уплаченным</span><strong>−{money(tax.paidKopecks)}</strong></div>
+              <div className="tax-due"><span>Ориентир к доплате за {taxQuarter} квартал</span><strong>{money(tax.outstandingKopecks)}</strong></div>
+            </div>
+            <p className="help-note">Расчёт накопительно с 1 января по конец квартала. Отдельно предполагаемый взнос 1% сверх 300 000 ₽ дохода: {money(tax.extraInsuranceKopecks)}. Это взнос ИП, не дополнительный налог 6%.</p>
+            <form onSubmit={(event) => void saveTaxOptions(event)} className="dialog-form tax-form">
+              <strong>Уменьшение налога</strong>
+              <label><FieldLabel>Взносы для вычета в {taxYear} году, ₽</FieldLabel>
+                <Input inputMode="decimal" value={taxDeduction} onChange={(event) => setTaxDeduction(event.target.value)} /></label>
+              <label className="tax-checkbox"><input type="checkbox" checked={taxHasWorkers} onChange={(event) => setTaxHasWorkers(event.target.checked)} /> Есть выплаты работникам или исполнителям на этом ИП</label>
+              <p className="help-note">Укажите только взносы, которые применяете к УСН и ещё не использовали для патента. При выплатах физлицам вычет ограничен половиной налога. Фиксированные взносы за полный 2026 год — 57 390 ₽; их уплату учитывайте отдельно.</p>
+              <Button type="submit" variant="outline" disabled={busy}>Сохранить вычет</Button>
+            </form>
+            <form onSubmit={(event) => void saveTaxAdjustment(event)} className="dialog-form tax-form">
+              <strong>Другой доход или перечисленный налог</strong>
+              <Select value={taxKind} onValueChange={(value) => setTaxKind(value as TaxAdjustment["kind"])}>
+                <SelectTrigger aria-label="Тип записи"><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="income">Другой доход ИП на УСН</SelectItem><SelectItem value="tax_paid">Уплатил УСН</SelectItem></SelectContent>
+              </Select>
+              <div className="grid grid-cols-2 gap-3"><label><FieldLabel>Дата</FieldLabel><Input type="date" value={taxDate} onChange={(event) => setTaxDate(event.target.value)} required /></label>
+                <label><FieldLabel>Сумма, ₽</FieldLabel><Input inputMode="decimal" value={taxAmount} onChange={(event) => setTaxAmount(event.target.value)} required /></label></div>
+              <label><FieldLabel>Примечание</FieldLabel><Input value={taxNote} onChange={(event) => setTaxNote(event.target.value)} /></label>
+              <Button type="submit" disabled={busy}>Добавить запись</Button>
+            </form>
+            <div className="tax-records">{(data?.taxAdjustments ?? []).filter((row) => row.date.startsWith(String(taxYear)))
+              .sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).map((row) =>
+                <div key={row.id}><span>{dateLabel(row.date)} · {row.kind === "income" ? "Доход" : "УСН уплачен"}{row.note ? ` · ${row.note}` : ""}</span>
+                  <strong>{money(row.amountKopecks)}</strong>
+                  <Button type="button" variant="ghost" size="icon" aria-label="Удалить налоговую запись" onClick={() => void request({ action: "delete_tax_adjustment", id: row.id }, "Запись удалена")}><Trash2 /></Button></div>)}</div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={monthToolsOpen} onOpenChange={setMonthToolsOpen}>
+        <DialogContent className="dialog-card sm:max-w-md">
+          <DialogHeader><DialogTitle>Управление месяцем</DialogTitle><DialogDescription>{monthLabel(month)}. Проверьте записи и топливо перед итоговым расчётом.</DialogDescription></DialogHeader>
+          <div className="calculation-list"><div><span>Оплаты минус собственные расходы</span><strong>{money(cashResult)}</strong></div></div>
+          <div className="settings-data-actions">
+            {data?.closure ? <Button type="button" variant="outline" onClick={() => { setMonthToolsOpen(false); askReopenMonth(); }}><UnlockKeyhole />Открыть месяц</Button> : <Button type="button" onClick={() => { setMonthToolsOpen(false); askCloseMonth(); }} disabled={monthBounds.end > today}><LockKeyhole />Проверить и закрыть месяц</Button>}
+            {offlineMode && <><Button type="button" variant="outline" onClick={() => { setMonthToolsOpen(false); setDowntimeListOpen(true); }}><CirclePause />Простои за месяц</Button><Button type="button" variant="outline" onClick={() => { setMonthToolsOpen(false); setAuditOpen(true); }}><History />История изменений</Button></>}
+          </div>
         </DialogContent>
       </Dialog>
 
@@ -3300,7 +3950,7 @@ export default function RentalApp() {
         <DialogContent className="dialog-card max-h-[92vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingInvoiceId === null ? "Добавить выставленный счёт" : "Редактировать счёт"}</DialogTitle>
-            <DialogDescription>Период счёта — выбранный месяц. Изменения сохраняются только в приложении, документ в банке нужно исправить отдельно.</DialogDescription>
+            <DialogDescription>Укажите сумму. Приложение подберёт дни ровно на неё, начиная с остатка предыдущего счёта. Реальное количество бутылей не изменится.</DialogDescription>
           </DialogHeader>
           <form onSubmit={createInvoice} className="dialog-form">
             <label>
@@ -3310,31 +3960,92 @@ export default function RentalApp() {
                 onValueChange={(value) => {
                   const kind = value as Invoice["kind"];
                   setInvoiceKind(kind);
+                  setInvoiceReplan(true);
+                  if (editingInvoiceId === null) setInvoicePeriodAutomatic(true);
                   if (editingInvoiceId === null && kind === "fixed") setInvoiceAmount(fixedRemainingKopecks > 0 ? String(fixedRemainingKopecks / 100) : "");
                   if (editingInvoiceId === null && kind === "variable") setInvoiceAmount(variableRemainingKopecks > 0 ? String(variableRemainingKopecks / 100) : "");
+                  if (editingInvoiceId === null && kind === "other") setInvoiceAmount(remainingToInvoice > 0 ? String(remainingToInvoice / 100) : "");
                 }}
               >
                 <SelectTrigger className="h-11 w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="fixed">Часть постоянной арендной платы</SelectItem>
-                  <SelectItem value="variable" disabled={!data?.closure && editingInvoiceId === null}>Переменная часть</SelectItem>
+                  <SelectItem value="variable" disabled={editingInvoiceId === null && (!data?.closure || fixedRemainingKopecks > 0)}>Переменная часть</SelectItem>
                   <SelectItem value="other">Прочее начисление</SelectItem>
                 </SelectContent>
               </Select>
               {editingInvoiceId === null && <p className="help-note">Постоянную часть можно выставлять несколькими счетами. Переменная доступна после закрытия месяца.</p>}
             </label>
+            <label><FieldLabel>Дата счёта</FieldLabel><Input type="date" value={invoiceDate} onChange={(event) => setInvoiceDate(event.target.value)} required /></label>
             <div className="grid grid-cols-2 gap-3">
               <label><FieldLabel>Номер счёта</FieldLabel><Input value={invoiceNumber} onChange={(event) => setInvoiceNumber(event.target.value)} placeholder="Например, 24" required /></label>
-              <label><FieldLabel>Сумма, ₽</FieldLabel><Input type="number" min="0.01" step="0.01" inputMode="decimal" value={invoiceAmount} onChange={(event) => setInvoiceAmount(event.target.value)} required /></label>
+              <label><FieldLabel>Сумма выставленного счёта, ₽</FieldLabel><Input type="number" min="0.01" step="0.01" inputMode="decimal" value={invoiceAmount} onChange={(event) => { setInvoiceAmount(event.target.value); setInvoiceReplan(true); }} required /></label>
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <label><FieldLabel>Дата счёта</FieldLabel><Input type="date" value={invoiceDate} onChange={(event) => setInvoiceDate(event.target.value)} required /></label>
+            <p className="help-note">Укажите сумму самого счёта. Полученную оплату добавьте отдельно.</p>
+            {invoiceUsesAllocation ? <section className="invoice-allocation-preview rounded-xl border border-border p-3 space-y-3" aria-label="Предложенная привязка суммы счёта">
+              <div>
+                <strong>{invoiceAllocation.ready ? "Привязка ровно на " : "Сумма счёта: "}{money(toKopecks(invoiceAmount))}</strong>
+                {!invoiceAllocation.needsReview && invoiceAllocation.startDate && invoiceAllocation.endDate && <p>{dateLabel(invoiceAllocation.startDate)} — {dateLabel(invoiceAllocation.endDate)}</p>}
+                {invoiceAllocationState.preserving && !invoiceAllocationState.error && <p className="help-note">Сохранённая привязка остаётся прежней. Изменение номера, примечания или срока оплаты её не меняет.</p>}
+              </div>
+              {invoiceAllocation.needsReview && <div role="alert" className="space-y-2">
+                <p className="help-note">{invoiceAllocation.legacyInvoiceNumbers.length > 0 || invoiceAllocation.invalidInvoiceNumbers.length > 0
+                  ? `Перед новым счётом нужно проверить старые привязки: №${[...invoiceAllocation.legacyInvoiceNumbers, ...invoiceAllocation.invalidInvoiceNumbers].join(", №")}. Суммы и оплаты старых счетов сохраняются.`
+                  : "Проверьте дату счёта, срок аренды и ежедневные записи. Для этих данных точный подбор пока недоступен."}</p>
+                {nextInvoiceForReview && <Button type="button" variant="outline" className="w-full" onClick={() => editInvoice(nextInvoiceForReview, true)}>Проверить счёт №{nextInvoiceForReview.invoiceNumber}</Button>}
+              </div>}
+              {!invoiceAllocation.needsReview && (invoiceAllocation.legacyInvoiceNumbers.length > 0 || invoiceAllocation.invalidInvoiceNumbers.length > 0) &&
+                <p className="help-note" role="status">После этого проверьте более поздние счета: №{[...invoiceAllocation.legacyInvoiceNumbers, ...invoiceAllocation.invalidInvoiceNumbers].join(", №")}. Их суммы и оплаты не изменены.</p>}
+              {invoiceAllocationState.error && <p className="help-note" role="alert">{invoiceAllocationState.error}</p>}
+              {!invoiceAllocation.needsReview && invoiceAllocation.uncoveredKopecks > 0 && <div role="alert" className="space-y-2">
+                <p className="help-note">На эту сумму пока не хватает записей или остатка аренды. Можно подтвердить {money(invoiceAllocation.coveredKopecks)}; не покрыто {money(invoiceAllocation.uncoveredKopecks)}. Добавьте недостающие дни либо проверьте сумму.</p>
+                {editingInvoiceId === null && invoiceAllocation.coveredKopecks > 0 && <Button type="button" variant="outline" className="w-full" onClick={() => {
+                  setInvoiceAmount(String(invoiceAllocation.coveredKopecks / 100)); setInvoiceReplan(true);
+                }}>Выставить только доступные {money(invoiceAllocation.coveredKopecks)}</Button>}
+              </div>}
+              {!invoiceAllocation.needsReview && invoiceAllocation.bottleAllocations.length > 0 && <details className="document-options" open={invoiceAllocation.bottleAllocations.length <= 4}>
+                <summary>Как набрана сумма · {invoiceAllocation.bottleAllocations.length} дн.</summary>
+                <div className="invoice-allocation-days space-y-3">{invoiceAllocation.bottleAllocations.map((row) => {
+                  const day = invoiceAllocation.days.find((item) => item.date === row.date);
+                  return <div className="rounded-lg bg-muted/50 p-3" key={row.date}>
+                    <strong>{dateLabel(row.date)}</strong>
+                    {day && <p className="help-note">Фактически: {number(day.units)} бутылей · {money(day.grossKopecks)} по ставке.</p>}
+                    {day && day.alreadyAllocatedKopecks > 0 && <p className="help-note">Уже в других счетах: {money(day.alreadyAllocatedKopecks)}.</p>}
+                    <p>В этот счёт: <strong>{money(row.amountKopecks)}</strong></p>
+                    {day && day.remainingKopecks > 0 && <p className="help-note">Остаток этого дня: {money(day.remainingKopecks)}.</p>}
+                  </div>;
+                })}</div>
+              </details>}
+              {!invoiceAllocation.needsReview && invoiceAllocation.lastDayRemainingKopecks > 0 && <p className="help-note">Последний день включён частично. Его остаток {money(invoiceAllocation.lastDayRemainingKopecks)} будет учитываться при следующем подборе в пределах оставшейся аренды.</p>}
+              {!invoiceAllocation.needsReview && invoiceAllocation.rentalSupplementKopecks > 0 && <p>Доплата до постоянной части: <strong>{money(invoiceAllocation.rentalSupplementKopecks)}</strong>. Это аренда по договору; дополнительные бутыли не создаются.</p>}
+              <p className="help-note">Топливо учтено в остатке аренды и вычитается в конце месяца. Из записей отдельных дней оно здесь не вычитается.</p>
+              {invoiceAllocation.ready && <div className="invoice-allocation-summary">
+                {invoiceKind !== "other" && <p>Останется {invoiceKind === "fixed" ? "постоянной" : "переменной"} части: <strong>{money(Math.max(0, (invoiceKind === "fixed" ? fixedTargetKopecks : variableTargetKopecks) - (data?.invoices.filter((item) => item.id !== editingInvoiceId && item.kind === invoiceKind).reduce((sum, item) => sum + item.amountKopecks, 0) ?? 0) - toKopecks(invoiceAmount)))}</strong></p>}
+                <p>Останется выставить за месяц: <strong>{money(Math.max(0, netRent - (data?.invoices.filter((item) => item.id !== editingInvoiceId).reduce((sum, item) => sum + item.amountKopecks, 0) ?? 0) - toKopecks(invoiceAmount)))}</strong></p>
+              </div>}
+              {!invoiceReplan && <Button type="button" variant="outline" className="w-full" onClick={() => { setInvoiceReplan(true); setInvoicePeriodAutomatic(true); }}>Подобрать даты заново</Button>}
+            </section> : <div className="rounded-xl border border-border p-3 space-y-2">
+              <p className="help-note">Старый счёт: здесь можно исправить номер, дату и примечание, сохранив прежнюю сумму. Точная денежная привязка к дням пока не добавлена.</p>
+              <Button type="button" className="w-full" onClick={() => { setInvoiceReplan(true); setInvoicePeriodAutomatic(true); }}>Подобрать точную привязку</Button>
+            </div>}
+            <details className="document-options"><summary>Выбрать дни вручную</summary>
+              <p className="help-note">Обычно даты подбираются автоматически. Укажите границы, если счёт должен относиться только к части месяца.</p>
+              <div className="grid grid-cols-2 gap-3">
+                <label><FieldLabel>Первый день бутылей</FieldLabel><Input type="date" min={`${month}-01`} max={periodBounds(month).end} value={invoiceStartDate} onChange={(event) => { setInvoicePeriodAutomatic(false); setInvoiceReplan(true); setInvoiceStartDate(event.target.value); }} /></label>
+                <label><FieldLabel>Последний день бутылей</FieldLabel><Input type="date" min={`${month}-01`} max={periodBounds(month).end} value={invoiceEndDate} onChange={(event) => { setInvoicePeriodAutomatic(false); setInvoiceReplan(true); setInvoiceEndDate(event.target.value); }} /></label>
+              </div>
+              <Button type="button" variant="outline" className="w-full" aria-pressed={invoicePeriodAutomatic} onClick={() => { setInvoicePeriodAutomatic(true); setInvoiceReplan(true); }}>Подобрать период автоматически</Button>
+            </details>
+            {editingInvoiceId === null && invoiceKind !== "other" && <p className="help-note">Предложенная сумма — остаток {invoiceKind === "fixed" ? "постоянной" : "переменной"} части аренды за месяц. Её можно изменить для частичного счёта.</p>}
+            <details className="document-options"><summary>Дополнительно: акт, срок оплаты, примечание</summary>
+              <label><FieldLabel>Связанный акт-расчёт №</FieldLabel><Input value={invoiceActNumber} onChange={(event) => setInvoiceActNumber(event.target.value)} placeholder="Необязательно для предварительного счёта" /></label>
               <label><FieldLabel>Срок оплаты</FieldLabel><Input type="date" value={invoiceDueDate} onChange={(event) => setInvoiceDueDate(event.target.value)} /></label>
-            </div>
-            <label><FieldLabel>Примечание</FieldLabel><Textarea value={invoiceNote} onChange={(event) => setInvoiceNote(event.target.value)} placeholder="Необязательно" /></label>
+              <p className="help-note">По договору — 10 календарных дней после получения счёта; для переменной части также нужен акт. Укажите срок, когда известна дата получения.</p>
+              <label><FieldLabel>Примечание</FieldLabel><Textarea value={invoiceNote} onChange={(event) => setInvoiceNote(event.target.value)} placeholder="Необязательно" /></label>
+            </details>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setInvoiceOpen(false)}>Отмена</Button>
-              <Button type="submit" disabled={busy}>{busy && <LoaderCircle className="animate-spin" />}Сохранить счёт</Button>
+              <Button type="submit" disabled={busy || (invoiceUsesAllocation && !invoiceAllocation.ready)}>{busy && <LoaderCircle className="animate-spin" />}{invoiceReplan ? "Подтвердить и сохранить счёт" : "Сохранить изменения"}</Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -3359,6 +4070,16 @@ export default function RentalApp() {
               </Select>
             </label>
             <label><FieldLabel>Платёжный или кассовый документ</FieldLabel><Input value={paymentDocument} onChange={(event) => setPaymentDocument(event.target.value)} placeholder="Номер — необязательно" /></label>
+            {editingPaymentId === null && (data?.invoices.length ?? 0) > 1 && <div className="payment-allocation">
+              <Button type="button" variant="outline" onClick={() => setPaymentSplits(paymentSplits ? null : { [paymentInvoiceId ?? 0]: paymentAmount })}>
+                {paymentSplits ? "Один счёт" : "Разнести платёж по нескольким счетам"}
+              </Button>
+              {paymentSplits && <div className="document-fields">{data?.invoices.map((invoice) => (
+                <label key={invoice.id}><FieldLabel>Счёт №{invoice.invoiceNumber} · {monthLabel(invoice.period)}</FieldLabel>
+                  <Input type="number" min="0" step="0.01" inputMode="decimal" value={paymentSplits[invoice.id] ?? ""}
+                    onChange={(e) => setPaymentSplits((values) => ({ ...values, [invoice.id]: e.target.value }))} placeholder="0" /></label>
+              ))}</div>}
+            </div>}
             <label><FieldLabel>Примечание</FieldLabel><Textarea value={paymentNote} onChange={(event) => setPaymentNote(event.target.value)} placeholder="Необязательно" /></label>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setPaymentOpen(false)}>Отмена</Button>
@@ -3381,7 +4102,7 @@ export default function RentalApp() {
                 value={expenseCategory}
                 onValueChange={(value) => {
                   setExpenseCategory(value);
-                  if (editingExpenseId === null && value === "base_lease") setExpenseAmount("20000");
+                  if (value !== "fuel") setExpensePayer("self");
                 }}
               >
                 <SelectTrigger className="h-11 w-full"><SelectValue /></SelectTrigger>
@@ -3472,12 +4193,23 @@ export default function RentalApp() {
       </Dialog>
 
       <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <DialogContent className="dialog-card sm:max-w-lg">
+        <DialogContent className="dialog-card settings-dialog max-h-[92dvh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Настройки расчёта</DialogTitle>
-            <DialogDescription>Здесь можно изменить постоянную часть, контрольный объём и ставку за единицу.</DialogDescription>
+            <DialogTitle>Настройки приложения</DialogTitle>
+            <DialogDescription>Резервные копии, оформление и быстрые расходы. Реквизиты договора подставляются автоматически.</DialogDescription>
           </DialogHeader>
           <form onSubmit={saveSettings} className="dialog-form">
+            <div className="settings-section">
+              <strong>Копии и выгрузка</strong>
+              <p className={backupDue ? "backup-status backup-status-due" : "backup-status"}>{lastBackupLabel}</p>
+              <div className="settings-data-actions">
+                <Button type="button" variant="outline" onClick={exportBackup}><Download />Сохранить копию</Button>
+                <Button type="button" variant="outline" onClick={() => { setSettingsOpen(false); window.setTimeout(() => backupInputRef.current?.click(), 100); }}><Upload />Восстановить копию</Button>
+                <Button type="button" variant="outline" disabled={!data || loading} onClick={exportExcel}><FileSpreadsheet />Скачать Excel</Button>
+              </div>
+              <p className="help-note">JSON-копия сохраняет все записи и реквизиты. Excel — отчёт за выбранный месяц.</p>
+              {missingDocumentFields.length > 0 && <Button type="button" variant="outline" onClick={openRequisites}>Заполнить недостающие реквизиты</Button>}
+            </div>
             <div className="settings-section theme-settings-row">
               <div>
                 <strong>Оформление</strong>
@@ -3496,26 +4228,48 @@ export default function RentalApp() {
               </div>
             </div>
 
-            <div className="settings-section">
-              <strong>Условия аренды</strong>
-              <label><FieldLabel>Постоянная часть за полный месяц, ₽</FieldLabel><Input type="number" min="0.01" step="0.01" inputMode="decimal" value={settingsDraft.baseKopecks / 100} onChange={(event) => setSettingsDraft((value) => ({ ...value, baseKopecks: Math.round(Number(event.target.value) * 100) }))} required /></label>
-              <div className="grid grid-cols-2 gap-3">
-                <label><FieldLabel>Контрольный объём, ед.</FieldLabel><Input type="number" min="0" step="1" inputMode="numeric" value={settingsDraft.includedUnits} onChange={(event) => setSettingsDraft((value) => ({ ...value, includedUnits: Number(event.target.value) }))} required /></label>
-                <label><FieldLabel>Ставка за единицу, ₽</FieldLabel><Input type="number" min="0" step="0.01" inputMode="decimal" value={settingsDraft.rateKopecks / 100} onChange={(event) => setSettingsDraft((value) => ({ ...value, rateKopecks: Math.round(Number(event.target.value) * 100) }))} required /></label>
-              </div>
-              <p className="help-note">Итог месяца — большая из сумм: постоянная часть с учётом простоя или количество × ставка. Переменная часть равна положительной разнице между ними.</p>
-            </div>
+            <label className="settings-section motion-settings-row">
+              <span><strong>Плавные переходы</strong><small>Мягкое открытие окон и подтверждение записи. Настройка уменьшения движения на телефоне тоже учитывается.</small></span>
+              <input type="checkbox" checked={motionEnabled} onChange={(event) => changeMotion(event.target.checked)} />
+            </label>
 
-            <div className="settings-section">
-              <strong>Данные для текста счёта</strong>
-              <div className="grid grid-cols-2 gap-3">
-                <label><FieldLabel>Номер договора</FieldLabel><Input value={settingsDraft.contractNumber} onChange={(event) => setSettingsDraft((value) => ({ ...value, contractNumber: event.target.value }))} required /></label>
-                <label><FieldLabel>Дата договора</FieldLabel><Input type="date" value={settingsDraft.contractDate} onChange={(event) => setSettingsDraft((value) => ({ ...value, contractDate: event.target.value }))} required /></label>
-              </div>
-              <label><FieldLabel>Автомобиль</FieldLabel><Input value={settingsDraft.vehicleModel} onChange={(event) => setSettingsDraft((value) => ({ ...value, vehicleModel: event.target.value }))} placeholder="Например, Fiat Ducato" required /></label>
-              <label><FieldLabel>VIN</FieldLabel><Input value={settingsDraft.vehicleVin} onChange={(event) => setSettingsDraft((value) => ({ ...value, vehicleVin: event.target.value }))} required /></label>
-              <p className="help-note">Эти данные хранятся только на телефоне и автоматически подставляются в тексты для банка и письма.</p>
-            </div>
+            <details className="settings-section expense-shortcuts-settings document-options">
+              <summary>Быстрые кнопки расходов</summary>
+              <p className="help-note">Настройте название, категорию, плательщика и сумму для быстрого ввода.</p>
+              {expenseShortcutsDraft.map((shortcut, index) => <div key={shortcut.id} className="expense-shortcut-editor">
+                <div className="expense-shortcut-editor-heading"><strong>{shortcut.title || `Кнопка № ${index + 1}`}</strong>
+                  <Button type="button" variant="ghost" size="icon" aria-label={`Удалить быструю кнопку № ${index + 1}`} onClick={() => setExpenseShortcutsDraft((items) => items.filter((item) => item.id !== shortcut.id))}><Trash2 /></Button>
+                </div>
+                <div className="expense-shortcut-fields">
+                  <label><FieldLabel>Название кнопки</FieldLabel><Input value={shortcut.title} maxLength={40} onChange={(event) => updateExpenseShortcut(shortcut.id, { title: event.target.value })} /></label>
+                  <label><FieldLabel>Категория</FieldLabel><select value={shortcut.category} onChange={(event) => updateExpenseShortcut(shortcut.id, { category: event.target.value, payer: event.target.value === "fuel" ? shortcut.payer : "self" })}>
+                    {expenseCategories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+                  </select></label>
+                  <label><FieldLabel>Кто оплатил</FieldLabel><select value={shortcut.payer} onChange={(event) => updateExpenseShortcut(shortcut.id, { payer: event.target.value as ExpenseShortcut["payer"] })}>
+                    <option value="self">Оплатил я</option>{shortcut.category === "fuel" && <option value="customer">Оплатил заказчик</option>}
+                  </select></label>
+                  <label><FieldLabel>Сумма, ₽</FieldLabel><Input type="number" min="0" step="0.01" inputMode="decimal" value={shortcut.amountKopecks / 100} onChange={(event) => updateExpenseShortcut(shortcut.id, { amountKopecks: Math.round(Number(event.target.value) * 100) })} /></label>
+                </div>
+              </div>)}
+              {expenseShortcutsDraft.length === 0 && <p className="help-note">Быстрых кнопок пока нет.</p>}
+              <p className="help-note">Сумма 0 — при добавлении расхода сумма вводится вручную. Можно создать до 8 кнопок.</p>
+              <Button type="button" variant="outline" onClick={addExpenseShortcut} disabled={expenseShortcutsDraft.length >= 8 || !expenseCategories.length}><Plus />Добавить кнопку</Button>
+            </details>
+
+            <details className="settings-app-section contract-summary">
+              <summary>Наш договор и реквизиты</summary>
+              <p className="help-note">Используются сохранённые данные телефона. После восстановления копии они подставляются автоматически.</p>
+              <dl>
+                <div><dt>Договор</dt><dd>№{documentSettings.contractNumber} от {dateLabel(documentSettings.contractDate)}</dd></div>
+                <div><dt>Срок аренды</dt><dd>{dateLabel(documentSettings.rentalStart)} — {dateLabel(documentSettings.rentalEnd)}</dd></div>
+                <div><dt>Автомобиль</dt><dd>{documentSettings.vehicleModel}, {documentSettings.vehicleYear} · {documentSettings.vehiclePlate || "госномер не заполнен"}</dd></div>
+                <div><dt>Постоянная часть</dt><dd>{money(documentSettings.baseKopecks)} за полный месяц</dd></div>
+                <div><dt>Контрольный объём и ставка</dt><dd>{number(documentSettings.includedUnits)} бутылей · {money(documentSettings.rateKopecks)} за бутыль</dd></div>
+                {DOCUMENT_TEXT_FIELDS.filter((field) => !["contractNumber", "rentalStart", "rentalEnd", "vehicleModel", "vehicleYear", "vehiclePlate", "lessorDative"].includes(field)).map((field) =>
+                  <div key={field}><dt>{DOCUMENT_FIELD_LABELS[field]}</dt><dd>{documentSettings[field] || "Не заполнено"}</dd></div>)}
+              </dl>
+              {missingDocumentFields.length > 0 && <div className="document-readiness"><p>Не заполнено реквизитов: {missingDocumentFields.length}. Восстановите копию или заполните их при первом запуске.</p><Button type="button" variant="outline" onClick={openRequisites}>Заполнить недостающие реквизиты</Button></div>}
+            </details>
 
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setSettingsOpen(false)}>Отмена</Button>
@@ -3525,18 +4279,34 @@ export default function RentalApp() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={requisitesOpen} onOpenChange={setRequisitesOpen}>
+        <DialogContent className="dialog-card sm:max-w-lg">
+          <DialogHeader><DialogTitle>Первичное заполнение реквизитов</DialogTitle>
+            <DialogDescription>Заполните только недостающие данные сторон и автомобиля. Они сохранятся на телефоне и появятся в обоих актах и тексте счёта.</DialogDescription>
+          </DialogHeader>
+          <p className="help-note">Если у вас есть JSON-копия с телефона, восстановите её: вводить эти данные заново не потребуется.</p>
+          <form onSubmit={saveRequisites} className="dialog-form">
+            {missingDocumentFields.map((field) => <label key={field}><FieldLabel>{DOCUMENT_FIELD_LABELS[field]}</FieldLabel><Input value={settingsDraft[field]} onChange={(event) => setSettingsDraft((value) => ({ ...value, [field]: event.target.value }))} required /></label>)}
+            <DialogFooter><Button type="button" variant="outline" onClick={() => setRequisitesOpen(false)}>Отмена</Button><Button type="submit" disabled={busy || !missingDocumentFields.length}>Сохранить реквизиты</Button></DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={downtimeOpen} onOpenChange={setDowntimeOpen}>
         <DialogContent className="dialog-card">
           <DialogHeader>
             <DialogTitle>{editingDowntimeId === null ? "Добавить простой" : "Редактировать простой"}</DialogTitle>
-            <DialogDescription>Укажите только даты. Дни начала и окончания входят в простой.</DialogDescription>
+            <DialogDescription>{downtimeKind === "no_trip" ? "Отметьте полные дни, когда машина не выезжала. Это уменьшит постоянную часть аренды." : "Сохранённый технический простой: проверьте дни и подтверждение."}</DialogDescription>
           </DialogHeader>
           <form onSubmit={saveDowntime} className="dialog-form">
             <div className="grid grid-cols-2 gap-3">
-              <label><FieldLabel>Начало</FieldLabel><Input type="date" value={downtimeStart} onChange={(event) => setDowntimeStart(event.target.value)} required /></label>
-              <label><FieldLabel>Окончание</FieldLabel><Input type="date" value={downtimeEnd} onChange={(event) => setDowntimeEnd(event.target.value)} required /></label>
+              <label><FieldLabel>Начало</FieldLabel><Input type="date" min={downtimeKind === "no_trip" ? documentSettings.rentalStart : undefined} max={downtimeKind === "no_trip" ? today : undefined} value={downtimeStart} onChange={(event) => setDowntimeStart(event.target.value)} required /></label>
+              <label><FieldLabel>Окончание</FieldLabel><Input type="date" min={downtimeStart} max={downtimeKind === "no_trip" ? today : undefined} value={downtimeEnd} onChange={(event) => setDowntimeEnd(event.target.value)} required /></label>
             </div>
-            <p className="help-note">Причина не требуется. Полные дни простоя автоматически уменьшают постоянную часть пропорционально календарным дням месяца.</p>
+            {downtimeKind === "technical" && <><label><FieldLabel>Описание неисправности</FieldLabel><Input value={downtimeReason} onChange={(event) => setDowntimeReason(event.target.value)} required /></label>
+              <label><FieldLabel>Основание / подтверждение</FieldLabel><Input value={downtimeBasis} onChange={(event) => setDowntimeBasis(event.target.value)} placeholder="Заказ-наряд, акт диагностики, переписка" required /></label></>}
+            <label><FieldLabel>Примечание · необязательно</FieldLabel><Textarea value={downtimeNote} onChange={(event) => setDowntimeNote(event.target.value)} /></label>
+            <p className="help-note">Полный день без выезда уменьшает постоянную часть пропорционально дням месяца. Если объём бутылей выше неё, действует расчёт по объёму. Пустые даты автоматически не учитываются.</p>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setDowntimeOpen(false)}>Отмена</Button>
               <Button type="submit" disabled={busy}>{busy && <LoaderCircle className="animate-spin" />}Сохранить</Button>
