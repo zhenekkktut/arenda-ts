@@ -104,10 +104,10 @@ test("old net invoices deduct fuel before invoicing and later payments settle th
       assert.equal(settlement.remainingToInvoiceKopecks, 0);
       assert.equal(settlement.fixedRemainingKopecks, 0);
       assert.equal(settlement.variableRemainingKopecks, 0);
-      assert.equal(settlement.netRentKopecks, period === "2026-08" ? 11200000 : 7302000);
+      assert.equal(settlement.netRentKopecks, period === "2026-08" ? 11200000 : 7300000);
       const input = { ...data, calculation, meta: { ...data.documentMeta, documentDate: "2026-10-02", asOfDate: "2026-10-02" } };
       const summary = tools.reconciliationSummary(input);
-      assert.equal(summary.balance, period === "2026-08" ? 0 : 4182000);
+      assert.equal(summary.balance, period === "2026-08" ? 0 : 4180000);
       const html = tools.buildReconciliationHtml(input);
       const daily = html.split('class="reconciliation-daily"')[1];
       assert.match(daily, period === "2026-08" ? /01\.08\.2026/ : /10\.09\.2026/);
@@ -137,7 +137,7 @@ test("old net invoices deduct fuel before invoicing and later payments settle th
     assert.equal(zeroSummary.opening, 0);
     assert.equal(zeroSummary.openingPaidKopecks, 0);
     assert.equal(zeroSummary.paidKopecks, 3120000);
-    assert.equal(zeroSummary.balance, 4182000);
+    assert.equal(zeroSummary.balance, 4180000);
     const zeroHtml = tools.buildReconciliationHtml(zeroInput);
     assert.match(zeroHtml, /Поступившие платежи<\/td><td class="value">−31[\s ]200,00/);
     assert.doesNotMatch(zeroHtml, /143[\s ]200|погашение задолженности за предыдущие месяцы/);
@@ -198,18 +198,19 @@ test("saved mid-month dates cannot mix a full month with partial settlements aft
     assert.equal(summary.openingPaidKopecks, 0);
     assert.equal(summary.customerFuelKopecks, 1250000);
     assert.equal(summary.paidKopecks, 4350000);
-    assert.equal(summary.balance, 2952000);
-    assert.equal(settlement.netRentKopecks, 7302000);
+    assert.equal(summary.balance, 2950000);
+    assert.equal(settlement.netRentKopecks, 7300000);
     assert.equal(settlement.totalInvoicedKopecks, 4350000);
-    assert.equal(settlement.remainingToInvoiceKopecks, 2952000);
+    assert.equal(settlement.remainingToInvoiceKopecks, 2950000);
     const html = tools.buildReconciliationHtml(input);
     assert.match(html, /№ S1/);
     assert.match(html, /№ S2/);
     assert.doesNotMatch(html, /№ S3/);
     assert.equal((html.match(/class="page"/g) ?? []).length, 1);
     assert.match(html, /Начислено за сентябрь 2026 года[\s\S]*?2[\s ]138[\s\S]*?12[\s ]500,00[\s\S]*?85[\s ]520,00/);
-    assert.match(html, /Вычет топлива заказчика за месяц<\/td><td class="value">−12[\s ]500,00/);
-    assert.match(html, /Итого к оплате за месяц после вычета топлива<\/td><td class="value">73[\s ]020,00/);
+    assert.match(html, /Вычет топлива заказчика за месяц[^<]*<\/td><td class="value">−12[\s ]520,00/);
+    assert.match(html, /313 бутылей × 40,00 руб.; округление 20,00 руб./);
+    assert.match(html, /Итого к оплате за месяц после вычета топлива<\/td><td class="value">73[\s ]000,00/);
     assert.equal((html.match(/Вычет топлива заказчика за месяц/g) ?? []).length, 1);
     assert.doesNotMatch(html, /Разница между расчётом|Разница до начисления|Доплата до начисления/);
     assert.doesNotMatch(html, /<td>13\.09\.2026<\/td>/);
@@ -224,7 +225,7 @@ test("saved mid-month dates cannot mix a full month with partial settlements aft
     const historicalHtml = tools.buildReconciliationHtml(historical);
     assert.match(historicalHtml, /№ S1/);
     assert.doesNotMatch(historicalHtml, /№ S2/);
-    assert.equal(tools.reconciliationSummary(historical).balance, 4182000);
+    assert.equal(tools.reconciliationSummary(historical).balance, 4180000);
     saveOfflineAction({ action: "update_invoice", id: 2, period: "2026-09", invoiceNumber: "S2",
       invoiceDate: "2026-10-02", kind: "fixed", amountKopecks: 1230000, dueDate: "", note: "" });
     const changed = offlineDashboard("2026-09");

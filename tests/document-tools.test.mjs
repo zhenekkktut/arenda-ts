@@ -78,7 +78,7 @@ test("partial ownership excludes days before the lease begins", () => {
   assert.equal(calculation.baseKopecks, Math.round(8_000_000 * 16 / 31));
 });
 
-test("rent act keeps the contract amount while reconciliation deducts customer fuel", () => {
+test("rent act deducts customer fuel through intensity and reconciliation uses the same net rent", () => {
   const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS, lesseeDirector: "Иванова Ивана Ивановича" };
   const calculation = tools.calculateRental(
     "2026-08",
@@ -109,8 +109,12 @@ test("rent act keeps the contract amount while reconciliation deducts customer f
   const reconciliation = tools.buildReconciliationHtml(input);
   const packageHtml = tools.buildDocumentPackageHtml(input);
 
-  assert.match(act, /112[\s ]000,00/);
-  assert.match(act, /112[\s ]000 \(Сто двенадцать тысяч\) рублей 00 копеек/);
+  assert.match(act, /108[\s ]000,00/);
+  assert.match(act, /108[\s ]000 \(Сто восемь тысяч\) рублей 00 копеек/);
+  assert.match(act, /Учтено единиц интенсивности N, штук<\/td><td class="value">2[\s ]700/);
+  assert.match(act, /Постоянная часть Ф<\/td><td class="value">76[\s ]000,00/);
+  assert.equal(input.calculation.actualUnits, 2_800);
+  assert.equal(input.calculation.totalKopecks, 11_200_000);
   assert.match(act, /Переменная часть: И - Ф, если результат положительный/);
   assert.match(act, /в лице генерального директора Иванова Ивана Ивановича/);
   assert.match(reconciliation, /АКТ СВЕРКИ ВЗАИМНЫХ РАСЧЁТОВ/);
@@ -202,17 +206,18 @@ test("reconciliation traces each invoice to gross daily amounts and deducts date
   const act = tools.buildRentActHtml(input);
   const reconciliation = tools.buildReconciliationHtml(input);
   assert.equal(input.calculation.totalKopecks, 11_200_000);
-  assert.equal(tools.reconciliationSummary(input).balance, 4_170_000);
-  assert.match(act, /112[\s ]000,00/);
+  assert.equal(tools.reconciliationSummary(input).balance, 4_168_000);
+  assert.match(act, /104[\s ]480,00/);
   assert.match(reconciliation, /07\.08\.2026<\/td><td class="value">100<\/td>\s*<td class="value">2[\s ]500,00<\/td><td class="value">4[\s ]000,00/);
   assert.match(reconciliation, /12\.08\.2026<\/td><td class="value">100<\/td>\s*<td class="value">3[\s ]000,00<\/td><td class="value">4[\s ]000,00/);
   assert.match(reconciliation, /13\.08\.2026<\/td><td class="value">100<\/td>\s*<td class="value">2[\s ]000,00<\/td><td class="value">4[\s ]000,00/);
   assert.equal((reconciliation.match(/Вычет топлива заказчика за месяц/g) ?? []).length, 1);
-  assert.match(reconciliation, /Вычет топлива заказчика за месяц<\/td><td class="value">−7[\s ]500,00/);
-  assert.match(reconciliation, /Итого к оплате за месяц после вычета топлива<\/td><td class="value">104[\s ]500,00/);
+  assert.match(reconciliation, /Вычет топлива заказчика за месяц[^<]*<\/td><td class="value">−7[\s ]520,00/);
+  assert.match(reconciliation, /188 бутылей × 40,00 руб.; округление 20,00 руб./);
+  assert.match(reconciliation, /Итого к оплате за месяц после вычета топлива<\/td><td class="value">104[\s ]480,00/);
   assert.doesNotMatch(reconciliation, /Разница между расчётом|Разница до начисления/);
   assert.match(reconciliation, /39[\s ]700,00/);
-  assert.match(reconciliation, /41[\s ]700,00/);
+  assert.match(reconciliation, /41[\s ]680,00/);
   assert.doesNotMatch(reconciliation, /По данным<br>Арендодателя/);
   assert.doesNotMatch(reconciliation, /Повторно эти суммы не начисляются/);
   assert.equal((reconciliation.match(/class="page"/g) ?? []).length, 2);
@@ -240,10 +245,11 @@ test("fixed and variable invoices share gross daily totals and one monthly fuel 
   assert.match(daily, /Итого по дням счетов № F, № V/);
   assert.match(daily, /2[\s ]800<\/td><td class="value">—<\/td>\s*<td class="value">112[\s ]000,00/);
   assert.match(daily, /Начислено за август 2026 года<\/td><td class="value">2[\s ]800<\/td>\s*<td class="value">2[\s ]500,00<\/td><td class="value">112[\s ]000,00/);
-  assert.match(daily, /Итого к оплате за месяц после вычета топлива<\/td><td class="value">109[\s ]500,00/);
+  assert.match(daily, /Итого к оплате за месяц после вычета топлива<\/td><td class="value">109[\s ]480,00/);
+  assert.match(daily, /Вычет топлива заказчика за месяц[^<]*<\/td><td class="value">−2[\s ]520,00/);
   assert.equal((daily.match(/Вычет топлива заказчика за месяц/g) ?? []).length, 1);
   assert.doesNotMatch(daily, /5[\s ]600/);
-  assert.equal(tools.reconciliationSummary(input).balance, 750_000);
+  assert.equal(tools.reconciliationSummary(input).balance, 748_000);
   const splitInvoices = [
     { ...invoices[0], id: 1, invoiceNumber: "F1", bottleEndDate: "2026-08-01", amountKopecks: 4_000_000 },
     { ...invoices[0], id: 3, invoiceNumber: "F2", bottleStartDate: "2026-08-02", amountKopecks: 3_750_000 },
@@ -254,7 +260,7 @@ test("fixed and variable invoices share gross daily totals and one monthly fuel 
   assert.equal(tools.fuelInvoiceForDate(splitInvoices, "2026-08-02"), 3);
   assert.equal((splitDaily.match(/02\.08\.2026<\/td>/g) ?? []).length, 1);
   assert.match(splitDaily, /2[\s ]800<\/td><td class="value">—<\/td>\s*<td class="value">112[\s ]000,00/);
-  assert.match(splitDaily, /Итого к оплате за месяц после вычета топлива<\/td><td class="value">109[\s ]500,00/);
+  assert.match(splitDaily, /Итого к оплате за месяц после вычета топлива<\/td><td class="value">109[\s ]480,00/);
   assert.doesNotMatch(splitDaily, /Разница между расчётом|Разница до начисления/);
 });
 

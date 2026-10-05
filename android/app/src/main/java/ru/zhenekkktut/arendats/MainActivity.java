@@ -243,7 +243,9 @@ public class MainActivity extends Activity {
                 String fileName = pendingPdfFileName == null ? "document.pdf" : pendingPdfFileName;
                 pendingPdfHtml = null;
                 pendingPdfFileName = null;
-                renderHtmlToPdf(html, fileName, data.getData(), false);
+                Uri destination = data.getData();
+                persistPdfUriPermission(destination, data.getFlags());
+                renderHtmlToPdf(html, fileName, destination, false);
             } else {
                 pendingPdfHtml = null;
                 pendingPdfFileName = null;
@@ -251,6 +253,27 @@ public class MainActivity extends Activity {
                 activeArchiveId = null;
             }
             return;
+        }
+    }
+
+    private void persistPdfUriPermission(Uri uri, int resultFlags) {
+        // Request only grants returned by the document provider. Keeping read
+        // access lets archived PDFs reopen after a device restart on Android 8–9.
+        int grantFlags = resultFlags & (Intent.FLAG_GRANT_READ_URI_PERMISSION
+            | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        boolean persistentReadAccess = false;
+        if (grantFlags != 0) {
+            try {
+                getContentResolver().takePersistableUriPermission(uri, grantFlags);
+                persistentReadAccess = (grantFlags & Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0;
+            } catch (RuntimeException error) {
+                android.util.Log.w("ArendaPdf", "Could not persist the PDF document grant", error);
+            }
+        }
+        if (!persistentReadAccess) {
+            Toast.makeText(this,
+                "Не удалось закрепить доступ к PDF для архива. Файл можно открыть из выбранной папки.",
+                Toast.LENGTH_LONG).show();
         }
     }
 

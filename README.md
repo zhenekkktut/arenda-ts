@@ -9,7 +9,7 @@
 - Учёт простоев с пропорциональным уменьшением постоянной части.
 - История счетов, оплат и расходов с редактированием, фильтрами и категориями, которые можно добавлять, переименовывать и удалять.
 - При создании счёта предлагаются периоды бутылей до даты выставления с учётом уже занятых дней. Даты можно изменить вручную; у старых счетов без периода требуется проверка привязки.
-- Два PDF: акт-расчёт и акт сверки. Топливо заказчика показано по датам и вычитается общей суммой за месяц.
+- Два PDF: акт-расчёт и акт сверки. Топливо заказчика за месяц переводится в бутыли с округлением вверх; вычет уменьшает аренду, включая постоянную часть. В акте-расчёте показаны конечные значения без строки топлива. В сверке видны исходные дни и топливо, число вычтенных бутылей и разница округления.
 - Версии документов можно удалить из архива с отменой удаления или загрузить их реквизиты и создать новую версию по текущим данным. Сохранённые PDF в «Загрузках» хранятся отдельно.
 - Автоматические тексты для строки счёта, назначения платежа и письма.
 - Настраиваемые реквизиты договора и автомобиля.
@@ -36,7 +36,7 @@
 
 1. Установить зависимости через `npm ci` (Node.js 22).
 2. Проверить расчёт, подбор периодов, архив и совместимость старых данных:
-   `node --test --test-concurrency=1 tests/document-tools.test.mjs tests/invoice-periods.test.mjs tests/offline-archive.test.mjs tests/offline-documents.test.mjs tests/offline-undo.test.mjs tests/mobile-layout.test.mjs tests/tax-calculation.test.mjs tests/expense-shortcuts.test.mjs tests/offline-shortcuts.test.mjs`.
+   `node --test --test-concurrency=1 tests/document-tools.test.mjs tests/fuel-deduction.test.mjs tests/invoice-periods.test.mjs tests/offline-archive.test.mjs tests/offline-documents.test.mjs tests/offline-undo.test.mjs tests/mobile-layout.test.mjs tests/tax-calculation.test.mjs tests/expense-shortcuts.test.mjs tests/offline-shortcuts.test.mjs`.
 3. Собрать автономный интерфейс: `node node_modules/vite/bin/vite.js build --config offline/vite.config.ts`. Результат помещается в `android/app/src/main/assets`.
 4. Собрать APK с Java 17 и Gradle 8.11.1: `gradle -p android :app:assembleDebug --no-daemon`.
 5. В GitHub Actions проверить сохранение одностраничного и двухстраничного акта сверки и акта-расчёта на эмуляторе Android. PDF и изображения страниц входят в отчёт `android-pdf-test-report`.

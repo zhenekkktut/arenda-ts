@@ -69,6 +69,7 @@ import { Toaster } from "@/components/ui/sonner";
 import {
   buildReconciliationHtml,
   buildRentActHtml,
+  calculateFuelAdjustment,
   calculateRental,
   calculateSettlement,
   defaultDocumentMeta,
@@ -433,9 +434,8 @@ function validIsoDate(value: unknown): value is string {
 function automaticOpeningBalance(store: OfflineStore, period: string) {
   let balance = 0;
   for (let cursor = store.settings.rentalStart.slice(0, 7); cursor < period;) {
-    balance += calculateRental(cursor, store.entries, store.downtimes, store.settings).totalKopecks;
-    balance -= store.expenses.filter((expense) => expense.category === "fuel" && expense.payer === "customer" &&
-      expense.expenseDate.slice(0, 7) === cursor).reduce((sum, expense) => sum + expense.amountKopecks, 0);
+    const gross = calculateRental(cursor, store.entries, store.downtimes, store.settings);
+    balance += calculateFuelAdjustment(cursor, gross, store.expenses).calculation.totalKopecks;
     const [year, month] = cursor.split("-").map(Number);
     cursor = `${year + (month === 12 ? 1 : 0)}-${String(month === 12 ? 1 : month + 1).padStart(2, "0")}`;
   }
@@ -1641,6 +1641,8 @@ export default function RentalApp() {
   const totalExpenses = data?.expenses.reduce((sum, expense) => sum + expense.amountKopecks, 0) ?? 0;
   const settlement = calculateSettlement(month, calculation, data?.invoices ?? [], data?.expenses ?? []);
   const customerFuel = settlement.customerFuelKopecks;
+  const fuelDeduction = settlement.fuelDeductionKopecks;
+  const actCalculation = settlement.calculation;
   const selfExpenses = totalExpenses - customerFuel;
   const { fixedTargetKopecks, variableTargetKopecks, fixedRemainingKopecks, variableRemainingKopecks } = settlement;
   const filteredExpenses = data?.expenses.filter((expense) => expenseFilter === "all" || expense.category === expenseFilter) ?? [];
@@ -2300,8 +2302,9 @@ export default function RentalApp() {
   }
 
   function documentInputSnapshot(kind: ArchivedDocument["kind"], meta: DocumentMeta) {
-    return JSON.stringify({ kind, meta, settings: documentSettings, calculation,
+    return JSON.stringify({ kind, meta, settings: documentSettings, calculation, fuelCalculation: "whole-bottles-ceil-v1",
       entries: data?.entries ?? [], downtimes: data?.downtimes ?? [],
+      ...(kind === "act" ? { expenses: (data?.expenses ?? []).filter((expense) => expense.category === "fuel" && expense.payer === "customer") } : {}),
       ...(kind === "reconciliation" || kind === "ledger"
         ? { invoices: data?.invoices ?? [], payments: data?.payments ?? [], openingPayments: data?.openingPayments ?? [], expenses: data?.expenses ?? [] } : {}),
     });
@@ -2558,6 +2561,12 @@ export default function RentalApp() {
         ["Переменная часть И − Ф, ₽", calculation.variableKopecks / 100],
         ["ИТОГО — большая из Ф и И, ₽", calculation.totalKopecks / 100],
         ["Топливо оплачено заказчиком, ₽", customerFuel / 100],
+        ["Вычтено на топливо, бутылей", settlement.fuelUnits],
+        ["Корректировка округления топлива, ₽", settlement.roundingKopecks / 100],
+        ["Вычет топлива с округлением, ₽", fuelDeduction / 100],
+        ["Учтено в акте-расчёте, ед.", actCalculation.actualUnits],
+        ["Постоянная часть в акте-расчёте, ₽", actCalculation.baseKopecks / 100],
+        ["Переменная часть в акте-расчёте, ₽", actCalculation.variableKopecks / 100],
         ["К оплате после вычета топлива, ₽", netRent / 100],
         ["Уже выставлено, ₽", totalInvoiced / 100],
         ["Осталось выставить, ₽", remainingToInvoice / 100],
@@ -2721,12 +2730,12 @@ export default function RentalApp() {
     return <div className="settlement-details">
       <div className="calculation-list mt-3">
         <div><span>Аренда по договору</span><strong>{money(calculation.totalKopecks)}</strong></div>
-        <div><span>Вычет топлива заказчика</span><strong>−{money(customerFuel)}</strong></div>
+        <div><span>Вычет топлива заказчика</span><strong>−{money(fuelDeduction)}</strong></div>
         <div><span>К оплате после вычета топлива</span><strong>{money(netRent)}</strong></div>
         <div><span>Уже выставлено</span><strong>{money(totalInvoiced)}</strong></div>
         <div className="calculation-total"><span>Осталось выставить</span><strong>{money(remainingToInvoice)}</strong></div>
       </div>
-      {customerFuel > 0 && <p className="help-note">Топливо заказчика вычтено из суммы к оплате: {money(customerFuel)}. По дням оно видно в акте сверки.</p>}
+      {customerFuel > 0 && <p className="help-note">Топливо заказчика: {money(customerFuel)}. {settlement.fuelUnits > 0 ? `Для расчёта вычтено ${number(settlement.fuelUnits)} бутылей, с округлением вверх: ${money(fuelDeduction)}.` : `Вычет при нулевой ставке: ${money(fuelDeduction)}.`} По дням оно видно в акте сверки.</p>}
       {totalInvoiced > netRent && <p className="help-note">Выставлено больше суммы после вычета топлива на {money(totalInvoiced - netRent)}. Проверьте ранее выставленные счета.</p>}
       <Button className="mt-4 w-full" type="button" disabled={remainingToInvoice <= 0} onClick={() => {
         setSettlementOpen(false);
@@ -2897,7 +2906,7 @@ export default function RentalApp() {
                   </div>
                   <div className="settlement-hero-breakdown">
                     <div><span>Начислено</span><strong>{money(calculation.totalKopecks)}</strong></div>
-                    <div><span>Вычет топлива заказчика</span><strong>−{money(customerFuel)}</strong></div>
+                    <div><span>Вычет топлива заказчика</span><strong>−{money(fuelDeduction)}</strong></div>
                     <div><span>Уже выставлено</span><strong>−{money(totalInvoiced)}</strong></div>
                   </div>
                   <button type="button" className="settlement-hero-link" onClick={() => setSettlementOpen(true)}>
@@ -3003,7 +3012,7 @@ export default function RentalApp() {
                     <p className="help-note">В сверку на {dateLabel(asOfDate)} не войдут более поздние счета и оплаты. Для полного расчёта выберите нужную дату или нажмите «Составить на сегодня».</p>}
                   <label className="document-note"><FieldLabel>Замечания и согласованные корректировки</FieldLabel><Input value={documentAdjustments} onChange={(e) => setDocumentAdjustments(e.target.value)} placeholder="Если нет — останется «отсутствуют»" /></label>
                   <p className="help-note">При нулевом начальном долге оплаты за предыдущие месяцы в этот акт не входят. Оплаты выбранного месяца учитываются по связи со счётом и дате поступления.</p>
-                  <p className="help-note">Календарных дней: {calculation.calendarDays}. Владение: {calculation.ownershipDays}. Простой: {calculation.downtimeDays}. Оплачиваемых дней: {calculation.payableDays}. N: {number(calculation.actualUnits)}. Ф: {money(calculation.baseKopecks)}. И: {money(calculation.intensityKopecks)}. Переменная часть: {money(calculation.variableKopecks)}. Итого: {money(calculation.totalKopecks)}.</p>
+                  <p className="help-note">В акте-расчёте: календарных дней {actCalculation.calendarDays}; владение {actCalculation.ownershipDays}; простой {actCalculation.downtimeDays}; оплачиваемых дней {actCalculation.payableDays}. N: {number(actCalculation.actualUnits)}. Ф: {money(actCalculation.baseKopecks)}. И: {money(actCalculation.intensityKopecks)}. Переменная часть: {money(actCalculation.variableKopecks)}. Итого: {money(actCalculation.totalKopecks)}.</p>
                   {missingMonthDays.length > 0 && <p className="help-note text-amber-700">Дни без записи: {number(missingMonthDays.length)}. Проверьте календарь до подписания акта.</p>}
                   {data.invoices.some((invoice) => (paidByInvoice.get(invoice.id) ?? 0) < invoice.amountKopecks) &&
                     <p className="help-note text-amber-700">Есть неоплаченные или частично оплаченные счета. Их остатки видны в разделе «Счета».</p>}
@@ -3335,7 +3344,7 @@ export default function RentalApp() {
                   <Plus />Добавить расход
                 </Button>
                 {expenseFilter === "all" && (
-                  <p className="help-note">Собственные расходы: {money(selfExpenses)}. Топливо заказчика: {money(customerFuel)} — вычитается из суммы к оплате.</p>
+                  <p className="help-note">Собственные расходы: {money(selfExpenses)}. Топливо заказчика: {money(customerFuel)}. Вычет с округлением до целых бутылей: {money(fuelDeduction)}.</p>
                 )}
                 {expenseFilter === "fuel" && (
                   <p className="help-note">Оплатил я: {money(filteredSelfFuel)}. Оплатил заказчик: {money(filteredCustomerFuel)} — вычитается из суммы к оплате.</p>
