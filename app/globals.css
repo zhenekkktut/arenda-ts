@@ -4301,3 +4301,152 @@ html[data-theme="dark"] .document-options > summary:focus-visible { outline-colo
   button.invoice-period-choice:active,
   button.action-attention:active { transform: none; }
 }
+
+/* Выбранный день: простой, отсутствие записи и действия по дате. */
+.week-day.calendar-day-empty:not(.week-day-selected),
+.month-day.calendar-day-empty:not(.month-day-selected) { border-style: dashed; background: #f5f7fa; }
+.week-day.calendar-day-downtime:not(.week-day-selected),
+.month-day.calendar-day-downtime:not(.month-day-selected) { border-color: #ddbd75; border-style: solid; color: #725116; background: #fff6df; }
+.week-day.calendar-day-downtime:not(.week-day-selected) small,
+.month-day.calendar-day-downtime:not(.month-day-selected) .month-day-units { color: #87601a; }
+.week-day.calendar-day-downtime:not(.week-day-selected) .week-day-chart { background: #edddb7; }
+.week-day.calendar-day-downtime small { display: grid; justify-items: center; gap: .1rem; overflow: visible; font-size: .6rem; line-height: 1.2; white-space: normal; }
+.week-day.calendar-day-downtime small > svg { width: .85rem; height: .85rem; }
+.month-day-units > svg { display: block; width: .85rem; height: .85rem; margin-inline: auto; }
+.month-calendar-legend svg { width: .85rem; height: .85rem; flex: 0 0 auto; }
+.calendar-day-details {
+  display: grid;
+  min-width: 0;
+  gap: .65rem;
+  padding: .9rem;
+  border: 1px solid var(--border);
+  border-radius: .9rem;
+  background: var(--card);
+}
+.calendar-day-details-heading,
+.calendar-day-details > header { display: flex; min-width: 0; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: .3rem .7rem; }
+.calendar-day-details :is(h3, h4, strong) { min-width: 0; color: var(--foreground); line-height: 1.35; overflow-wrap: anywhere; }
+.calendar-day-details :is(h3, h4) { margin: 0; font-size: .95rem; }
+.calendar-day-details :is(p, small) { margin: 0; color: var(--muted-foreground); font-size: .8rem; line-height: 1.45; overflow-wrap: anywhere; }
+.calendar-day-details .calendar-day-status { color: var(--foreground); font-size: .85rem; }
+.calendar-day-details .calendar-day-status { display: flex; align-items: center; gap: .45rem; }
+.calendar-day-status > svg { width: 1rem; height: 1rem; flex: 0 0 auto; }
+.calendar-day-details[data-slot="dialog-content"] { gap: .85rem; padding: 1.15rem; }
+.calendar-day-actions { display: flex; min-width: 0; flex-wrap: wrap; gap: .5rem; }
+.calendar-day-actions button,
+.calendar-day-actions button[data-slot="button"] { height: auto; min-width: 0; min-height: 2.75rem; flex: 1 1 9rem; padding: .65rem .75rem; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; }
+.calendar-day-details .calendar-day-actions button svg { flex: 0 0 auto; }
+
+/* Оплата: видно, на какие даты и суммы она распределяется. */
+.invoice-allocation-preview { display: grid; min-width: 0; gap: .6rem; padding: .9rem; border: 1px solid var(--border); border-radius: .9rem; background: var(--muted); }
+.invoice-allocation-preview > strong { color: var(--foreground); font-size: .9rem; line-height: 1.35; }
+.invoice-allocation-row { display: flex; min-width: 0; align-items: flex-start; justify-content: space-between; gap: .5rem .8rem; padding: .55rem 0; border-top: 1px solid var(--border); font-size: .82rem; line-height: 1.4; }
+.invoice-allocation-row > div { display: grid; min-width: 0; gap: .15rem; }
+.invoice-allocation-row strong { min-width: 0; color: var(--foreground); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.invoice-allocation-row > :last-child { min-width: 0; flex: 0 1 auto; text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.invoice-allocation-row small { display: block; color: var(--muted-foreground); font-size: .75rem; line-height: 1.4; }
+.invoice-allocation-days { display: grid; min-width: 0; gap: .7rem; }
+.invoice-allocation-days > div { min-width: 0; }
+.invoice-allocation-days :is(p, strong) { overflow-wrap: anywhere; }
+.invoice-allocation-days > div > strong { display: block; color: var(--foreground); font-size: .85rem; }
+.invoice-allocation-days > div > p:not(.help-note) { display: flex; justify-content: space-between; flex-wrap: wrap; gap: .3rem .7rem; font-size: .83rem; }
+.invoice-allocation-summary { display: grid; min-width: 0; gap: .4rem; padding-top: .65rem; border-top: 1px solid var(--border); color: var(--foreground); font-size: .83rem; line-height: 1.45; overflow-wrap: anywhere; }
+.invoice-allocation-summary > div { display: flex; min-width: 0; align-items: baseline; justify-content: space-between; gap: .7rem; }
+.invoice-allocation-summary strong { min-width: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.invoice-allocation-warning,
+.invoice-review-notice { min-width: 0; padding: .85rem; border: 1px solid #e4ca8b; border-radius: .85rem; color: #795614; background: #fff7e3; font-size: .82rem; line-height: 1.45; overflow-wrap: anywhere; }
+.invoice-review-notice { display: grid; gap: .65rem; }
+.invoice-review-notice :is(p, strong),
+.invoice-allocation-warning p { margin: 0; }
+.invoice-review-notice > div { display: flex; min-width: 0; flex-wrap: wrap; gap: .5rem; }
+.invoice-review-notice button { height: auto; min-width: 0; min-height: 2.75rem; padding: .65rem .8rem; white-space: normal; overflow-wrap: anywhere; }
+
+/* Подтверждения и сохранение остаются текстовыми и занимают устойчивое место. */
+.entry-saved-state { display: flex; min-width: 0; align-items: flex-start; gap: .55rem; padding: .75rem .85rem; border: 1px solid #badfc9; border-radius: .8rem; color: #196243; background: #eef9f2; font-size: .82rem; line-height: 1.45; }
+.entry-saved-state > svg { width: 1.1rem; height: 1.1rem; flex: 0 0 auto; margin-top: .08rem; }
+.entry-saved-state > :not(svg) { min-width: 0; overflow-wrap: anywhere; }
+.entry-saved-state :is(p, small) { margin: 0; color: inherit; }
+.pdf-save-state,
+.loading-state { display: flex; min-width: 0; align-items: center; gap: .55rem; padding: .75rem .85rem; border-left: 3px solid #438bd0; color: #235c8e; background: #eef6ff; font-size: .82rem; line-height: 1.45; }
+.pdf-save-state > svg,
+.loading-state > svg { width: 1rem; height: 1rem; flex: 0 0 auto; }
+.pdf-save-state > :not(svg),
+.loading-state > :not(svg) { min-width: 0; overflow-wrap: anywhere; }
+.pdf-save-state :is(p, small),
+.loading-state :is(p, small) { margin: 0; color: inherit; }
+.motion-settings-row { display: flex; min-width: 0; min-height: 2.75rem; align-items: center; justify-content: space-between; gap: .9rem; }
+.motion-settings-row > div { min-width: 0; }
+.motion-settings-row > span { display: grid; min-width: 0; gap: .2rem; }
+.motion-settings-row small { color: var(--muted-foreground); font-size: .78rem; line-height: 1.45; }
+.motion-settings-row strong { color: var(--foreground); font-size: .88rem; line-height: 1.35; }
+.motion-settings-row p { margin: .2rem 0 0; color: var(--muted-foreground); font-size: .78rem; line-height: 1.45; }
+.motion-settings-row label { display: flex; min-width: 0; align-items: center; gap: .65rem; line-height: 1.4; cursor: pointer; }
+.motion-settings-row input[type="checkbox"] { width: 1.25rem; height: 1.25rem; min-height: 1.25rem; flex: 0 0 auto; accent-color: #176fc2; cursor: pointer; }
+.motion-settings-row [data-slot="switch"] { flex: 0 0 auto; }
+.motion-settings-row input:focus-visible,
+.motion-settings-row [data-slot="switch"]:focus-visible { outline: 3px solid #438bd0; outline-offset: 3px; }
+
+html[data-theme="dark"] .week-day.calendar-day-empty:not(.week-day-selected),
+html[data-theme="dark"] .month-day.calendar-day-empty:not(.month-day-selected) { border-color: #415069; background: #182332; }
+html[data-theme="dark"] .week-day.calendar-day-downtime:not(.week-day-selected),
+html[data-theme="dark"] .month-day.calendar-day-downtime:not(.month-day-selected) { border-color: #907440; color: #f2d58c; background: #382f20; }
+html[data-theme="dark"] .week-day.calendar-day-downtime:not(.week-day-selected) small,
+html[data-theme="dark"] .month-day.calendar-day-downtime:not(.month-day-selected) .month-day-units { color: #f2d58c; }
+html[data-theme="dark"] .week-day.calendar-day-downtime:not(.week-day-selected) .week-day-chart { background: #5c4d2d; }
+html[data-theme="dark"] .invoice-allocation-warning,
+html[data-theme="dark"] .invoice-review-notice { border-color: #776038; color: #f0d18a; background: #352d20; }
+html[data-theme="dark"] .entry-saved-state { border-color: #3c6a54; color: #afe3c5; background: #1e382d; }
+html[data-theme="dark"] .pdf-save-state,
+html[data-theme="dark"] .loading-state { border-color: #77b6f1; color: #b7ddff; background: #1b334c; }
+html[data-theme="dark"] .motion-settings-row input[type="checkbox"] { accent-color: #74baff; }
+html[data-theme="dark"] .motion-settings-row input:focus-visible,
+html[data-theme="dark"] .motion-settings-row [data-slot="switch"]:focus-visible { outline-color: #b5dbff; }
+
+/* Короткая плавность локальных состояний; числа и длинные списки не анимируются. */
+@keyframes app-state-enter { from { opacity: .75; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes app-fade-enter { from { opacity: .84; } to { opacity: 1; } }
+@keyframes app-fade-exit { from { opacity: 1; } to { opacity: 0; } }
+.calendar-day-details,
+.invoice-allocation-preview,
+.invoice-review-notice,
+.entry-saved-state { animation: app-state-enter 180ms ease-out; }
+.week-day-selected,
+.month-day-selected { animation: app-fade-enter 160ms ease-out; }
+.month-day { transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease; }
+[data-slot="dialog-content"][data-state="open"],
+[data-slot="alert-dialog-content"][data-state="open"] { animation: app-fade-enter 200ms ease-out; }
+[data-slot="dialog-content"][data-state="closed"],
+[data-slot="alert-dialog-content"][data-state="closed"] { animation: app-fade-exit 150ms ease-in; }
+.record-row,
+.expense-row,
+.invoice-card { animation: none; }
+
+@media (max-width: 390px) {
+  .calendar-day-details,
+  .invoice-allocation-preview { padding: .75rem; }
+  .calendar-day-actions { gap: .4rem; }
+  .calendar-day-actions button { flex-basis: 100%; }
+  .invoice-review-notice > div { flex-direction: column; }
+  .invoice-review-notice button { width: 100%; }
+  .invoice-allocation-row { gap: .4rem; font-size: .78rem; }
+}
+
+@media (max-width: 640px) {
+  .calendar-day-details[data-slot="dialog-content"] { padding: 1.1rem 1rem calc(1.1rem + env(safe-area-inset-bottom)); }
+}
+
+:root[data-app-motion="off"] *,
+:root[data-app-motion="off"] *::before,
+:root[data-app-motion="off"] *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
+:root[data-app-motion="off"] :is([data-slot="button"], .dashboard-actions button, .week-day, .month-day):active { transform: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  .calendar-day-details,
+  .invoice-allocation-preview,
+  .invoice-review-notice,
+  .entry-saved-state,
+  .week-day-selected,
+  .month-day-selected,
+  [data-slot="dialog-content"],
+  [data-slot="alert-dialog-content"] { animation: none !important; }
+  .month-day { transition: none; }
+}

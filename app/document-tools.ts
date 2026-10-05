@@ -27,6 +27,7 @@ export type DocumentSettings = {
 
 export type Downtime = {
   id: number;
+  kind?: "no_trip" | "technical";
   startDate: string;
   endDate: string;
   reason: string;
@@ -70,7 +71,11 @@ type PaymentLike = {
   method: "bank" | "cash";
   documentNumber: string;
 };
-type InvoiceLike = { id: number; invoiceNumber: string; invoiceDate?: string; period?: string; kind?: string; actNumber?: string; amountKopecks?: number; bottleStartDate?: string; bottleEndDate?: string; note?: string };
+type InvoiceLike = { id: number; invoiceNumber: string; invoiceDate?: string; period?: string; kind?: string; actNumber?: string; amountKopecks?: number; bottleStartDate?: string; bottleEndDate?: string; note?: string;
+  allocationVersion?: number;
+  bottleAllocations?: { date: string; amountKopecks: number }[];
+  rentalSupplementKopecks?: number;
+};
 type ExpenseLike = {
   expenseDate: string;
   category: string;
@@ -374,11 +379,15 @@ function rentActBody(input: OfficialDocumentInput) {
   const possessionEnd = s.rentalEnd < b.end ? s.rentalEnd : b.end;
   const downtime = c.downtimeDays === 0
     ? "Подтверждённого технического простоя не было; P = 0 дней."
-    : `${input.downtimes.filter((d) => d.startDate <= b.end && d.endDate >= b.start).map((d) => `${shortDate(d.startDate)}–${shortDate(d.endDate)}: ${d.reason}; основание: ${d.basis || "не указано"}${d.note ? `; ${d.note}` : ""}`).join("; ")}; P = ${c.downtimeDays} дней.`;
+    : `${input.downtimes.filter((d) => d.startDate <= b.end && d.endDate >= b.start).map((d) => {
+      const kind = d.kind === "no_trip" ? "день без выезда" : d.kind === "technical" ? "технический простой" : "";
+      const reason = kind ? `${kind}${d.reason ? `; ${d.reason}` : ""}` : d.reason;
+      return `${shortDate(d.startDate)}–${shortDate(d.endDate)}: ${reason}; основание: ${d.basis || "не указано"}${d.note ? `; ${d.note}` : ""}`;
+    }).join("; ")}; P = ${c.downtimeDays} ${plural(c.downtimeDays, "день", "дня", "дней")}.`;
   const rows = [
     ["Календарных дней месяца D", `${c.calendarDays} ${plural(c.calendarDays, "день", "дня", "дней")}`],
     ["Дней владения автомобилем в расчётном месяце A", `${c.ownershipDays} ${plural(c.ownershipDays, "день", "дня", "дней")}`],
-    ["Полных дней подтверждённого простоя P", `${c.downtimeDays} дней`],
+    ["Полных дней подтверждённого простоя P", `${c.downtimeDays} ${plural(c.downtimeDays, "день", "дня", "дней")}`],
     ["Оплачиваемых дней d = A - P", `${c.payableDays} ${plural(c.payableDays, "день", "дня", "дней")}`],
     ["Учтено единиц интенсивности N, штук", integer(c.actualUnits)],
     [fuel.fixedFuelKopecks > 0 ? "Постоянная часть Ф" : `Постоянная часть Ф = ${integer(s.baseKopecks / 100)} × d / D`, `${rubles(c.baseKopecks)} руб.`],
@@ -400,7 +409,7 @@ function rentActBody(input: OfficialDocumentInput) {
   ${rows.map(([label, value], i) => `<tr class="${i === 8 ? "total" : ""}"><td>${escapeHtml(label)}</td><td class="value">${escapeHtml(value)}</td></tr>`).join("")}</tbody></table>
   <p>Сумма прописью: <b>${escapeHtml(amountWords(c.totalKopecks))}, ${escapeHtml(s.vatLabel === "Без НДС" ? "без НДС" : s.vatLabel)}.</b></p>
   <p>Основание количества учётных единиц:<br>Ежедневные ведомости учёта эксплуатации автомобиля ${escapeHtml(s.vehicleModel)} за период с ${shortDate(b.start)} по ${shortDate(b.end)}; итоговое количество: ${integer(c.actualUnits)} учётных единиц.</p>
-  <p>Основание и период технического простоя либо отметка «простоя не было»:<br>${escapeHtml(downtime)}</p>
+  <p>Основание и период простоя либо отметка «простоя не было»:<br>${escapeHtml(downtime)}</p>
   <p>Подписи подтверждают период владения и пользования автомобилем, показатель интенсивности эксплуатации, дни простоя и начисленную арендную плату. Сведения об оплате в акт-расчёт не включаются. Состояние расчётов при необходимости подтверждается отдельным актом сверки. Срок оплаты определяется договором.</p>
   <p>Замечания и согласованные корректировки: ${escapeHtml(m.adjustments?.trim() || "отсутствуют")}.</p>
   ${signatures(s)}`;
@@ -597,6 +606,82 @@ function reconciliationPages(input: OfficialDocumentInput) {
   ];
   const invoiceRows: string[] = [];
   const dailyRows: string[] = [];
+  // Explicit allocations are monetary links, never fractional delivery counts.
+  // Ignore incomplete or malformed metadata rather than inventing old links.
+  const allocations = new Map<number, { date: string; amountKopecks: number }[]>();
+  const invalidAllocations = new Set<number>();
+  const hasAllocationMetadata = (invoice: InvoiceLike) => invoice.allocationVersion !== undefined ||
+    invoice.bottleAllocations !== undefined || invoice.rentalSupplementKopecks !== undefined;
+  const isValidDate = (date: unknown): date is string => {
+    if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+    const parsed = parseIso(date);
+    return Number.isFinite(parsed.getTime()) && isoUtc(parsed) === date;
+  };
+  const dailyCapacity = new Map<string, number>();
+  let rawMonthGross = 0;
+  let validMonthGross = Number.isSafeInteger(c.rateKopecks) && c.rateKopecks >= 0;
+  for (const [date, units] of entriesByDate) {
+    const gross = units * c.rateKopecks;
+    if (!isValidDate(date) || !Number.isSafeInteger(units) || units < 0 ||
+        !Number.isSafeInteger(gross) || gross < 0) { validMonthGross = false; continue; }
+    dailyCapacity.set(date, gross);
+    rawMonthGross += gross;
+    if (!Number.isSafeInteger(rawMonthGross)) validMonthGross = false;
+  }
+  const fixedTarget = calculateFuelAdjustment(m.period, c, input.expenses ?? []).calculation.baseKopecks;
+  const supplementCeiling = validMonthGross && Number.isSafeInteger(fixedTarget)
+    ? Math.max(0, fixedTarget - rawMonthGross) : 0;
+  for (const invoice of invoices) {
+    if (!hasAllocationMetadata(invoice)) continue;
+    invalidAllocations.add(invoice.id);
+    if (invoice.allocationVersion !== 1 || !Array.isArray(invoice.bottleAllocations) ||
+        !Number.isSafeInteger(invoice.amountKopecks) || (invoice.amountKopecks ?? 0) <= 0 ||
+        !isValidDate(invoice.invoiceDate) || invoice.invoiceDate < b.start ||
+        (s.rentalStart && invoice.invoiceDate < s.rentalStart)) continue;
+    const supplement = invoice.rentalSupplementKopecks ?? 0;
+    const dates = new Set<string>();
+    let allocationTotal = supplement;
+    const valid = Number.isSafeInteger(supplement) && supplement >= 0 &&
+      (supplement === 0 || (invoice.kind === "fixed" && supplement <= supplementCeiling)) &&
+      invoice.bottleAllocations.every((part) => {
+      if (!part || !isValidDate(part.date) || part.date < b.start || part.date > b.end ||
+          (s.rentalStart && part.date < s.rentalStart) || (s.rentalEnd && part.date > s.rentalEnd) ||
+          part.date > invoice.invoiceDate! || dates.has(part.date) || !dailyCapacity.has(part.date) ||
+          !Number.isSafeInteger(part.amountKopecks) || part.amountKopecks <= 0 ||
+          part.amountKopecks > dailyCapacity.get(part.date)!) return false;
+      allocationTotal += part.amountKopecks;
+      if (!Number.isSafeInteger(allocationTotal)) return false;
+      dates.add(part.date);
+      return true;
+    });
+    if (valid && allocationTotal === invoice.amountKopecks) {
+      allocations.set(invoice.id, [...invoice.bottleAllocations].sort((a, b) => a.date.localeCompare(b.date)));
+      invalidAllocations.delete(invoice.id);
+    }
+  }
+  const claimsByDate = new Map<string, { amount: number; ids: number[] }>();
+  let claimedSupplements = 0;
+  const supplementIds: number[] = [];
+  for (const invoice of invoices) {
+    const parts = allocations.get(invoice.id);
+    if (!parts) continue;
+    for (const part of parts) {
+      const claim = claimsByDate.get(part.date) ?? { amount: 0, ids: [] };
+      claim.amount += part.amountKopecks;
+      claim.ids.push(invoice.id);
+      claimsByDate.set(part.date, claim);
+    }
+    const supplement = invoice.rentalSupplementKopecks ?? 0;
+    if (supplement > 0) { claimedSupplements += supplement; supplementIds.push(invoice.id); }
+  }
+  for (const [date, claim] of claimsByDate) {
+    if (!Number.isSafeInteger(claim.amount) || claim.amount > (dailyCapacity.get(date) ?? 0)) {
+      claim.ids.forEach((id) => invalidAllocations.add(id));
+    }
+  }
+  if (!Number.isSafeInteger(claimedSupplements) || claimedSupplements > supplementCeiling)
+    supplementIds.forEach((id) => invalidAllocations.add(id));
+  invalidAllocations.forEach((id) => allocations.delete(id));
   const invoicedDates = new Set<string>();
   const shownDailyDates = new Set<string>();
   const invoiceGroups: InvoiceLike[][] = [];
@@ -611,14 +696,14 @@ function reconciliationPages(input: OfficialDocumentInput) {
   for (const invoice of invoices) {
     const range = validRange(invoice);
     const dates = invoiceDates(invoice);
-    dates.forEach((date) => invoicedDates.add(date));
+    if (!invalidAllocations.has(invoice.id)) dates.forEach((date) => invoicedDates.add(date));
     const invoiceAmount = invoice.amountKopecks ?? 0;
     const paid = payments.filter((payment) => payment.invoiceId === invoice.id)
       .reduce((sum, payment) => sum + payment.amountKopecks, 0);
-    invoiceRows.push(`<tr><td>№ ${escapeHtml(invoice.invoiceNumber)}<br>${invoice.invoiceDate ? shortDate(invoice.invoiceDate) : ""}</td>
+    invoiceRows.push(`<tr><td>№ ${escapeHtml(invoice.invoiceNumber)}<br>${invoice.invoiceDate ? shortDate(invoice.invoiceDate) : ""}${invalidAllocations.has(invoice.id) ? "<br>Привязку суммы к датам нужно проверить" : ""}</td>
       <td class="value">${rubles(invoiceAmount)}</td>
       <td class="value">${rubles(paid)}</td><td class="value">${rubles(invoiceAmount - paid)}</td></tr>`);
-    if (!range) continue;
+    if (!range || invalidAllocations.has(invoice.id)) continue;
     const connectedGroups = invoiceGroups.filter((group) => group.some((item) => sharedBottlePeriodParts(item, invoice)));
     if (!connectedGroups.length) invoiceGroups.push([invoice]);
     else {
@@ -627,8 +712,52 @@ function reconciliationPages(input: OfficialDocumentInput) {
       invoiceGroups.push(merged);
     }
   }
-  invoiceGroups.sort((first, second) => first[0].bottleStartDate!.localeCompare(second[0].bottleStartDate!));
-  for (const group of invoiceGroups) {
+  if (allocations.size) {
+    const dates = [...new Set([...entriesByDate.keys(), ...fuelByDate.keys(),
+      ...[...allocations.values()].flatMap((parts) => parts.map((part) => part.date))])].sort();
+    const firstShown = new Set<number>();
+    const invoiceRef = (invoice: InvoiceLike, amount?: number) => {
+      const first = !firstShown.has(invoice.id);
+      firstShown.add(invoice.id);
+      const range = first && validRange(invoice)
+        ? ` · ${shortDate(invoice.bottleStartDate!)}–${shortDate(invoice.bottleEndDate!)}` : "";
+      return `№ ${escapeHtml(invoice.invoiceNumber)}${range}${amount === undefined ? " · по периоду" : `: ${rubles(amount)} руб.`}`;
+    };
+    for (const date of dates) {
+      const units = entriesByDate.get(date) ?? 0;
+      const fuel = fuelByDate.get(date) ?? 0;
+      const gross = units * c.rateKopecks;
+      let allocated = 0;
+      const refs: string[] = [];
+      for (const invoice of invoices) {
+        const parts = allocations.get(invoice.id);
+        if (parts) {
+          const part = parts.find((part) => part.date === date);
+          if (part) { refs.push(invoiceRef(invoice, part.amountKopecks)); allocated += part.amountKopecks; }
+        } else if (!hasAllocationMetadata(invoice) && validRange(invoice) && date >= invoice.bottleStartDate! && date <= invoice.bottleEndDate!) {
+          refs.push(invoiceRef(invoice));
+        }
+      }
+      const unknownLegacy = invoices.some((invoice) => !hasAllocationMetadata(invoice) && validRange(invoice) &&
+        date >= invoice.bottleStartDate! && date <= invoice.bottleEndDate!);
+      if (!unknownLegacy && gross > allocated) refs.push(`Не включено в счета: ${rubles(gross - allocated)} руб.`);
+      if (unknownLegacy && allocated) refs.push("Остаток дня: связь по периоду");
+      if (!refs.length) refs.push("Дни без связи со счётом");
+      dailyRows.push(`<tr><td>${refs.join("<br>")}</td><td>${shortDate(date)}</td>
+        <td class="value">${integer(units)}</td><td class="value">${fuel ? rubles(fuel) : "—"}</td>
+        <td class="value">${rubles(gross)}</td></tr>`);
+    }
+    // Totals explain issued invoice faces without adding them to daily gross.
+    for (const invoice of invoices) {
+      const parts = allocations.get(invoice.id);
+      if (!parts) continue;
+      const supplement = invoice.rentalSupplementKopecks ?? 0;
+      const range = validRange(invoice) ? ` · ${shortDate(invoice.bottleStartDate!)}–${shortDate(invoice.bottleEndDate!)}` : "";
+      dailyRows.push(`<tr><td colspan="5">По счёту № ${escapeHtml(invoice.invoiceNumber)}${range}: включено по датам ${rubles(parts.reduce((sum, part) => sum + part.amountKopecks, 0))} руб.${supplement ? `<br>Доплата до постоянной части: ${rubles(supplement)} руб.` : ""}; итого по счёту ${rubles(invoice.amountKopecks ?? 0)} руб.</td></tr>`);
+    }
+  } else {
+    invoiceGroups.sort((first, second) => first[0].bottleStartDate!.localeCompare(second[0].bottleStartDate!));
+    for (const group of invoiceGroups) {
     const dates = [...new Set(group.flatMap(invoiceDates))].filter((date) =>
       (entriesByDate.has(date) || fuelByDate.has(date)) && !shownDailyDates.has(date)).sort();
     const rangeStart = group.map((item) => item.bottleStartDate!).sort()[0];
@@ -658,9 +787,10 @@ function reconciliationPages(input: OfficialDocumentInput) {
       <td class="value">${integer(units)}</td><td class="value">${fuel ? rubles(fuel) : "—"}</td>
       <td class="value">${rubles(units * c.rateKopecks)}</td></tr>`);
   }
+  }
   const netRent = netRentKopecks;
   const dailyGross = [...entriesByDate.values()].reduce((sum, units) => sum + units * c.rateKopecks, 0);
-  if (dailyGross !== c.totalKopecks) dailyRows.push(`<tr><td colspan="4">Доплата до начисления по акту-расчёту № ${escapeHtml(m.actNumber)}</td>
+  if (dailyGross !== c.totalKopecks) dailyRows.push(`<tr><td colspan="4">${allocations.size ? "Доплата до постоянной части" : "Доплата до начисления"} по акту-расчёту № ${escapeHtml(m.actNumber)}</td>
     <td class="value">${rubles(c.totalKopecks - dailyGross)}</td></tr>`);
   const totalInvoiced = invoices.reduce((sum, invoice) => sum + (invoice.amountKopecks ?? 0), 0);
   const visibleInvoiceIds = new Set(invoices.map((invoice) => invoice.id));

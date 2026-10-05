@@ -12,6 +12,7 @@ on:
       - "app/tax-calculation.ts"
       - "app/expense-shortcuts.ts"
       - "app/workflow-tools.ts"
+      - "app/invoice-allocation.ts"
       - "app/globals.css"
       - "components/**"
       - "lib/**"
@@ -31,6 +32,7 @@ on:
       - "app/tax-calculation.ts"
       - "app/expense-shortcuts.ts"
       - "app/workflow-tools.ts"
+      - "app/invoice-allocation.ts"
       - "app/globals.css"
       - ".github/workflows/android-apk.yml"
 
@@ -67,7 +69,7 @@ jobs:
       - name: Собрать автономный интерфейс
         run: |
           npm ci
-          node --test --test-concurrency=1 tests/document-tools.test.mjs tests/fuel-deduction.test.mjs tests/invoice-periods.test.mjs tests/workflow-tools.test.mjs tests/offline-archive.test.mjs tests/offline-documents.test.mjs tests/offline-undo.test.mjs tests/mobile-layout.test.mjs tests/tax-calculation.test.mjs tests/expense-shortcuts.test.mjs tests/offline-shortcuts.test.mjs
+          node --test --test-concurrency=1 tests/document-tools.test.mjs tests/fuel-deduction.test.mjs tests/invoice-periods.test.mjs tests/invoice-allocation.test.mjs tests/offline-allocation.test.mjs tests/workflow-tools.test.mjs tests/offline-archive.test.mjs tests/offline-documents.test.mjs tests/offline-undo.test.mjs tests/mobile-layout.test.mjs tests/tax-calculation.test.mjs tests/expense-shortcuts.test.mjs tests/offline-shortcuts.test.mjs
           ./node_modules/.bin/vite build --config offline/vite.config.ts
 
       - name: Установить Gradle

@@ -79,12 +79,13 @@ import {
   reconciliationDateError,
   reconciliationSummary,
   sharedBottlePeriodParts,
-  suggestInvoicePeriods,
   type DocumentCalculation,
   type DocumentMeta,
   type DocumentSettings,
   type Downtime,
 } from "@/app/document-tools";
+import { proposeInvoiceAllocation, validateInvoiceAllocation, type InvoiceBottleAllocation,
+  type InvoiceAllocationInput, type InvoiceAllocationProposal } from "@/app/invoice-allocation";
 
 type Entry = {
   id: number;
@@ -103,6 +104,9 @@ type Invoice = {
   amountKopecks: number;
   bottleStartDate?: string;
   bottleEndDate?: string;
+  allocationVersion?: number;
+  bottleAllocations?: InvoiceBottleAllocation[];
+  rentalSupplementKopecks?: number;
   dueDate: string | null;
   note: string;
 };
@@ -232,6 +236,7 @@ declare global {
   interface Window {
     AndroidApp?: AndroidAppBridge;
     onArchivePdfSaved?: (id: string, uri: string) => void;
+    onArchivePdfSaveEnded?: (id: string, status: string) => void;
   }
 }
 
@@ -303,6 +308,7 @@ function normalizeExpenseCategories(value: unknown, allowEmpty = false): Expense
 
 const OFFLINE_STORAGE_KEY = "arenda-ts-offline-v1";
 const THEME_STORAGE_KEY = "arenda-ts-theme-v1";
+const MOTION_STORAGE_KEY = "arenda-ts-motion-v1";
 const LAST_BACKUP_STORAGE_KEY = "arenda-ts-last-backup-v1";
 const DOCUMENT_TEXT_FIELDS = [
   "city", "contractNumber", "rentalStart", "rentalEnd", "lessorFull", "lessorShort", "lessorSignerShort", "lessorDative", "lessorInn",
@@ -518,6 +524,10 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
     if (!validIsoDate(entryDate) || !Number.isSafeInteger(units) || units < 0) {
       throw new Error("Проверьте дату и количество");
     }
+    if (units > 0 && store.downtimes.some((day) => day.kind === "no_trip" &&
+      day.startDate <= entryDate && day.endDate >= entryDate)) {
+      throw new Error("Этот день отмечен без выезда. Сначала снимите простой за день, затем внесите бутыли");
+    }
     const note = typeof payload.note === "string" ? payload.note.trim().slice(0, 300) : "";
     const existing = store.entries.find((entry) => entry.entryDate === entryDate);
     if (existing) {
@@ -552,6 +562,10 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
       const units = Number(row.units);
       if (!validIsoDate(entryDate) || !Number.isSafeInteger(units) || units < 0) {
         throw new Error("В файле есть неверная дата или количество");
+      }
+      if (units > 0 && store.downtimes.some((day) => day.kind === "no_trip" &&
+        day.startDate <= entryDate && day.endDate >= entryDate)) {
+        throw new Error(`За ${dateLabel(entryDate)} отмечен день без выезда. Снимите простой перед импортом бутылей`);
       }
       const note = typeof row.note === "string" ? row.note.trim().slice(0, 300) : "";
       importedPeriod ||= entryDate.slice(0, 7);
@@ -599,15 +613,32 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
     const editId = action === "update_invoice" ? Number(payload.id) : null;
     const previousInvoice = editId === null ? null : store.invoices.find((row) => row.id === editId) ?? null;
     if (editId !== null && !store.invoices.some((row) => row.id === editId)) throw new Error("Запись не найдена");
-    const bottleStartDate = typeof payload.bottleStartDate === "string" ? payload.bottleStartDate : "";
-    const bottleEndDate = typeof payload.bottleEndDate === "string" ? payload.bottleEndDate : "";
+    let bottleStartDate = typeof payload.bottleStartDate === "string" ? payload.bottleStartDate : "";
+    let bottleEndDate = typeof payload.bottleEndDate === "string" ? payload.bottleEndDate : "";
+    const usesAllocation = payload.allocationVersion !== undefined || payload.bottleAllocations !== undefined || payload.rentalSupplementKopecks !== undefined;
+    let allocation: ReturnType<typeof validateInvoiceAllocation> | undefined;
+    if (usesAllocation) {
+      const raw = calculateRental(payload.period, store.entries, store.downtimes, store.settings);
+      const settlement = calculateSettlement(payload.period, raw, store.invoices, store.expenses);
+      allocation = validateInvoiceAllocation({
+        period: payload.period, invoiceDate: payload.invoiceDate, amountKopecks,
+        kind: payload.kind as Invoice["kind"], entries: store.entries, invoices: store.invoices,
+        settings: store.settings, fixedTargetKopecks: settlement.fixedTargetKopecks,
+        netRentKopecks: settlement.netRentKopecks, excludeInvoiceId: editId ?? undefined,
+        allowRentalSupplement: localIsoDate() >= periodBounds(payload.period).end,
+      }, payload);
+      bottleStartDate = allocation.bottleAllocations[0]?.date ?? "";
+      bottleEndDate = allocation.bottleAllocations.at(-1)?.date ?? "";
+    } else if (previousInvoice?.allocationVersion === 1) {
+      throw new Error("Для изменения этого счёта подтвердите распределение суммы по датам");
+    }
     if ((bottleStartDate || bottleEndDate) &&
         (!validIsoDate(bottleStartDate) || !validIsoDate(bottleEndDate) ||
           bottleStartDate > bottleEndDate || bottleStartDate.slice(0, 7) !== payload.period ||
           bottleEndDate.slice(0, 7) !== payload.period)) {
       throw new Error("Укажите даты бутылей внутри выбранного месяца");
     }
-    if (bottleStartDate && store.invoices.some((invoice) => invoice.id !== editId &&
+    if (!usesAllocation && bottleStartDate && store.invoices.some((invoice) => invoice.id !== editId &&
       invoice.period === payload.period && invoice.bottleStartDate && invoice.bottleEndDate &&
       invoice.bottleStartDate <= bottleEndDate && invoice.bottleEndDate >= bottleStartDate &&
       !sharedBottlePeriodParts(invoice, { kind: String(payload.kind), bottleStartDate, bottleEndDate }))) {
@@ -624,6 +655,7 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
       actNumber: String(payload.actNumber ?? "").trim().slice(0, 40),
       amountKopecks,
       ...(bottleStartDate ? { bottleStartDate, bottleEndDate } : {}),
+      ...(allocation ?? {}),
       dueDate,
       note: typeof payload.note === "string" ? payload.note.trim().slice(0, 300) : "",
     });
@@ -669,6 +701,17 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
     const restoredId = store.invoices.some((row) => row.id === invoice.id)
       ? nextId(store.invoices)
       : invoice.id;
+    if (invoice.allocationVersion !== undefined) {
+      const raw = calculateRental(invoice.period, store.entries, store.downtimes, store.settings);
+      const settlement = calculateSettlement(invoice.period, raw, store.invoices, store.expenses);
+      validateInvoiceAllocation({
+        period: invoice.period, invoiceDate: invoice.invoiceDate, amountKopecks: invoice.amountKopecks,
+        kind: invoice.kind, entries: store.entries,
+        invoices: [...store.invoices, { ...invoice, id: restoredId }], excludeInvoiceId: restoredId,
+        settings: store.settings, fixedTargetKopecks: settlement.fixedTargetKopecks,
+        netRentKopecks: settlement.netRentKopecks, allowRentalSupplement: localIsoDate() >= periodBounds(invoice.period).end,
+      }, invoice);
+    }
     store.invoices.push({ ...invoice, id: restoredId });
     for (const payment of payments) {
       store.payments.push({
@@ -916,7 +959,14 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
     if (!validIsoDate(startDate) || !validIsoDate(endDate) || startDate > endDate) {
       throw new Error("Проверьте даты простоя");
     }
-    if (!String(payload.reason ?? "").trim() || !String(payload.basis ?? "").trim()) {
+    const kind = payload.kind === "no_trip" ? "no_trip" : "technical";
+    if (kind === "no_trip" && (startDate < store.settings.rentalStart || endDate > store.settings.rentalEnd || endDate > localIsoDate())) {
+      throw new Error("День без выезда должен быть в сроке аренды и не позже сегодняшнего дня");
+    }
+    if (kind === "no_trip" && store.entries.some((entry) => entry.entryDate >= startDate && entry.entryDate <= endDate && entry.units > 0)) {
+      throw new Error("В этом периоде есть развезённые бутыли. Проверьте записи или выберите дни, когда машина не выезжала");
+    }
+    if (kind !== "no_trip" && (!String(payload.reason ?? "").trim() || !String(payload.basis ?? "").trim())) {
       throw new Error("Укажите причину и подтверждение технического простоя");
     }
     const start = new Date(`${startDate}T12:00:00Z`);
@@ -932,10 +982,11 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
     store.downtimes = store.downtimes.filter((row) => row.id !== editId);
     store.downtimes.push({
       id: recordId,
+      kind,
       startDate,
       endDate,
-      reason: String(payload.reason).trim().slice(0, 160),
-      basis: String(payload.basis).trim().slice(0, 300),
+      reason: String(payload.reason || (kind === "no_trip" ? "Без выезда" : "")).trim().slice(0, 160),
+      basis: String(payload.basis || (kind === "no_trip" ? "Отметка в календаре" : "")).trim().slice(0, 300),
       note: String(payload.note ?? "").trim().slice(0, 300),
     });
     appendAudit(store, {
@@ -944,6 +995,20 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
       title: editId === null ? "Добавлен простой" : "Изменён простой",
       detail: startDate === endDate ? dateLabel(startDate) : `${dateLabel(startDate)} — ${dateLabel(endDate)}`,
     });
+  } else if (action === "delete_downtime_day") {
+    const date = payload.date;
+    if (!validIsoDate(date)) throw new Error("Проверьте дату простоя");
+    const covering = store.downtimes.filter((day) => day.kind === "no_trip" && day.startDate <= date && day.endDate >= date);
+    if (!covering.length) throw new Error("День без выезда не найден");
+    let id = nextId(store.downtimes);
+    store.downtimes = store.downtimes.flatMap((day) => {
+      if (!covering.includes(day)) return [day];
+      const parts: Downtime[] = [];
+      if (day.startDate < date) parts.push({ ...day, endDate: addIsoDays(date, -1) });
+      if (day.endDate > date) parts.push({ ...day, id: parts.length ? id++ : day.id, startDate: addIsoDays(date, 1) });
+      return parts;
+    });
+    appendAudit(store, { period: date.slice(0, 7), entity: "downtime", title: "Снят день без выезда", detail: dateLabel(date) });
   } else if (action === "delete_downtime") {
     const id = Number(payload.id);
     const downtime = store.downtimes.find((row) => row.id === id);
@@ -1314,6 +1379,9 @@ export default function RentalApp() {
   const [auditOpen, setAuditOpen] = useState(false);
   const [entryHistoryOpen, setEntryHistoryOpen] = useState(false);
   const [monthCalendarOpen, setMonthCalendarOpen] = useState(false);
+  const [dayDetailsOpen, setDayDetailsOpen] = useState(false);
+  const [entrySavedMessage, setEntrySavedMessage] = useState("");
+  const [pdfSavingId, setPdfSavingId] = useState<number | null>(null);
   const [taxOpen, setTaxOpen] = useState(false);
   const [taxKind, setTaxKind] = useState<TaxAdjustment["kind"]>("income");
   const [taxDate, setTaxDate] = useState(today);
@@ -1324,6 +1392,7 @@ export default function RentalApp() {
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [themeMode, setThemeMode] = useState<ThemeMode>("system");
+  const [motionEnabled, setMotionEnabled] = useState(true);
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
 
   const [entryDate, setEntryDate] = useState(today);
@@ -1351,6 +1420,7 @@ export default function RentalApp() {
   const [invoiceStartDate, setInvoiceStartDate] = useState(today);
   const [invoiceEndDate, setInvoiceEndDate] = useState(today);
   const [invoicePeriodAutomatic, setInvoicePeriodAutomatic] = useState(true);
+  const [invoiceReplan, setInvoiceReplan] = useState(true);
   const [invoiceAmount, setInvoiceAmount] = useState("80000");
   const [invoiceNote, setInvoiceNote] = useState("");
 
@@ -1397,6 +1467,7 @@ export default function RentalApp() {
   const [downtimeReason, setDowntimeReason] = useState("");
   const [downtimeBasis, setDowntimeBasis] = useState("");
   const [downtimeNote, setDowntimeNote] = useState("");
+  const [downtimeKind, setDowntimeKind] = useState<"no_trip" | "technical">("no_trip");
   const [documentPreview, setDocumentPreview] = useState<{
     kind: ArchivedDocument["kind"]; html: string; number: string; meta: DocumentMeta; inputSnapshot: string;
   } | null>(null);
@@ -1451,8 +1522,19 @@ export default function RentalApp() {
     const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
     const nextMode: ThemeMode = savedTheme === "dark" || savedTheme === "light" ? savedTheme : "system";
     setThemeMode(nextMode);
+    setMotionEnabled(window.localStorage.getItem(MOTION_STORAGE_KEY) !== "off");
     setLastBackupAt(window.localStorage.getItem(LAST_BACKUP_STORAGE_KEY));
   }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.appMotion = motionEnabled ? "on" : "off";
+  }, [motionEnabled]);
+
+  useEffect(() => {
+    if (!entrySavedMessage) return;
+    const timer = window.setTimeout(() => setEntrySavedMessage(""), 2400);
+    return () => window.clearTimeout(timer);
+  }, [entrySavedMessage]);
 
   useEffect(() => {
     const media = window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -1488,10 +1570,17 @@ export default function RentalApp() {
     window.onArchivePdfSaved = (id, uri) => {
       try {
         saveOfflineAction({ action: "link_document_pdf", id: Number(id), uri });
+        setPdfSavingId((pending) => pending === Number(id) ? null : pending);
         void loadData();
       } catch { toast.error("PDF сохранён, но ссылка в архиве не обновилась"); }
     };
-    return () => { delete window.onArchivePdfSaved; };
+    window.onArchivePdfSaveEnded = (id, status) => {
+      setPdfSavingId((pending) => pending === Number(id) ? null : pending);
+      if (status === "saved") toast.success("PDF сохранён на телефоне");
+      if (status === "cancelled") toast.info("Сохранение PDF отменено. Документ остался в архиве");
+      if (status === "error") toast.error("PDF не сохранён. Документ остался в архиве — можно повторить сохранение");
+    };
+    return () => { delete window.onArchivePdfSaved; delete window.onArchivePdfSaveEnded; };
   }, [loadData]);
 
   const taxYear = Number(month.slice(0, 4));
@@ -1576,7 +1665,7 @@ export default function RentalApp() {
         if (isOfflineRuntime()) {
           saveOfflineAction(payload);
           if (success) toast.success(success);
-          if (["save_entry", "delete_entry", "import_entries", "create_downtime", "update_downtime", "delete_downtime", "save_settings"].includes(String(payload.action)) &&
+          if (["save_entry", "delete_entry", "import_entries", "create_downtime", "update_downtime", "delete_downtime", "delete_downtime_day", "save_settings"].includes(String(payload.action)) &&
             data?.documentArchive?.some((item) => item.kind === "act")) {
             toast.warning("Исходные данные изменены после формирования акта-расчёта. Проверьте документ и создайте новую версию.");
           }
@@ -1665,29 +1754,56 @@ export default function RentalApp() {
   const filteredSelfFuel = filteredExpenses.filter((expense) => expense.category === "fuel" && expense.payer !== "customer").reduce((sum, expense) => sum + expense.amountKopecks, 0);
   const netRent = settlement.netRentKopecks;
   const remainingToInvoice = settlement.remainingToInvoiceKopecks;
-  const invoicePeriods = useMemo(() => suggestInvoicePeriods({ period: month, kind: invoiceKind,
-    invoiceDate, entries: data?.entries ?? [], invoices: data?.invoices ?? [], expenses: data?.expenses ?? [],
-    settings: documentSettings, excludeInvoiceId: editingInvoiceId ?? undefined }),
-    [month, invoiceKind, invoiceDate, data?.entries, data?.invoices, data?.expenses, documentSettings, editingInvoiceId]);
-  useEffect(() => {
-    if (!invoiceOpen || editingInvoiceId !== null || !invoicePeriodAutomatic) return;
-    const proposed = invoicePeriods.needsReview ? undefined : invoicePeriods.periods[0];
-    setInvoiceStartDate(proposed?.startDate ?? "");
-    setInvoiceEndDate(proposed?.endDate ?? "");
-  }, [invoiceOpen, editingInvoiceId, invoicePeriodAutomatic, invoicePeriods]);
-  const selectedBottleUnits = data?.entries.filter((entry) => invoiceStartDate && invoiceEndDate &&
-    entry.entryDate >= invoiceStartDate && entry.entryDate <= invoiceEndDate)
-    .reduce((sum, entry) => sum + entry.units, 0) ?? 0;
-  const selectedBottleFuel = data?.expenses.filter((expense) => expense.category === "fuel" &&
-    expense.payer === "customer" && invoiceStartDate && invoiceEndDate &&
-    expense.expenseDate >= invoiceStartDate && expense.expenseDate <= invoiceEndDate)
-    .reduce((sum, expense) => sum + expense.amountKopecks, 0) ?? 0;
+  const editingInvoice = data?.invoices.find((invoice) => invoice.id === editingInvoiceId);
+  const invoiceAllocationInput = useMemo<InvoiceAllocationInput>(() => ({ period: month, kind: invoiceKind,
+    invoiceDate, amountKopecks: toKopecks(invoiceAmount), entries: data?.entries ?? [], invoices: data?.invoices ?? [],
+    settings: documentSettings, fixedTargetKopecks, netRentKopecks: netRent,
+    excludeInvoiceId: editingInvoiceId ?? undefined, allowRentalSupplement: today >= periodBounds(month).end,
+    ...(!invoicePeriodAutomatic ? { startDate: invoiceStartDate, endDate: invoiceEndDate } : {}) }),
+    [month, invoiceKind, invoiceDate, invoiceAmount, data?.entries, data?.invoices, documentSettings,
+      fixedTargetKopecks, netRent, editingInvoiceId, today, invoicePeriodAutomatic, invoiceStartDate, invoiceEndDate]);
+  const invoiceAllocationState = useMemo(() => {
+    const proposal = proposeInvoiceAllocation(invoiceAllocationInput);
+    if (invoiceReplan || editingInvoice?.allocationVersion !== 1) return { proposal, error: "", preserving: false };
+    const candidate = { allocationVersion: 1, bottleAllocations: editingInvoice.bottleAllocations,
+      rentalSupplementKopecks: editingInvoice.rentalSupplementKopecks ?? 0 };
+    let error = "";
+    try { validateInvoiceAllocation(invoiceAllocationInput, candidate); }
+    catch (reason) { error = reason instanceof Error ? reason.message : "Проверьте сохранённую привязку суммы"; }
+    const saved = Array.isArray(editingInvoice.bottleAllocations)
+      ? editingInvoice.bottleAllocations.filter((row) => row && typeof row.date === "string" && Number.isSafeInteger(row.amountKopecks) && row.amountKopecks > 0) : [];
+    const actualDays = proposal.days.map((day) => {
+      const amountKopecks = saved.find((row) => row.date === day.date)?.amountKopecks ?? 0;
+      return { ...day, amountKopecks, remainingKopecks: Math.max(0, day.grossKopecks - day.alreadyAllocatedKopecks - amountKopecks) };
+    });
+    const last = saved.at(-1);
+    const preserved: InvoiceAllocationProposal = { ...proposal, bottleAllocations: saved,
+      rentalSupplementKopecks: candidate.rentalSupplementKopecks,
+      coveredKopecks: saved.reduce((sum, row) => sum + row.amountKopecks, candidate.rentalSupplementKopecks),
+      uncoveredKopecks: error ? proposal.uncoveredKopecks : 0,
+      startDate: saved[0]?.date ?? "", endDate: last?.date ?? "",
+      lastDayRemainingKopecks: actualDays.find((day) => day.date === last?.date)?.remainingKopecks ?? 0,
+      ready: !error, days: actualDays };
+    return { proposal: preserved, error, preserving: true };
+  }, [invoiceAllocationInput, invoiceReplan, editingInvoice]);
+  const invoiceAllocation = invoiceAllocationState.proposal;
+  const invoiceUsesAllocation = invoiceReplan || editingInvoice?.allocationVersion === 1;
+  const invoiceReviewNumbers = new Set([...invoiceAllocation.legacyInvoiceNumbers, ...invoiceAllocation.invalidInvoiceNumbers]);
+  const nextInvoiceForReview = [...(data?.invoices ?? [])].filter((invoice) => invoice.id !== editingInvoiceId && invoiceReviewNumbers.has(invoice.invoiceNumber.trim() || String(invoice.id)))
+    .sort((first, second) => first.invoiceDate.localeCompare(second.invoiceDate) || first.id - second.id)[0];
   const cashResult = totalPaid - selfExpenses;
   const progress = calculation.includedUnits > 0
     ? Math.min(100, (calculation.actualUnits / calculation.includedUnits) * 100)
     : 100;
   const importTotalUnits = importRows.reduce((sum, row) => sum + row.units, 0);
   const selectedEntry = data?.entries.find((entry) => entry.entryDate === entryDate);
+  const selectedDowntimes = data?.downtimes?.filter((day) => day.startDate <= entryDate && day.endDate >= entryDate) ?? [];
+  const selectedDowntime = selectedDowntimes.find((day) => day.kind === "no_trip") ?? selectedDowntimes[0];
+  const selectedDayClaims = (data?.invoices ?? []).flatMap((invoice) =>
+    invoice.allocationVersion === 1 ? (invoice.bottleAllocations ?? [])
+      .filter((row) => row.date === entryDate).map((row) => ({ invoice, amountKopecks: row.amountKopecks })) : []);
+  const selectedDayAllocated = selectedDayClaims.reduce((sum, row) => sum + row.amountKopecks, 0);
+  const selectedDayLegacy = (data?.invoices ?? []).filter((invoice) => invoice.allocationVersion !== 1);
   const expenseCategories = useMemo(
     () => normalizeExpenseCategories(data?.expenseCategories),
     [data?.expenseCategories],
@@ -1777,6 +1893,16 @@ export default function RentalApp() {
     setQuickEntryOpen(true);
   }
 
+  function openDayDetails(nextDate: string) {
+    selectEntryDate(nextDate);
+    setDayDetailsOpen(true);
+  }
+
+  function changeMotion(enabled: boolean) {
+    setMotionEnabled(enabled);
+    window.localStorage.setItem(MOTION_STORAGE_KEY, enabled ? "on" : "off");
+  }
+
   function moveEntryWeek(offset: -1 | 1) {
     const nextDate = addIsoDays(entryDate, offset * 7);
     if (nextDate < monthBounds.start || nextDate > monthBounds.end) return;
@@ -1794,6 +1920,11 @@ export default function RentalApp() {
       selectedEntry ? `Обновлено: ${number(units)} бутылок` : `Записано: ${number(units)} бутылок`,
     );
     if (ok) {
+      const savedDate = entryDate;
+      setEntrySavedMessage(`${dateLabel(savedDate)} · ${number(units)} бутылей сохранено`);
+      if (units === 0) toast.info("Машина не выезжала в этот день? Можно отметить простой", {
+        action: { label: "Отметить", onClick: () => { setQuickEntryOpen(false); openDowntime(undefined, savedDate); } },
+      });
       navigator.vibrate?.(12);
       const followingDate = nextIsoDate(entryDate);
       setEntryUnits("");
@@ -1972,11 +2103,10 @@ export default function RentalApp() {
     setInvoiceActNumber(actNumber);
     setInvoiceDate(selectedDate);
     setInvoiceDueDate("");
-    const proposed = suggestInvoicePeriods({ period: month, kind, invoiceDate: selectedDate,
-      entries: data?.entries ?? [], invoices: data?.invoices ?? [], expenses: data?.expenses ?? [], settings: documentSettings });
     setInvoicePeriodAutomatic(true);
-    setInvoiceStartDate(proposed.needsReview ? "" : proposed.periods[0]?.startDate ?? "");
-    setInvoiceEndDate(proposed.needsReview ? "" : proposed.periods[0]?.endDate ?? "");
+    setInvoiceReplan(true);
+    setInvoiceStartDate("");
+    setInvoiceEndDate("");
     setInvoiceNote("");
     setInvoiceOpen(true);
   }
@@ -1988,9 +2118,18 @@ export default function RentalApp() {
       toast.error("Укажите номер и сумму счёта");
       return;
     }
-    if ((!invoiceStartDate || !invoiceEndDate) && editingInvoiceId === null) {
-      toast.error("Укажите первый и последний день бутылей по счёту");
-      return;
+    let allocation: ReturnType<typeof validateInvoiceAllocation> | undefined;
+    if (invoiceUsesAllocation) {
+      if (!invoiceAllocation.ready) {
+        toast.error(invoiceAllocationState.error || (invoiceAllocation.needsReview
+          ? "Сначала проверьте привязку старых счетов по порядку"
+          : "Записей или остатка аренды недостаточно для этой суммы счёта"));
+        return;
+      }
+      try { allocation = validateInvoiceAllocation(invoiceAllocationInput, { allocationVersion: 1,
+        bottleAllocations: invoiceAllocation.bottleAllocations,
+        rentalSupplementKopecks: invoiceAllocation.rentalSupplementKopecks }); }
+      catch (error) { toast.error(error instanceof Error ? error.message : "Проверьте распределение суммы"); return; }
     }
     if (editingInvoiceId === null && invoiceKind === "variable" && !data?.closure) {
       toast.error("Переменная часть выставляется после закрытия месяца");
@@ -2010,8 +2149,9 @@ export default function RentalApp() {
         kind: invoiceKind,
         actNumber: invoiceActNumber,
         amountKopecks,
-        bottleStartDate: invoiceStartDate,
-        bottleEndDate: invoiceEndDate,
+        bottleStartDate: allocation ? allocation.bottleAllocations[0]?.date ?? "" : invoiceStartDate,
+        bottleEndDate: allocation ? allocation.bottleAllocations.at(-1)?.date ?? "" : invoiceEndDate,
+        ...(allocation ?? {}),
         dueDate: invoiceDueDate,
         note: invoiceNote,
       },
@@ -2066,12 +2206,12 @@ export default function RentalApp() {
     if (ok) setPaymentOpen(false);
   }
 
-  function openExpense() {
+  function openExpense(selectedDate?: unknown) {
     const initialCategory = expenseFilter !== "all" && expenseCategories.some((category) => category.id === expenseFilter)
       ? expenseFilter
       : expenseCategories.find((category) => category.id === "base_lease")?.id ?? expenseCategories[0]?.id ?? "other";
     setEditingExpenseId(null);
-    setExpenseDate(month === today.slice(0, 7) ? today : `${month}-01`);
+    setExpenseDate(typeof selectedDate === "string" ? selectedDate : month === today.slice(0, 7) ? today : `${month}-01`);
     setExpensePayer("self");
     setExpenseCategory(initialCategory);
     setExpenseAmount("");
@@ -2178,9 +2318,10 @@ export default function RentalApp() {
     if (ok) setExpenseOpen(false);
   }
 
-  function editInvoice(invoice: Invoice) {
+  function editInvoice(invoice: Invoice, reviewAllocation = false) {
     setEditingInvoiceId(invoice.id);
-    setInvoicePeriodAutomatic(false);
+    setInvoicePeriodAutomatic(true);
+    setInvoiceReplan(reviewAllocation);
     setInvoiceKind(invoice.kind); setInvoiceNumber(invoice.invoiceNumber);
     setInvoiceActNumber(invoice.actNumber ?? data?.documentMeta?.actNumber ?? "");
     setInvoiceDate(invoice.invoiceDate); setInvoiceDueDate(invoice.dueDate ?? "");
@@ -2247,14 +2388,16 @@ export default function RentalApp() {
     setExpenseShortcutsDraft((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item));
   }
 
-  function openDowntime(downtime?: Downtime) {
+  function openDowntime(downtime?: Downtime, dayDate?: string) {
     const bounds = periodBounds(month);
-    const selectedDate = month === today.slice(0, 7) ? today : bounds.start;
+    const selectedDate = dayDate ?? (month === today.slice(0, 7) ? today : bounds.start);
+    const kind = downtime ? downtime.kind ?? "technical" : "no_trip";
+    setDowntimeKind(kind);
     setEditingDowntimeId(downtime?.id ?? null);
     setDowntimeStart(downtime?.startDate ?? selectedDate);
     setDowntimeEnd(downtime?.endDate ?? selectedDate);
-    setDowntimeReason(downtime?.reason === "Простой автомобиля" ? "" : downtime?.reason ?? "");
-    setDowntimeBasis(downtime?.basis ?? "");
+    setDowntimeReason(downtime?.reason === "Простой автомобиля" ? "" : downtime?.reason ?? "Без выезда");
+    setDowntimeBasis(downtime?.basis ?? (kind === "no_trip" ? "Отметка в календаре" : ""));
     setDowntimeNote(downtime?.note ?? "");
     setDowntimeOpen(true);
   }
@@ -2265,6 +2408,7 @@ export default function RentalApp() {
       {
         action: editingDowntimeId === null ? "create_downtime" : "update_downtime",
         id: editingDowntimeId,
+        kind: downtimeKind,
         startDate: downtimeStart,
         endDate: downtimeEnd,
         reason: downtimeReason,
@@ -2287,6 +2431,7 @@ export default function RentalApp() {
         if (ok) {
           showDeletedWithUndo("Простой удалён", () => request({
             action: "create_downtime",
+            kind: downtime.kind,
             startDate: downtime.startDate,
             endDate: downtime.endDate,
             reason: downtime.reason,
@@ -2425,11 +2570,24 @@ export default function RentalApp() {
     }
     const fileName = `${kind}_${month}_v${version}_${id}.pdf`;
     if (window.AndroidApp?.saveArchivedHtmlAsPdf) {
-      window.AndroidApp.saveArchivedHtmlAsPdf(html, fileName, String(id));
+      saveArchivedPdf(archived, fileName);
     } else if (window.AndroidApp?.saveHtmlAsPdf) {
       window.AndroidApp.saveHtmlAsPdf(html, fileName);
     } else printHtmlInBrowser(html);
     setDocumentPreview(null);
+  }
+
+  function saveArchivedPdf(document: ArchivedDocument, fileName?: string) {
+    if (pdfSavingId !== null) return;
+    try {
+      if (!window.AndroidApp?.saveArchivedHtmlAsPdf) { printHtmlInBrowser(document.html); return; }
+      setPdfSavingId(document.id);
+      window.AndroidApp.saveArchivedHtmlAsPdf(document.html,
+        fileName ?? `${document.kind}_${document.period}_v${document.version}_${document.id}.pdf`, String(document.id));
+    } catch {
+      setPdfSavingId(null);
+      toast.error("Не получилось начать сохранение PDF. Документ остался в архиве");
+    }
   }
 
   function askDeleteEntry(entry: Entry) {
@@ -2810,9 +2968,9 @@ export default function RentalApp() {
   const workflowAction = (() => {
     if (missingDocumentFields.length) return { step: 0, title: "Подтяните данные с телефона", text: "Восстановите JSON-копию: записи, счета и реквизиты договора появятся автоматически. Для первого запуска можно заполнить только недостающие реквизиты.", label: "Восстановить копию", run: () => backupInputRef.current?.click() };
     if (monthBounds.start > today || monthBounds.end < documentSettings.rentalStart || monthBounds.start > documentSettings.rentalEnd) return { step: 0, title: "Выберите месяц работы", text: "Для этого месяца пока нет текущего расчёта в пределах договора. Данные и архив можно просматривать.", label: "Перейти к текущему месяцу", run: showCurrentRentalMonth };
-    if (month === today.slice(0, 7) && missingDates.has(today)) return { step: 0, title: "Внесите бутылки за сегодня", text: "Количество сохранится в календаре и попадёт в предложенный период счёта. Если выезда не было, можно сохранить 0.", label: "Добавить запись за сегодня", run: () => { selectEntryDate(today); setQuickEntryOpen(true); } };
+    if (month === today.slice(0, 7) && missingDates.has(today)) return { step: 0, title: "Заполните сегодняшний день", text: "Запишите количество бутылей или отметьте «Без выезда — простой», если машина не ездила.", label: "Открыть сегодняшний день", run: () => openDayDetails(today) };
     if (!data?.closure && monthBounds.end <= today) return { step: 0, title: "Проверьте и закройте месяц", text: missingMonthDays.length ? `Дни без записи: ${number(missingMonthDays.length)}. Проверьте календарь, расходы и простой перед итоговым расчётом.` : "Записи и простой учтены. Проверьте топливо и итоговую сумму перед закрытием.", label: "Проверить и закрыть месяц", run: askCloseMonth };
-    if (fixedRemainingKopecks > 0) return { step: 2, title: "Можно выставить постоянную часть", text: `Осталось ${money(fixedRemainingKopecks)}. Приложение предложит номер, сумму и свободный период по записям.`, label: "Составить счёт", run: () => openInvoice("fixed") };
+    if (fixedRemainingKopecks > 0) return { step: 2, title: "Можно выставить постоянную часть", text: `Осталось ${money(fixedRemainingKopecks)}. Приложение предложит номер и распределение этой суммы по свободным деньгам дней.`, label: "Составить счёт", run: () => openInvoice("fixed") };
     if (data?.closure && variableRemainingKopecks > 0) return { step: 2, title: "Можно выставить переменную часть", text: `Осталось ${money(variableRemainingKopecks)} после вычета топлива. Проверьте предложенные дни и сумму.`, label: "Составить счёт", run: () => openInvoice("variable") };
     if (unpaidInvoices.length) return { step: 3, title: "Отметьте полученные оплаты", text: `Счета с остатком: ${unpaidInvoices.length}. Вносите оплату после получения денег; можно частями.`, label: "Открыть счета и оплаты", run: () => setTab("invoices") };
     if (!data?.closure) return { step: 0, title: "Продолжайте учёт месяца", text: "Постоянная часть выставлена. Добавляйте бутылки, расходы и полученные оплаты. По окончании месяца станет доступен итоговый расчёт.", label: "Открыть календарь", run: () => { setTab("entries"); setMonthCalendarOpen(true); } };
@@ -3068,6 +3226,7 @@ export default function RentalApp() {
                     <h2 className="text-xl font-bold">Документы · {monthLabel(month)}</h2>
                     <p className="text-sm text-muted-foreground">Данные берутся из дней, простоев, счетов и оплат.</p>
                   </div></div>
+                  {pdfSavingId !== null && <p className="pdf-save-state" role="status"><LoaderCircle className="animate-spin" />PDF готовится на телефоне. Дождитесь результата сохранения.</p>}
                   {editingArchivedId !== null && <p className="help-note">Редактирование архивного документа. Новая версия будет рассчитана по текущим дням, счетам и оплатам. Для изменения количества бутылей откройте «Дни», для счетов и оплат — «Счета».</p>}
                   <div className="document-summary">
                     <div><span>Номер обоих актов</span><strong>№{actNumber || "—"}</strong></div>
@@ -3112,7 +3271,7 @@ export default function RentalApp() {
                         <small>{new Date(item.generatedAt).toLocaleString("ru-RU")} {stale ? "· Данные изменились после формирования" : "· Актуально"}</small></div>
                         {item.pdfUri && <Button type="button" variant="outline" onClick={() => window.AndroidApp?.openArchivedPdf?.(item.pdfUri!)}>Открыть PDF</Button>}
                         {item.pdfUri && <Button type="button" variant="ghost" onClick={() => window.AndroidApp?.shareArchivedPdf?.(item.pdfUri!)}>Отправить</Button>}
-                        <Button type="button" variant="outline" onClick={() => window.AndroidApp?.saveArchivedHtmlAsPdf?.(item.html, `${item.kind}_${item.period}_v${item.version}_${item.id}.pdf`, String(item.id))}>{item.pdfUri ? "Повторить PDF" : "Сохранить PDF"}</Button>
+                        <Button type="button" variant="outline" disabled={pdfSavingId !== null} onClick={() => saveArchivedPdf(item)}>{pdfSavingId === item.id ? "PDF готовится…" : item.pdfUri ? "Повторить PDF" : "Сохранить PDF"}</Button>
                         <Button type="button" variant="outline" onClick={() => editArchivedDocument(item)}><Pencil />Изменить и создать заново</Button>
                         <Button type="button" variant="ghost" onClick={() => askDeleteDocument(item)}><Trash2 />Удалить из архива</Button>
                       </div>;
@@ -3154,7 +3313,9 @@ export default function RentalApp() {
                   </div>
 
                   <div className="week-days">
-                    {currentWeekDays.map((day, index) => (
+                    {currentWeekDays.map((day, index) => {
+                      const downtime = data?.downtimes?.some((row) => row.startDate <= day.date && row.endDate >= day.date);
+                      return (
                       <button
                         key={day.date}
                         type="button"
@@ -3162,20 +3323,21 @@ export default function RentalApp() {
                           "week-day",
                           day.date === entryDate ? "week-day-selected" : "",
                           day.missing ? "week-day-missing" : "",
+                          downtime ? "calendar-day-downtime" : !day.entry ? "calendar-day-empty" : "",
                         ].filter(Boolean).join(" ")}
                         disabled={!day.inMonth}
-                        onClick={() => openEntryForDate(day.date)}
+                        onClick={() => openDayDetails(day.date)}
                         aria-pressed={day.date === entryDate}
-                        aria-label={`${WEEKDAY_LABELS[index]}, ${dateLabel(day.date)}${day.entry ? `, ${day.entry.units} бутылок` : ", записи нет"}`}
+                        aria-label={`${WEEKDAY_LABELS[index]}, ${dateLabel(day.date)}${downtime ? ", простой" : day.entry ? `, ${day.entry.units} бутылок` : ", записи нет"}`}
                       >
                         <span>{WEEKDAY_LABELS[index]}</span>
                         <strong>{Number(day.date.slice(-2))}</strong>
                         <span className="week-day-chart" aria-hidden="true">
                           <i style={{ height: day.entry ? `${Math.max(12, (day.entry.units / maxWeekUnits) * 100)}%` : "0%" }} />
                         </span>
-                        <small>{day.entry ? number(day.entry.units) : day.missing ? "нет" : "—"}</small>
+                        <small>{downtime ? <><CirclePause aria-hidden="true" />Простой</> : day.entry ? number(day.entry.units) : day.missing ? "нет" : "—"}</small>
                       </button>
-                    ))}
+                    ); })}
                   </div>
 
                   <div className="week-totals">
@@ -3652,29 +3814,49 @@ export default function RentalApp() {
         <DialogContent className="dialog-card month-calendar-dialog">
           <DialogHeader>
             <DialogTitle>{monthLabel(month)} · по дням</DialogTitle>
-            <DialogDescription>В каждой ячейке: дата, количество бутылей и сумма по {number(documentSettings.rateKopecks / 100)} ₽ за бутыль. Нажмите день, чтобы внести или изменить запись.</DialogDescription>
+            <DialogDescription>Нажмите день: запишите бутыли, добавьте расход или отметьте «Без выезда — простой». Пустая дата сама простоем не считается.</DialogDescription>
           </DialogHeader>
           <div className="month-calendar-weekdays" aria-hidden="true">{WEEKDAY_LABELS.map((day) => <span key={day}>{day}</span>)}</div>
           <div className="month-calendar-grid">
-            {monthCalendarDays.map((day) => <button
+            {monthCalendarDays.map((day) => { const downtime = data?.downtimes?.some((row) => row.startDate <= day.date && row.endDate >= day.date); return <button
               key={day.date}
               type="button"
-              className={["month-day", !day.inMonth ? "month-day-outside" : "", !day.entry ? "month-day-empty" : "", day.missing ? "month-day-missing" : "", day.date === entryDate ? "month-day-selected" : ""].filter(Boolean).join(" ")}
+              className={["month-day", !day.inMonth ? "month-day-outside" : "", !day.entry ? "month-day-empty" : "", day.missing ? "month-day-missing" : "", downtime ? "calendar-day-downtime" : !day.entry ? "calendar-day-empty" : "", day.date === entryDate ? "month-day-selected" : ""].filter(Boolean).join(" ")}
               disabled={!day.inMonth}
               aria-pressed={day.date === entryDate}
-              aria-label={`${dateLabel(day.date)}${day.entry ? `, ${day.entry.units} бутылей, ${money(day.entry.units * documentSettings.rateKopecks)}` : ", записи нет"}`}
-              onClick={() => { setMonthCalendarOpen(false); openEntryForDate(day.date); }}
+              aria-label={`${dateLabel(day.date)}${downtime ? ", простой" : day.entry ? `, ${day.entry.units} бутылей, ${money(day.entry.units * documentSettings.rateKopecks)}` : ", записи нет"}`}
+              onClick={() => { setMonthCalendarOpen(false); openDayDetails(day.date); }}
             >
               <strong>{Number(day.date.slice(-2))}</strong>
-              <span className="month-day-units">{day.entry ? `${number(day.entry.units)} б.` : day.missing ? "нет" : "—"}</span>
-              <small className="month-day-amount">{day.entry ? money(day.entry.units * documentSettings.rateKopecks) : "—"}</small>
-            </button>)}
+              <span className="month-day-units">{downtime ? <CirclePause aria-label="Простой" /> : day.entry ? `${number(day.entry.units)} б.` : day.missing ? "нет" : "—"}</span>
+              <small className="month-day-amount">{downtime ? "Простой" : day.entry ? money(day.entry.units * documentSettings.rateKopecks) : "—"}</small>
+            </button>; })}
           </div>
-          <div className="month-calendar-legend"><span><i className="month-day-selected" />Выбранный день</span><span><i />Запись есть</span><span><i className="month-day-missing" />Нужно заполнить</span><span>— Нет записи</span></div>
+          <div className="month-calendar-legend"><span><i className="month-day-selected" />Выбранный день</span><span><i />Запись есть</span><span><CirclePause />Простой</span><span><i className="month-day-missing" />Нужно заполнить</span><span>— Нет записи</span></div>
           <div className="week-totals">
             <div><span>Бутылей за месяц</span><strong>{number(calculation.actualUnits)}</strong></div>
             <div><span>Количество × ставка</span><strong>{money(calculation.actualUnits * documentSettings.rateKopecks)}</strong></div>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={dayDetailsOpen} onOpenChange={setDayDetailsOpen}>
+        <DialogContent className="dialog-card calendar-day-details sm:max-w-md">
+          <DialogHeader><DialogTitle>{dateLabel(entryDate)}</DialogTitle>
+            <DialogDescription>Выберите, что записать за этот день. Простой — полный день, когда машина не выезжала.</DialogDescription>
+          </DialogHeader>
+          <p className="calendar-day-status">{selectedDowntime ? <><CirclePause />{selectedDowntime.kind === "no_trip" ? "Без выезда — простой" : "Простой: " + selectedDowntime.reason}</> : selectedEntry ? <><CheckCircle2 />{number(selectedEntry.units)} бутылей · {money(selectedEntry.units * documentSettings.rateKopecks)}</> : "Записи пока нет"}</p>
+          {selectedDowntime && (selectedEntry?.units ?? 0) > 0 && <p className="help-note">В сохранённых данных за этот день также есть {number(selectedEntry!.units)} бутылей. Проверьте запись и период простоя.</p>}
+          {selectedDayClaims.length > 0 && <div className="invoice-allocation-summary"><strong>Включено в счета: {money(selectedDayAllocated)}</strong>{selectedDayClaims.map(({ invoice, amountKopecks }) => <p key={invoice.id}>Счёт №{invoice.invoiceNumber}: {money(amountKopecks)}</p>)}</div>}
+          {selectedEntry && <p className="help-note">{selectedDayLegacy.length ? "Часть старых счетов ещё требует проверки привязки. Остаток дня уточнится после подтверждения." : `Не включено в счета: ${money(Math.max(0, selectedEntry.units * documentSettings.rateKopecks - selectedDayAllocated))}.`}</p>}
+          <div className="calendar-day-actions">
+            <Button type="button" disabled={selectedDowntime?.kind === "no_trip"} onClick={() => { setDayDetailsOpen(false); openEntryForDate(entryDate); }}><Pencil />{selectedEntry ? "Изменить бутыли" : "Записать бутыли"}</Button>
+            <Button type="button" variant="outline" disabled={entryDate > today || entryDate < documentSettings.rentalStart || entryDate > documentSettings.rentalEnd || (!selectedDowntime && (selectedEntry?.units ?? 0) > 0)} onClick={() => { setDayDetailsOpen(false); openDowntime(selectedDowntime, entryDate); }}><CirclePause />{selectedDowntime ? "Изменить простой" : "Без выезда — простой"}</Button>
+            {selectedDowntimes.some((day) => day.kind === "no_trip") && <Button type="button" variant="outline" disabled={busy} onClick={async () => { await request({ action: "delete_downtime_day", date: entryDate }, "Простой за этот день снят"); }}><UnlockKeyhole />Снять простой за этот день</Button>}
+            <Button type="button" variant="outline" onClick={() => { setDayDetailsOpen(false); openExpense(entryDate); }}><WalletCards />Добавить расход за день</Button>
+          </div>
+          {(selectedEntry?.units ?? 0) > 0 && !selectedDowntime && <p className="help-note">Есть развезённые бутыли. Если машина не выезжала, сначала проверьте количество в записи.</p>}
+          {selectedDowntime?.kind === "no_trip" && <p className="help-note">Чтобы внести бутыли, сначала снимите простой за этот день.</p>}
         </DialogContent>
       </Dialog>
 
@@ -3690,6 +3872,7 @@ export default function RentalApp() {
             <DialogTitle>Быстрая запись</DialogTitle>
             <DialogDescription>Выберите день и укажите количество бутылок.</DialogDescription>
           </DialogHeader>
+          {entrySavedMessage && <p className="entry-saved-state" role="status"><CheckCircle2 />{entrySavedMessage}</p>}
           {(
             <form onSubmit={saveEntry} className="dialog-form quick-entry-dialog-form">
               <label>
@@ -3890,7 +4073,7 @@ export default function RentalApp() {
         <DialogContent className="dialog-card max-h-[92vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingInvoiceId === null ? "Добавить выставленный счёт" : "Редактировать счёт"}</DialogTitle>
-            <DialogDescription>Проверьте предложенные номер, сумму и дни. Период и бутыли попадут в акт сверки. Здесь сохраняется учёт выставленного счёта.</DialogDescription>
+            <DialogDescription>Укажите сумму. Приложение подберёт дни ровно на неё, начиная с остатка предыдущего счёта. Реальное количество бутылей не изменится.</DialogDescription>
           </DialogHeader>
           <form onSubmit={createInvoice} className="dialog-form">
             <label>
@@ -3900,6 +4083,7 @@ export default function RentalApp() {
                 onValueChange={(value) => {
                   const kind = value as Invoice["kind"];
                   setInvoiceKind(kind);
+                  setInvoiceReplan(true);
                   if (editingInvoiceId === null) setInvoicePeriodAutomatic(true);
                   if (editingInvoiceId === null && kind === "fixed") setInvoiceAmount(fixedRemainingKopecks > 0 ? String(fixedRemainingKopecks / 100) : "");
                   if (editingInvoiceId === null && kind === "variable") setInvoiceAmount(variableRemainingKopecks > 0 ? String(variableRemainingKopecks / 100) : "");
@@ -3916,35 +4100,66 @@ export default function RentalApp() {
               {editingInvoiceId === null && <p className="help-note">Постоянную часть можно выставлять несколькими счетами. Переменная доступна после закрытия месяца.</p>}
             </label>
             <label><FieldLabel>Дата счёта</FieldLabel><Input type="date" value={invoiceDate} onChange={(event) => setInvoiceDate(event.target.value)} required /></label>
-            <div className="rounded-xl border border-border p-3 space-y-2">
-              <strong className="text-sm">Периоды по записям до {validIsoDate(invoiceDate) ? dateLabel(invoiceDate) : "выбранной даты"}</strong>
-              {invoicePeriods.needsReview && <p className="help-note" role="alert">У счетов №{invoicePeriods.legacyInvoiceNumbers.join(", №")} не указан период. Перед выбором проверьте, какие дни они покрывают.</p>}
-              {invoicePeriods.periods.map((period) => <Button type="button" variant="outline" key={`${period.startDate}_${period.endDate}`} aria-pressed={invoiceStartDate === period.startDate && invoiceEndDate === period.endDate} className="invoice-period-choice h-auto w-full flex-col items-start gap-1 whitespace-normal py-3 text-left" onClick={() => {
-                setInvoicePeriodAutomatic(false);
-                setInvoiceStartDate(period.startDate);
-                setInvoiceEndDate(period.endDate);
-              }}>
-                <span>{dateLabel(period.startDate)} — {dateLabel(period.endDate)}{invoiceStartDate === period.startDate && invoiceEndDate === period.endDate ? " · выбран" : ""}</span>
-                <span className="text-xs text-muted-foreground">{number(period.units)} бутылей · {money(period.grossKopecks)} по ставке</span>
-              </Button>)}
-              {!invoicePeriods.periods.length && <p className="help-note">{invoicePeriods.hasRelevantDays ? "Дни уже указаны в других счетах. Проверьте их периоды или выберите даты вручную." : "До этой даты нет записей для подбора. Период можно указать вручную."}</p>}
-              {!invoicePeriodAutomatic && editingInvoiceId === null && !invoicePeriods.needsReview && invoicePeriods.periods.length > 0 &&
-                <Button type="button" variant="ghost" onClick={() => setInvoicePeriodAutomatic(true)}>Подобрать период автоматически</Button>}
-            </div>
             <div className="grid grid-cols-2 gap-3">
               <label><FieldLabel>Номер счёта</FieldLabel><Input value={invoiceNumber} onChange={(event) => setInvoiceNumber(event.target.value)} placeholder="Например, 24" required /></label>
-              <label><FieldLabel>Сумма выставленного счёта, ₽</FieldLabel><Input type="number" min="0.01" step="0.01" inputMode="decimal" value={invoiceAmount} onChange={(event) => setInvoiceAmount(event.target.value)} required /></label>
+              <label><FieldLabel>Сумма выставленного счёта, ₽</FieldLabel><Input type="number" min="0.01" step="0.01" inputMode="decimal" value={invoiceAmount} onChange={(event) => { setInvoiceAmount(event.target.value); setInvoiceReplan(true); }} required /></label>
             </div>
             <p className="help-note">Укажите сумму самого счёта. Полученную оплату добавьте отдельно.</p>
-            <div className="grid grid-cols-2 gap-3">
-              <label><FieldLabel>Первый день бутылей</FieldLabel><Input type="date" min={`${month}-01`} max={periodBounds(month).end} value={invoiceStartDate} onChange={(event) => { setInvoicePeriodAutomatic(false); setInvoiceStartDate(event.target.value); }} required={editingInvoiceId === null} /></label>
-              <label><FieldLabel>Последний день бутылей</FieldLabel><Input type="date" min={`${month}-01`} max={periodBounds(month).end} value={invoiceEndDate} onChange={(event) => { setInvoicePeriodAutomatic(false); setInvoiceEndDate(event.target.value); }} required={editingInvoiceId === null} /></label>
-            </div>
-            {invoiceStartDate && invoiceEndDate && invoiceStartDate <= invoiceEndDate &&
-              <p className="help-note">В периоде: {number(selectedBottleUnits)} бутылей · {money(selectedBottleUnits * documentSettings.rateKopecks)} по ставке. Топливо: {money(selectedBottleFuel)}; общий вычет — в конце месяца.</p>}
+            {invoiceUsesAllocation ? <section className="invoice-allocation-preview rounded-xl border border-border p-3 space-y-3" aria-label="Предложенная привязка суммы счёта">
+              <div>
+                <strong>{invoiceAllocation.ready ? "Привязка ровно на " : "Сумма счёта: "}{money(toKopecks(invoiceAmount))}</strong>
+                {!invoiceAllocation.needsReview && invoiceAllocation.startDate && invoiceAllocation.endDate && <p>{dateLabel(invoiceAllocation.startDate)} — {dateLabel(invoiceAllocation.endDate)}</p>}
+                {invoiceAllocationState.preserving && !invoiceAllocationState.error && <p className="help-note">Сохранённая привязка остаётся прежней. Изменение номера, примечания или срока оплаты её не меняет.</p>}
+              </div>
+              {invoiceAllocation.needsReview && <div role="alert" className="space-y-2">
+                <p className="help-note">{invoiceAllocation.legacyInvoiceNumbers.length > 0 || invoiceAllocation.invalidInvoiceNumbers.length > 0
+                  ? `Перед новым счётом нужно проверить старые привязки: №${[...invoiceAllocation.legacyInvoiceNumbers, ...invoiceAllocation.invalidInvoiceNumbers].join(", №")}. Суммы и оплаты старых счетов сохраняются.`
+                  : "Проверьте дату счёта, срок аренды и ежедневные записи. Для этих данных точный подбор пока недоступен."}</p>
+                {nextInvoiceForReview && <Button type="button" variant="outline" className="w-full" onClick={() => editInvoice(nextInvoiceForReview, true)}>Проверить счёт №{nextInvoiceForReview.invoiceNumber}</Button>}
+              </div>}
+              {!invoiceAllocation.needsReview && (invoiceAllocation.legacyInvoiceNumbers.length > 0 || invoiceAllocation.invalidInvoiceNumbers.length > 0) &&
+                <p className="help-note" role="status">После этого проверьте более поздние счета: №{[...invoiceAllocation.legacyInvoiceNumbers, ...invoiceAllocation.invalidInvoiceNumbers].join(", №")}. Их суммы и оплаты не изменены.</p>}
+              {invoiceAllocationState.error && <p className="help-note" role="alert">{invoiceAllocationState.error}</p>}
+              {!invoiceAllocation.needsReview && invoiceAllocation.uncoveredKopecks > 0 && <div role="alert" className="space-y-2">
+                <p className="help-note">На эту сумму пока не хватает записей или остатка аренды. Можно подтвердить {money(invoiceAllocation.coveredKopecks)}; не покрыто {money(invoiceAllocation.uncoveredKopecks)}. Добавьте недостающие дни либо проверьте сумму.</p>
+                {editingInvoiceId === null && invoiceAllocation.coveredKopecks > 0 && <Button type="button" variant="outline" className="w-full" onClick={() => {
+                  setInvoiceAmount(String(invoiceAllocation.coveredKopecks / 100)); setInvoiceReplan(true);
+                }}>Выставить только доступные {money(invoiceAllocation.coveredKopecks)}</Button>}
+              </div>}
+              {!invoiceAllocation.needsReview && invoiceAllocation.bottleAllocations.length > 0 && <details className="document-options" open={invoiceAllocation.bottleAllocations.length <= 4}>
+                <summary>Как набрана сумма · {invoiceAllocation.bottleAllocations.length} дн.</summary>
+                <div className="invoice-allocation-days space-y-3">{invoiceAllocation.bottleAllocations.map((row) => {
+                  const day = invoiceAllocation.days.find((item) => item.date === row.date);
+                  return <div className="rounded-lg bg-muted/50 p-3" key={row.date}>
+                    <strong>{dateLabel(row.date)}</strong>
+                    {day && <p className="help-note">Фактически: {number(day.units)} бутылей · {money(day.grossKopecks)} по ставке.</p>}
+                    {day && day.alreadyAllocatedKopecks > 0 && <p className="help-note">Уже в других счетах: {money(day.alreadyAllocatedKopecks)}.</p>}
+                    <p>В этот счёт: <strong>{money(row.amountKopecks)}</strong></p>
+                    {day && day.remainingKopecks > 0 && <p className="help-note">Остаток этого дня: {money(day.remainingKopecks)}.</p>}
+                  </div>;
+                })}</div>
+              </details>}
+              {!invoiceAllocation.needsReview && invoiceAllocation.lastDayRemainingKopecks > 0 && <p className="help-note">Последний день включён частично. Его остаток {money(invoiceAllocation.lastDayRemainingKopecks)} будет учитываться при следующем подборе в пределах оставшейся аренды.</p>}
+              {!invoiceAllocation.needsReview && invoiceAllocation.rentalSupplementKopecks > 0 && <p>Доплата до постоянной части: <strong>{money(invoiceAllocation.rentalSupplementKopecks)}</strong>. Это аренда по договору; дополнительные бутыли не создаются.</p>}
+              <p className="help-note">Топливо учтено в остатке аренды и вычитается в конце месяца. Из записей отдельных дней оно здесь не вычитается.</p>
+              {invoiceAllocation.ready && <div className="invoice-allocation-summary">
+                {invoiceKind !== "other" && <p>Останется {invoiceKind === "fixed" ? "постоянной" : "переменной"} части: <strong>{money(Math.max(0, (invoiceKind === "fixed" ? fixedTargetKopecks : variableTargetKopecks) - (data?.invoices.filter((item) => item.id !== editingInvoiceId && item.kind === invoiceKind).reduce((sum, item) => sum + item.amountKopecks, 0) ?? 0) - toKopecks(invoiceAmount)))}</strong></p>}
+                <p>Останется выставить за месяц: <strong>{money(Math.max(0, netRent - (data?.invoices.filter((item) => item.id !== editingInvoiceId).reduce((sum, item) => sum + item.amountKopecks, 0) ?? 0) - toKopecks(invoiceAmount)))}</strong></p>
+              </div>}
+              {!invoiceReplan && <Button type="button" variant="outline" className="w-full" onClick={() => { setInvoiceReplan(true); setInvoicePeriodAutomatic(true); }}>Подобрать даты заново</Button>}
+            </section> : <div className="rounded-xl border border-border p-3 space-y-2">
+              <p className="help-note">Старый счёт: здесь можно исправить номер, дату и примечание, сохранив прежнюю сумму. Точная денежная привязка к дням пока не добавлена.</p>
+              <Button type="button" className="w-full" onClick={() => { setInvoiceReplan(true); setInvoicePeriodAutomatic(true); }}>Подобрать точную привязку</Button>
+            </div>}
+            <details className="document-options"><summary>Выбрать дни вручную</summary>
+              <p className="help-note">Обычно даты подбираются автоматически. Укажите границы, если счёт должен относиться только к части месяца.</p>
+              <div className="grid grid-cols-2 gap-3">
+                <label><FieldLabel>Первый день бутылей</FieldLabel><Input type="date" min={`${month}-01`} max={periodBounds(month).end} value={invoiceStartDate} onChange={(event) => { setInvoicePeriodAutomatic(false); setInvoiceReplan(true); setInvoiceStartDate(event.target.value); }} /></label>
+                <label><FieldLabel>Последний день бутылей</FieldLabel><Input type="date" min={`${month}-01`} max={periodBounds(month).end} value={invoiceEndDate} onChange={(event) => { setInvoicePeriodAutomatic(false); setInvoiceReplan(true); setInvoiceEndDate(event.target.value); }} /></label>
+              </div>
+              <Button type="button" variant="outline" className="w-full" aria-pressed={invoicePeriodAutomatic} onClick={() => { setInvoicePeriodAutomatic(true); setInvoiceReplan(true); }}>Подобрать период автоматически</Button>
+            </details>
             {editingInvoiceId === null && invoiceKind !== "other" && <p className="help-note">Предложенная сумма — остаток {invoiceKind === "fixed" ? "постоянной" : "переменной"} части аренды за месяц. Её можно изменить для частичного счёта.</p>}
-            {editingInvoiceId !== null && !invoiceStartDate && !invoiceEndDate &&
-              <p className="help-note">Этот старый счёт сохранён без дат бутылей. Можно оставить его как есть или добавить период для расшифровки в акте сверки.</p>}
             <details className="document-options"><summary>Дополнительно: акт, срок оплаты, примечание</summary>
               <label><FieldLabel>Связанный акт-расчёт №</FieldLabel><Input value={invoiceActNumber} onChange={(event) => setInvoiceActNumber(event.target.value)} placeholder="Необязательно для предварительного счёта" /></label>
               <label><FieldLabel>Срок оплаты</FieldLabel><Input type="date" value={invoiceDueDate} onChange={(event) => setInvoiceDueDate(event.target.value)} /></label>
@@ -3953,7 +4168,7 @@ export default function RentalApp() {
             </details>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setInvoiceOpen(false)}>Отмена</Button>
-              <Button type="submit" disabled={busy}>{busy && <LoaderCircle className="animate-spin" />}Сохранить счёт</Button>
+              <Button type="submit" disabled={busy || (invoiceUsesAllocation && !invoiceAllocation.ready)}>{busy && <LoaderCircle className="animate-spin" />}{invoiceReplan ? "Подтвердить и сохранить счёт" : "Сохранить изменения"}</Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -4125,6 +4340,11 @@ export default function RentalApp() {
               </div>
             </div>
 
+            <label className="settings-section motion-settings-row">
+              <span><strong>Плавные переходы</strong><small>Мягкое открытие окон и подтверждение записи. Настройка уменьшения движения на телефоне тоже учитывается.</small></span>
+              <input type="checkbox" checked={motionEnabled} onChange={(event) => changeMotion(event.target.checked)} />
+            </label>
+
             <div className="settings-section expense-shortcuts-settings">
               <strong>Быстрые кнопки расходов</strong>
               <p className="help-note">Настройте название, категорию, плательщика и сумму для быстрого ввода.</p>
@@ -4189,17 +4409,17 @@ export default function RentalApp() {
         <DialogContent className="dialog-card">
           <DialogHeader>
             <DialogTitle>{editingDowntimeId === null ? "Добавить простой" : "Редактировать простой"}</DialogTitle>
-            <DialogDescription>Укажите полные календарные дни и подтверждение неисправности.</DialogDescription>
+            <DialogDescription>{downtimeKind === "no_trip" ? "Отметьте полные дни, когда машина не выезжала. Это уменьшит постоянную часть аренды." : "Сохранённый технический простой: проверьте дни и подтверждение."}</DialogDescription>
           </DialogHeader>
           <form onSubmit={saveDowntime} className="dialog-form">
             <div className="grid grid-cols-2 gap-3">
-              <label><FieldLabel>Начало</FieldLabel><Input type="date" value={downtimeStart} onChange={(event) => setDowntimeStart(event.target.value)} required /></label>
-              <label><FieldLabel>Окончание</FieldLabel><Input type="date" value={downtimeEnd} onChange={(event) => setDowntimeEnd(event.target.value)} required /></label>
+              <label><FieldLabel>Начало</FieldLabel><Input type="date" min={downtimeKind === "no_trip" ? documentSettings.rentalStart : undefined} max={downtimeKind === "no_trip" ? today : undefined} value={downtimeStart} onChange={(event) => setDowntimeStart(event.target.value)} required /></label>
+              <label><FieldLabel>Окончание</FieldLabel><Input type="date" min={downtimeStart} max={downtimeKind === "no_trip" ? today : undefined} value={downtimeEnd} onChange={(event) => setDowntimeEnd(event.target.value)} required /></label>
             </div>
-            <label><FieldLabel>Описание неисправности</FieldLabel><Input value={downtimeReason} onChange={(event) => setDowntimeReason(event.target.value)} required /></label>
-            <label><FieldLabel>Основание / подтверждение</FieldLabel><Input value={downtimeBasis} onChange={(event) => setDowntimeBasis(event.target.value)} placeholder="Заказ-наряд, акт диагностики, переписка" required /></label>
-            <label><FieldLabel>Примечание</FieldLabel><Textarea value={downtimeNote} onChange={(event) => setDowntimeNote(event.target.value)} /></label>
-            <p className="help-note">Полные дни подтверждённого простоя уменьшают постоянную часть пропорционально дням месяца.</p>
+            {downtimeKind === "technical" && <><label><FieldLabel>Описание неисправности</FieldLabel><Input value={downtimeReason} onChange={(event) => setDowntimeReason(event.target.value)} required /></label>
+              <label><FieldLabel>Основание / подтверждение</FieldLabel><Input value={downtimeBasis} onChange={(event) => setDowntimeBasis(event.target.value)} placeholder="Заказ-наряд, акт диагностики, переписка" required /></label></>}
+            <label><FieldLabel>Примечание · необязательно</FieldLabel><Textarea value={downtimeNote} onChange={(event) => setDowntimeNote(event.target.value)} /></label>
+            <p className="help-note">Полный день без выезда уменьшает постоянную часть пропорционально дням месяца. Если объём бутылей выше неё, действует расчёт по объёму. Пустые даты автоматически не учитываются.</p>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setDowntimeOpen(false)}>Отмена</Button>
               <Button type="submit" disabled={busy}>{busy && <LoaderCircle className="animate-spin" />}Сохранить</Button>

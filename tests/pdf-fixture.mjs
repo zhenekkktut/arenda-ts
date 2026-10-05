@@ -48,12 +48,40 @@ export function compactInput(tools = documentTools()) {
     calculation: tools.calculateRental("2026-09", entries, [], settings) };
 }
 
+// Native export also exercises partial money from the same delivery date and a
+// full no-trip day. Counts remain whole, actual bottles in both invoices.
+export function allocationInput(tools = documentTools()) {
+  const { settings } = sampleInput(tools);
+  const entries = [{ entryDate: "2026-09-10", units: 400 },
+    { entryDate: "2026-09-11", units: 320 }, { entryDate: "2026-09-12", units: 100 }];
+  const downtimes = [{ id: 1, kind: "no_trip", startDate: "2026-09-01", endDate: "2026-09-01",
+    reason: "Выезда не было", basis: "Запись календаря", note: "" }];
+  const expenses = [{ expenseDate: "2026-09-12", amountKopecks: 500000, category: "fuel", payer: "customer" }];
+  const calculation = tools.calculateRental("2026-09", entries, downtimes, settings);
+  const netRent = tools.calculateFuelAdjustment("2026-09", calculation, expenses).calculation.totalKopecks;
+  const invoices = [
+    { id: 201, invoiceNumber: "201", invoiceDate: "2026-09-10", period: "2026-09", kind: "fixed", amountKopecks: 1250000,
+      bottleStartDate: "2026-09-10", bottleEndDate: "2026-09-10", allocationVersion: 1,
+      bottleAllocations: [{ date: "2026-09-10", amountKopecks: 1250000 }], rentalSupplementKopecks: 0 },
+    { id: 202, invoiceNumber: "202", invoiceDate: "2026-09-11", period: "2026-09", kind: "fixed", amountKopecks: 1230000,
+      bottleStartDate: "2026-09-10", bottleEndDate: "2026-09-11", allocationVersion: 1,
+      bottleAllocations: [{ date: "2026-09-10", amountKopecks: 350000 }, { date: "2026-09-11", amountKopecks: 880000 }], rentalSupplementKopecks: 0 },
+    { id: 203, invoiceNumber: "203", invoiceDate: "2026-10-01", period: "2026-09", kind: "fixed", amountKopecks: netRent - 2480000,
+      bottleStartDate: "2026-09-11", bottleEndDate: "2026-09-12", allocationVersion: 1,
+      bottleAllocations: [{ date: "2026-09-11", amountKopecks: 400000 }, { date: "2026-09-12", amountKopecks: 400000 }],
+      rentalSupplementKopecks: netRent - 3280000 },
+  ];
+  return { settings, entries, downtimes, expenses, calculation, invoices, payments: [],
+    meta: tools.defaultDocumentMeta("2026-09", 3, "2026-10-03") };
+}
+
 if (process.argv[2]) {
   const target = process.argv[2];
   fs.mkdirSync(target, { recursive: true });
   const tools = documentTools();
   const input = sampleInput(tools);
   fs.writeFileSync(`${target}/reconciliation.html`, tools.buildReconciliationHtml(input));
-  fs.writeFileSync(`${target}/reconciliation-compact.html`, tools.buildReconciliationHtml(compactInput(tools)));
-  fs.writeFileSync(`${target}/rent.html`, tools.buildRentActHtml(input));
+  const allocated = allocationInput(tools);
+  fs.writeFileSync(`${target}/reconciliation-compact.html`, tools.buildReconciliationHtml(allocated));
+  fs.writeFileSync(`${target}/rent.html`, tools.buildRentActHtml(allocated));
 }

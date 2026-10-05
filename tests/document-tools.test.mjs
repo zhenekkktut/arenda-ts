@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 import ts from "typescript";
-import { compactInput, sampleInput } from "./pdf-fixture.mjs";
+import { allocationInput, compactInput, sampleInput } from "./pdf-fixture.mjs";
 
 const source = fs.readFileSync(new URL("../app/document-tools.ts", import.meta.url), "utf8");
 const compiled = ts.transpileModule(source, {
@@ -354,4 +354,172 @@ test("user-entered document text is escaped", () => {
   const html = tools.buildRentActHtml({ settings, meta, calculation, downtimes: [], invoices: [], payments: [], expenses: [] });
   assert.match(html, /&lt;Выборг&gt;/);
   assert.doesNotMatch(html, /г\. <Выборг>/);
+});
+
+const dailyDetail = (html) => [...html.matchAll(/<table class="reconciliation-daily">[\s\S]*?<\/table>/g)]
+  .map((match) => match[0]).join("");
+
+test("partial same-kind invoices identify included money while real bottles and gross appear once", () => {
+  const input = allocationInput(tools);
+  input.invoices = input.invoices.slice(0, 2);
+  const html = tools.buildReconciliationHtml(input);
+  const daily = dailyDetail(html);
+  const datedRows = [...daily.matchAll(/<tr><td>([\s\S]*?)<\/td><td>(\d\d\.\d\d\.\d{4})<\/td>\s*<td class="value">([^<]+)<\/td>[\s\S]*?<\/tr>/g)];
+  assert.deepEqual(datedRows.map((row) => [row[2], Number(row[3])]),
+    [["10.09.2026", 400], ["11.09.2026", 320], ["12.09.2026", 100]]);
+  assert.equal(datedRows.reduce((sum, row) => sum + Number(row[3]), 0), 820);
+  assert.match(datedRows[0][1], /№ 201 · 10\.09\.2026–10\.09\.2026: 12[\s ]500,00 руб/);
+  assert.match(datedRows[0][1], /№ 202 · 10\.09\.2026–11\.09\.2026: 3[\s ]500,00 руб/);
+  assert.match(datedRows[0][0], /<td class="value">16[\s ]000,00<\/td>/);
+  assert.match(datedRows[1][1], /№ 202: 8[\s ]800,00 руб/);
+  assert.match(datedRows[1][1], /Не включено в счета: 4[\s ]000,00 руб/);
+  assert.match(datedRows[1][0], /<td class="value">12[\s ]800,00<\/td>/);
+  assert.match(daily, /По счёту № 201[^<]*включено по датам 12[\s ]500,00 руб\.; итого по счёту 12[\s ]500,00 руб/);
+  assert.match(daily, /По счёту № 202[^<]*включено по датам 12[\s ]300,00 руб\.; итого по счёту 12[\s ]300,00 руб/);
+  assert.doesNotMatch(daily, /<td class="value">(?:312,5|307,5)<\/td>/);
+  assert.equal((daily.match(/Вычет топлива заказчика за месяц/g) ?? []).length, 1);
+  assert.equal(input.entries[0].units, 400);
+  assert.equal(input.invoices[0].amountKopecks, 1250000);
+});
+
+test("allocation supplements reconcile each invoice face without imaginary deliveries or repeated monthly fuel", () => {
+  const input = allocationInput(tools);
+  const html = tools.buildReconciliationHtml(input);
+  const daily = dailyDetail(html);
+  assert.equal((html.match(/class="page"/g) ?? []).length, 1, "Native compact fixture must remain one A4 sheet");
+  assert.match(daily, /По счёту № 203[^<]*включено по датам 8[\s ]000,00 руб\.<br>Доплата до постоянной части: 39[\s ]533,33 руб\.; итого по счёту 47[\s ]533,33 руб/);
+  assert.match(daily, /Доплата до постоянной части по акту-расчёту № 3<\/td>\s*<td class="value">44[\s ]533,33/);
+  assert.match(daily, /Начислено за сентябрь 2026 года<\/td><td class="value">820<\/td>\s*<td class="value">5[\s ]000,00<\/td><td class="value">77[\s ]333,33/);
+  assert.match(daily, /Вычет топлива заказчика за месяц[^<]*<\/td><td class="value">−5[\s ]000,00/);
+  assert.match(daily, /Итого к оплате за месяц после вычета топлива<\/td><td class="value">72[\s ]333,33/);
+  assert.equal((daily.match(/Вычет топлива заказчика за месяц/g) ?? []).length, 1);
+  assert.equal([...daily.matchAll(/<td>\d\d\.09\.2026<\/td>/g)].length, 3);
+  assert.equal(tools.reconciliationSummary(input).balance, 7233333);
+  assert.equal(tools.calculateSettlement("2026-09", input.calculation, input.invoices, input.expenses).remainingToInvoiceKopecks, 0);
+});
+
+test("mixed explicit and legacy ranges retain unknown money links without duplicating shared delivery dates", () => {
+  const input = allocationInput(tools);
+  const legacy = { ...input.invoices[1] };
+  delete legacy.allocationVersion;
+  delete legacy.bottleAllocations;
+  delete legacy.rentalSupplementKopecks;
+  input.invoices = [input.invoices[0], legacy];
+  const daily = dailyDetail(tools.buildReconciliationHtml(input));
+  for (const date of ["10", "11", "12"]) assert.equal((daily.match(new RegExp(`<td>${date}\\.09\\.2026</td>`, "g")) ?? []).length, 1);
+  const shared = daily.match(/<tr><td>([\s\S]*?)<\/td><td>10\.09\.2026<\/td>/)[1];
+  assert.match(shared, /№ 201[^<]*12[\s ]500,00/);
+  assert.match(shared, /№ 202[^<]*по периоду/);
+  assert.doesNotMatch(shared, /Не включено в счета: 3[\s ]500/);
+  assert.match(shared, /Остаток дня: связь по периоду/);
+  assert.match(daily, /Не включено в счета: 4[\s ]000,00 руб\.<\/td><td>12\.09\.2026/);
+});
+
+test("invalid or unknown explicit allocation metadata keeps invoice faces but does not invent a legacy range link", () => {
+  const input = allocationInput(tools);
+  const original = { ...input.invoices[0] };
+  input.invoices = [original];
+  const legacy = { ...original };
+  delete legacy.allocationVersion;
+  delete legacy.bottleAllocations;
+  delete legacy.rentalSupplementKopecks;
+  const baseline = tools.buildReconciliationHtml({ ...input, invoices: [legacy] });
+  assert.match(dailyDetail(baseline), /№ 201 · 10\.09\.2026–10\.09\.2026/);
+  for (const changes of [
+    { allocationVersion: 2 }, { bottleAllocations: undefined }, { bottleAllocations: {} },
+    { bottleAllocations: [{ date: "2026-09-10", amountKopecks: 1250001 }] },
+    { bottleAllocations: [{ date: "2026-09-10", amountKopecks: -1250000 }] },
+    { bottleAllocations: [{ date: "2026-09-10", amountKopecks: 1249999.5 }], rentalSupplementKopecks: 0.5 },
+    { bottleAllocations: [{ date: "2026-09-31", amountKopecks: 1250000 }] },
+    { bottleAllocations: [{ date: "2026-10-01", amountKopecks: 1250000 }] },
+    { bottleAllocations: [{ date: "2026-09-10", amountKopecks: 500000 }, { date: "2026-09-10", amountKopecks: 750000 }] },
+  ]) {
+    const html = tools.buildReconciliationHtml({ ...input, invoices: [{ ...original, ...changes }] });
+    const daily = dailyDetail(html);
+    assert.match(html, /№ 201<br>10\.09\.2026<br>Привязку суммы к датам нужно проверить/);
+    assert.match(html, /<td class="value">12[\s ]500,00<\/td>/);
+    assert.match(daily, /Дни без связи со счётом/);
+    assert.doesNotMatch(daily, /№ 201/);
+    for (const date of ["10", "11", "12"]) assert.equal((daily.match(new RegExp(`<td>${date}\\.09\\.2026</td>`, "g")) ?? []).length, 1);
+  }
+});
+
+test("changed actual records and invoice dates invalidate only unsupported money links while preserving saved faces", () => {
+  for (const mutate of [
+    (input) => { input.entries[0].units = 300; },
+    (input) => { input.entries = input.entries.slice(1); },
+    (input) => { input.invoices[0].invoiceDate = "2026-09-09"; },
+    (input) => { input.entries[2].units = 600; },
+  ]) {
+    const input = allocationInput(tools);
+    const savedInvoices = structuredClone(input.invoices);
+    mutate(input);
+    input.calculation = tools.calculateRental(input.meta.period, input.entries, input.downtimes, input.settings);
+    const before = structuredClone(input);
+    const html = tools.buildReconciliationHtml(input);
+    const daily = dailyDetail(html);
+    const invalidId = input.entries[2]?.units === 600 ? 203 : 201;
+    assert.match(html, new RegExp(`№ ${invalidId}<br>[^<]*<br>Привязку суммы к датам нужно проверить`));
+    assert.doesNotMatch(daily, new RegExp(`№ ${invalidId}(?:[: ·]|<)`));
+    for (const entry of input.entries) assert.equal((daily.match(new RegExp(`<td>${entry.entryDate.split("-").reverse().join("\\.")}</td>`, "g")) ?? []).length, 1);
+    assert.deepEqual(input, before, "Rendering must not modify current records or saved invoice faces");
+    assert.deepEqual(input.invoices.map((invoice) => invoice.amountKopecks), savedInvoices.map((invoice) => invoice.amountKopecks));
+  }
+  const input = allocationInput(tools);
+  input.invoices = input.invoices.slice(0, 1);
+  input.settings.rentalStart = "2026-09-11";
+  input.calculation = tools.calculateRental(input.meta.period, input.entries, input.downtimes, input.settings);
+  const daily = dailyDetail(tools.buildReconciliationHtml(input));
+  assert.doesNotMatch(daily, /№ 201/);
+  assert.doesNotMatch(daily, /<td>10\.09\.2026<\/td>/);
+});
+
+test("overallocated shared dates drop all conflicting links while valid third invoices, payments and real deliveries remain", () => {
+  const input = allocationInput(tools);
+  input.invoices[1].bottleAllocations = [{ date: "2026-09-10", amountKopecks: 450000 },
+    { date: "2026-09-11", amountKopecks: 780000 }];
+  input.payments = [{ invoiceId: 201, paymentDate: "2026-09-15", amountKopecks: 500000, method: "bank", documentNumber: "" }];
+  const unchanged = structuredClone(input);
+  const html = tools.buildReconciliationHtml(input);
+  const daily = dailyDetail(html);
+  for (const id of [201, 202]) {
+    assert.match(html, new RegExp(`№ ${id}<br>[^<]*<br>Привязку суммы к датам нужно проверить`));
+    assert.doesNotMatch(daily, new RegExp(`№ ${id}(?:[: ·]|<)`));
+  }
+  assert.match(daily, /№ 203/);
+  assert.match(daily, /По счёту № 203[^<]*включено по датам 8[\s ]000,00/);
+  assert.match(html, /№ 201<br>10\.09\.2026<br>Привязку суммы к датам нужно проверить<\/td>\s*<td class="value">12[\s ]500,00<\/td>\s*<td class="value">5[\s ]000,00/);
+  const datedRows = [...daily.matchAll(/<td>(\d\d\.09\.2026)<\/td>\s*<td class="value">(\d+)<\/td>/g)];
+  assert.deepEqual(datedRows.map((row) => [row[1], Number(row[2])]), [["10.09.2026", 400], ["11.09.2026", 320], ["12.09.2026", 100]]);
+  assert.deepEqual(input, unchanged);
+});
+
+test("long allocation detail starts on the first sheet and retains every actual date through continuations", () => {
+  const input = sampleInput(tools);
+  input.invoices[0] = { ...input.invoices[0], allocationVersion: 1, rentalSupplementKopecks: 0,
+    bottleAllocations: [{ date: "2026-08-01", amountKopecks: 400000 },
+      { date: "2026-08-02", amountKopecks: 440000 }, { date: "2026-08-03", amountKopecks: 440000 }] };
+  const html = tools.buildReconciliationHtml(input);
+  const pages = [...html.matchAll(/<section class="page">([\s\S]*?)<\/section>/g)].map((match) => match[1]);
+  assert.ok(pages.length >= 2);
+  assert.match(pages[0], /class="reconciliation-daily"/);
+  for (const entry of input.entries) assert.equal(html.split(`<td>${entry.entryDate.split("-").reverse().join(".")}</td>`).length - 1, 1);
+  assert.match(pages.at(-1), /Итого к оплате за месяц после вычета топлива/);
+  assert.equal((dailyDetail(html).match(/Вычет топлива заказчика за месяц/g) ?? []).length, 1);
+});
+
+test("full no-trip days reduce the fixed part and are described without a technical fault", () => {
+  const input = allocationInput(tools);
+  const act = tools.buildRentActHtml(input);
+  assert.equal(input.calculation.downtimeDays, 1);
+  assert.equal(input.calculation.payableDays, 29);
+  assert.equal(input.calculation.baseKopecks, Math.round(8000000 * 29 / 30));
+  assert.match(act, /01\.09\.2026–01\.09\.2026: день без выезда; Выезда не было; основание: Запись календаря/);
+  assert.doesNotMatch(act, /технического простоя|технический простой|поломк/i);
+  assert.match(act, /Основание и период простоя/);
+  assert.match(act, /Постоянная часть Ф<\/td><td class="value">72[\s ]333,33/);
+  const technical = { ...input, downtimes: [{ ...input.downtimes[0], kind: "technical", reason: "Ремонт" }] };
+  assert.match(tools.buildRentActHtml(technical), /технический простой; Ремонт/);
+  const legacy = { ...input, downtimes: [{ ...input.downtimes[0], kind: undefined, reason: "Ремонт" }] };
+  assert.match(tools.buildRentActHtml(legacy), /01\.09\.2026–01\.09\.2026: Ремонт; основание/);
 });
