@@ -515,7 +515,7 @@ export function reconciliationDateError(meta: Pick<DocumentMeta, "period" | "doc
   const end = periodBounds(meta.period).end;
   const asOf = meta.asOfDate || meta.documentDate;
   if (meta.documentDate && asOf && (meta.documentDate < end || asOf < end)) {
-    return `Акт сверки включает весь ${periodLabel(meta.period)}. Даты составления и сверки должны быть не раньше ${shortDate(end)}. Выберите нужную дату или нажмите «Составить на сегодня».`;
+    return `Акт сверки включает весь ${periodLabel(meta.period)}. Даты составления и сверки должны быть не раньше ${shortDate(end)}. Выберите нужную дату или нажмите «Обновить даты на сегодня».`;
   }
   return null;
 }

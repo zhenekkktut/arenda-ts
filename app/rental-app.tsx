@@ -35,6 +35,7 @@ import {
 import { toast } from "sonner";
 import { calculateTaxYear, type TaxAdjustment, type TaxYearOptions } from "@/app/tax-calculation";
 import { normalizeExpenseShortcuts, validateExpenseShortcuts, type ExpenseShortcut } from "@/app/expense-shortcuts";
+import { linkedAsOfDate, missingEntryDates, nextInvoiceNumber } from "@/app/workflow-tools";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -308,6 +309,16 @@ const DOCUMENT_TEXT_FIELDS = [
   "lesseeFull", "lesseeShort", "lesseeInn", "lesseeKpp", "lesseeDirector",
   "lesseeDirectorShort", "vehicleModel", "vehicleYear", "vehicleVin", "vehiclePlate", "vatLabel",
 ] as const satisfies readonly (keyof DocumentSettings)[];
+
+const DOCUMENT_FIELD_LABELS: Record<(typeof DOCUMENT_TEXT_FIELDS)[number], string> = {
+  city: "Город", contractNumber: "Номер договора", rentalStart: "Начало аренды", rentalEnd: "Конец аренды",
+  lessorFull: "Арендодатель — полное наименование", lessorShort: "Арендодатель — краткое наименование",
+  lessorSignerShort: "ФИО арендодателя для подписи", lessorDative: "Арендодатель в дательном падеже", lessorInn: "ИНН арендодателя",
+  lesseeFull: "Арендатор — полное наименование", lesseeShort: "Арендатор — краткое наименование",
+  lesseeInn: "ИНН арендатора", lesseeKpp: "КПП арендатора", lesseeDirector: "Директор в тексте «в лице…»",
+  lesseeDirectorShort: "ФИО директора для подписи", vehicleModel: "Автомобиль", vehicleYear: "Год автомобиля",
+  vehicleVin: "VIN автомобиля", vehiclePlate: "Госномер", vatLabel: "НДС",
+};
 
 function normalizeDocumentSettings(value: unknown): DocumentSettings {
   const supplied = value && typeof value === "object" ? value as Partial<DocumentSettings> : {};
@@ -835,7 +846,7 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
       throw new Error("Проверьте дату договора и условия расчёта");
     }
     for (const field of DOCUMENT_TEXT_FIELDS) {
-      if (typeof settings[field] !== "string" || !String(settings[field]).trim()) {
+      if (typeof settings[field] !== "string" || (field !== "lessorDative" && !String(settings[field]).trim())) {
         throw new Error("Заполните все реквизиты договора");
       }
     }
@@ -1367,6 +1378,7 @@ export default function RentalApp() {
   const [expenseNote, setExpenseNote] = useState("");
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [requisitesOpen, setRequisitesOpen] = useState(false);
   const [settingsDraft, setSettingsDraft] = useState<DocumentSettings>({ ...DEFAULT_DOCUMENT_SETTINGS });
   const [actNumber, setActNumber] = useState("1");
   const [documentDate, setDocumentDate] = useState(today);
@@ -1455,8 +1467,8 @@ export default function RentalApp() {
   }, [themeMode]);
 
   useEffect(() => {
-    if (data && !settingsOpen) setSettingsDraft({ ...(data.settings ?? DEFAULT_DOCUMENT_SETTINGS) });
-  }, [data, settingsOpen]);
+    if (data && !requisitesOpen) setSettingsDraft({ ...(data.settings ?? DEFAULT_DOCUMENT_SETTINGS) });
+  }, [data, requisitesOpen]);
 
   // Reloading days, invoices or payments must keep an unsaved document draft.
   const documentMetaSnapshot = data
@@ -1619,6 +1631,8 @@ export default function RentalApp() {
     documentSettings.vehicleModel,
     documentSettings.vehicleVin,
   ].every((value) => value.trim() && !value.includes("["));
+  const missingDocumentFields = DOCUMENT_TEXT_FIELDS.filter((field) =>
+    field !== "lessorDative" && !documentSettings[field].trim());
   const liveCalculation = calculateRental(
     month,
     data?.entries ?? [],
@@ -1704,7 +1718,10 @@ export default function RentalApp() {
     : "conic-gradient(#e7ecf2 0 100%)";
   const monthBounds = periodBounds(month);
   const documentDateIssue = reconciliationDateError({ period: month, documentDate, asOfDate });
-  const missingCutoff = month === today.slice(0, 7) ? today : monthBounds.end;
+  const missingMonthDays = useMemo(() => missingEntryDates(month, today, documentSettings,
+    data?.entries ?? [], data?.downtimes ?? []),
+  [month, today, documentSettings, data?.entries, data?.downtimes]);
+  const missingDates = useMemo(() => new Set(missingMonthDays), [missingMonthDays]);
   const currentWeekStart = weekStart(entryDate);
   const monthCalendarDays = useMemo(() => {
     const entriesByDate = new Map((data?.entries ?? []).map((entry) => [entry.entryDate, entry]));
@@ -1714,26 +1731,24 @@ export default function RentalApp() {
     for (let date = first; date <= last; date = addIsoDays(date, 1)) {
       const inMonth = date.slice(0, 7) === month;
       const entry = entriesByDate.get(date);
-      const isSunday = new Date(`${date}T12:00:00Z`).getUTCDay() === 0;
-      days.push({ date, inMonth, entry, missing: inMonth && date <= missingCutoff && !isSunday && !entry });
+      days.push({ date, inMonth, entry, missing: missingDates.has(date) });
     }
     return days;
-  }, [data?.entries, month, monthBounds.start, monthBounds.end, missingCutoff]);
+  }, [data?.entries, month, monthBounds.start, monthBounds.end, missingDates]);
   const currentWeekDays = useMemo(() => {
     const entriesByDate = new Map((data?.entries ?? []).map((entry) => [entry.entryDate, entry]));
     return Array.from({ length: 7 }, (_, index) => {
       const date = addIsoDays(currentWeekStart, index);
       const inMonth = date.slice(0, 7) === month;
       const entry = entriesByDate.get(date);
-      const isSunday = new Date(`${date}T12:00:00Z`).getUTCDay() === 0;
       return {
         date,
         inMonth,
         entry,
-        missing: inMonth && date <= missingCutoff && !isSunday && !entry,
+        missing: missingDates.has(date),
       };
     });
-  }, [currentWeekStart, data?.entries, missingCutoff, month]);
+  }, [currentWeekStart, data?.entries, missingDates, month]);
   const weekUnits = currentWeekDays.reduce((sum, day) => sum + (day.entry?.units ?? 0), 0);
   const weekAmountKopecks = weekUnits * documentSettings.rateKopecks;
   const maxWeekUnits = Math.max(1, ...currentWeekDays.map((day) => day.entry?.units ?? 0));
@@ -1741,15 +1756,6 @@ export default function RentalApp() {
   const weekEntries = currentWeekDays
     .flatMap((day) => day.entry ? [day.entry] : [])
     .sort((a, b) => b.entryDate.localeCompare(a.entryDate));
-  const missingMonthDays = useMemo(() => {
-    const entries = new Set((data?.entries ?? []).map((entry) => entry.entryDate));
-    const missing: string[] = [];
-    for (let date = monthBounds.start; date <= missingCutoff; date = addIsoDays(date, 1)) {
-      const isSunday = new Date(`${date}T12:00:00Z`).getUTCDay() === 0;
-      if (!isSunday && !entries.has(date)) missing.push(date);
-    }
-    return missing;
-  }, [data?.entries, missingCutoff, monthBounds.start]);
   const canGoToPreviousWeek = addIsoDays(entryDate, -7) >= monthBounds.start;
   const canGoToNextWeek = addIsoDays(entryDate, 7) <= monthBounds.end;
   const unitsUntilControl = Math.max(0, calculation.includedUnits - calculation.actualUnits);
@@ -1962,7 +1968,7 @@ export default function RentalApp() {
         : remainingToInvoice;
     setInvoiceKind(kind);
     setInvoiceAmount(suggestedAmount > 0 ? String(suggestedAmount / 100) : "");
-    setInvoiceNumber("");
+    setInvoiceNumber(nextInvoiceNumber(isOfflineRuntime() ? readOfflineStore().invoices : data?.invoices ?? []));
     setInvoiceActNumber(actNumber);
     setInvoiceDate(selectedDate);
     setInvoiceDueDate("");
@@ -2068,7 +2074,7 @@ export default function RentalApp() {
     setExpenseDate(month === today.slice(0, 7) ? today : `${month}-01`);
     setExpensePayer("self");
     setExpenseCategory(initialCategory);
-    setExpenseAmount(initialCategory === "base_lease" ? "20000" : "");
+    setExpenseAmount("");
     setExpenseMethod("bank");
     setExpenseDocument("");
     setExpenseNote("");
@@ -2209,10 +2215,24 @@ export default function RentalApp() {
   async function saveSettings(event: FormEvent) {
     event.preventDefault();
     const ok = await request(
-      { action: "save_settings", settings: settingsDraft, shortcuts: expenseShortcutsDraft },
-      "Настройки расчёта сохранены",
+      { action: "save_expense_shortcuts", shortcuts: expenseShortcutsDraft },
+      "Настройки приложения сохранены",
     );
     if (ok) setSettingsOpen(false);
+  }
+
+  function openRequisites() {
+    setSettingsDraft({ ...documentSettings });
+    setSettingsOpen(false);
+    setRequisitesOpen(true);
+  }
+
+  async function saveRequisites(event: FormEvent) {
+    event.preventDefault();
+    const settings = { ...documentSettings };
+    for (const field of missingDocumentFields) settings[field] = settingsDraft[field].trim();
+    const ok = await request({ action: "save_settings", settings }, "Реквизиты заполнены и подставлены в документы");
+    if (ok) setRequisitesOpen(false);
   }
 
   function addExpenseShortcut() {
@@ -2225,10 +2245,6 @@ export default function RentalApp() {
 
   function updateExpenseShortcut(id: string, patch: Partial<ExpenseShortcut>) {
     setExpenseShortcutsDraft((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item));
-  }
-
-  async function saveExpenseShortcuts() {
-    await request({ action: "save_expense_shortcuts", shortcuts: expenseShortcutsDraft }, "Быстрые кнопки сохранены");
   }
 
   function openDowntime(downtime?: Downtime) {
@@ -2356,7 +2372,8 @@ export default function RentalApp() {
   function prepareDocument(kind: "act" | "reconciliation") {
     if (!data) return;
     if (DOCUMENT_TEXT_FIELDS.some((field) => field !== "lessorDative" && !documentSettings[field].trim())) {
-      toast.error("Заполните реквизиты договора в настройках перед формированием документа");
+      toast.error("Не хватает реквизитов для PDF. Восстановите копию или заполните недостающие поля.");
+      openRequisites();
       return;
     }
     const meta = currentDocumentMeta();
@@ -2506,6 +2523,10 @@ export default function RentalApp() {
   }
 
   function askCloseMonth() {
+    if (monthBounds.end > today) {
+      toast.info("Закрыть месяц можно после его окончания. Сейчас продолжайте вносить записи и постоянные счета.");
+      return;
+    }
     setCloseMonthOpen(true);
   }
 
@@ -2765,6 +2786,46 @@ export default function RentalApp() {
   };
   const activeView = viewMeta[tab] ?? viewMeta.summary;
 
+  function showDocuments() {
+    setTab("summary");
+    window.setTimeout(() => documentWorkspaceRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
+  }
+
+  function showMissingDays() {
+    setTab("entries");
+    if (missingMonthDays[0]) selectEntryDate(missingMonthDays[0]);
+    setMonthCalendarOpen(true);
+  }
+
+  function showCurrentRentalMonth() {
+    const nextMonth = [documentSettings.rentalStart.slice(0, 7), today.slice(0, 7), documentSettings.rentalEnd.slice(0, 7)].sort()[1];
+    setMonth(nextMonth);
+    selectEntryDate(nextMonth === today.slice(0, 7) ? today : `${nextMonth}-01`);
+  }
+
+  const unpaidInvoices = data?.invoices.filter((invoice) =>
+    (paidByInvoice.get(invoice.id) ?? 0) < invoice.amountKopecks) ?? [];
+  const currentActsReady = (["act", "reconciliation"] as const).every((kind) =>
+    data?.documentArchive?.some((item) => item.kind === kind && !archiveIsStale(item)));
+  const workflowAction = (() => {
+    if (missingDocumentFields.length) return { step: 0, title: "Подтяните данные с телефона", text: "Восстановите JSON-копию: записи, счета и реквизиты договора появятся автоматически. Для первого запуска можно заполнить только недостающие реквизиты.", label: "Восстановить копию", run: () => backupInputRef.current?.click() };
+    if (monthBounds.start > today || monthBounds.end < documentSettings.rentalStart || monthBounds.start > documentSettings.rentalEnd) return { step: 0, title: "Выберите месяц работы", text: "Для этого месяца пока нет текущего расчёта в пределах договора. Данные и архив можно просматривать.", label: "Перейти к текущему месяцу", run: showCurrentRentalMonth };
+    if (month === today.slice(0, 7) && missingDates.has(today)) return { step: 0, title: "Внесите бутылки за сегодня", text: "Количество сохранится в календаре и попадёт в предложенный период счёта. Если выезда не было, можно сохранить 0.", label: "Добавить запись за сегодня", run: () => { selectEntryDate(today); setQuickEntryOpen(true); } };
+    if (!data?.closure && monthBounds.end <= today) return { step: 0, title: "Проверьте и закройте месяц", text: missingMonthDays.length ? `Дни без записи: ${number(missingMonthDays.length)}. Проверьте календарь, расходы и простой перед итоговым расчётом.` : "Записи и простой учтены. Проверьте топливо и итоговую сумму перед закрытием.", label: "Проверить и закрыть месяц", run: askCloseMonth };
+    if (fixedRemainingKopecks > 0) return { step: 2, title: "Можно выставить постоянную часть", text: `Осталось ${money(fixedRemainingKopecks)}. Приложение предложит номер, сумму и свободный период по записям.`, label: "Составить счёт", run: () => openInvoice("fixed") };
+    if (data?.closure && variableRemainingKopecks > 0) return { step: 2, title: "Можно выставить переменную часть", text: `Осталось ${money(variableRemainingKopecks)} после вычета топлива. Проверьте предложенные дни и сумму.`, label: "Составить счёт", run: () => openInvoice("variable") };
+    if (unpaidInvoices.length) return { step: 3, title: "Отметьте полученные оплаты", text: `Счета с остатком: ${unpaidInvoices.length}. Вносите оплату после получения денег; можно частями.`, label: "Открыть счета и оплаты", run: () => setTab("invoices") };
+    if (!data?.closure) return { step: 0, title: "Продолжайте учёт месяца", text: "Постоянная часть выставлена. Добавляйте бутылки, расходы и полученные оплаты. По окончании месяца станет доступен итоговый расчёт.", label: "Открыть календарь", run: () => { setTab("entries"); setMonthCalendarOpen(true); } };
+    return { step: 4, title: currentActsReady ? "Акты сформированы" : "Подготовьте два акта", text: currentActsReady ? "Актуальные версии находятся в архиве. PDF можно открыть, отправить или создать заново после изменений." : "Акт-расчёт и акт сверки используют общие реквизиты и номер. Проверьте даты и предпросмотр перед сохранением PDF.", label: "Перейти к актам", run: showDocuments };
+  })();
+  const workflowSteps = [
+    { label: "Бутыли", done: Boolean(data?.entries.length) && !missingMonthDays.length, run: () => { setTab("entries"); setMonthCalendarOpen(true); } },
+    { label: "Расходы", done: Boolean(data?.expenses.length), run: () => setTab("expenses") },
+    { label: "Счета", done: totalInvoiced > 0 && remainingToInvoice === 0, run: () => setTab("invoices") },
+    { label: "Оплаты", done: totalInvoiced > 0 && !unpaidInvoices.length, run: () => setTab("invoices") },
+    { label: "Акты", done: currentActsReady, run: showDocuments },
+  ];
+
   return (
     <div className="app-root min-h-screen">
       <Toaster position="top-center" richColors theme={theme} />
@@ -2812,7 +2873,7 @@ export default function RentalApp() {
                 variant="ghost"
                 className="settings-button"
                 onClick={openSettings}
-                aria-label="Настройки расчёта"
+                aria-label="Настройки приложения"
               >
                 <Settings className="size-5" />
               </Button>
@@ -2897,6 +2958,13 @@ export default function RentalApp() {
           ) : data ? (
             <>
               <TabsContent value="summary" className="space-y-4">
+                {offlineMode && <section className="panel workflow-guide" aria-label="Порядок работы за месяц">
+                  <div className="workflow-guide-heading"><span className="eyebrow">Порядок работы</span><strong>{monthLabel(month)}</strong><small>Выберите шаг или воспользуйтесь подсказкой ниже. Расходы добавляются по мере необходимости.</small></div>
+                  <div className="workflow-steps">{workflowSteps.map((step, index) => <button key={step.label} type="button" className="workflow-step" data-state={index === workflowAction.step ? "current" : step.done ? "done" : "pending"} aria-current={index === workflowAction.step ? "step" : undefined} onClick={step.run}><span>{step.done ? <CheckCircle2 className="size-4" /> : index + 1}</span><strong>{step.label}</strong></button>)}</div>
+                  <div className="workflow-next-action"><div><strong>{workflowAction.title}</strong><p>{workflowAction.text}</p></div><Button type="button" className="workflow-primary-action" onClick={workflowAction.run}>{workflowAction.label}<ChevronRight /></Button></div>
+                  {missingDocumentFields.length > 0 && <Button type="button" variant="outline" onClick={openRequisites}>Первый запуск: заполнить реквизиты</Button>}
+                  <div className="workflow-status"><span className="workflow-badge">{data.closure ? "Месяц закрыт" : "Месяц открыт"}</span><span className="workflow-badge">{number(calculation.actualUnits)} бутылей</span><span className="workflow-badge">{data.invoices.length} счетов</span></div>
+                </section>}
                 <section className="settlement-hero" aria-label="Расчёт с заказчиком за месяц">
                   <div className="settlement-hero-heading">
                     <span>Расчёт с заказчиком · {monthLabel(month)}</span>
@@ -2955,7 +3023,7 @@ export default function RentalApp() {
                       }}
                     >
                       <CalendarDays />
-                      <span>Без записи: {number(missingMonthDays.length)} рабочих дней</span>
+                      <span>Дни без записи: {number(missingMonthDays.length)}</span>
                       <ChevronRight />
                     </button>
                   )}
@@ -2980,7 +3048,7 @@ export default function RentalApp() {
                           <UnlockKeyhole />Открыть месяц
                         </Button>
                       ) : (
-                        <Button type="button" variant="outline" onClick={askCloseMonth}>
+                        <Button type="button" variant="outline" onClick={askCloseMonth} disabled={monthBounds.end > today}>
                           <LockKeyhole />Закрыть месяц
                         </Button>
                       )}
@@ -3001,28 +3069,41 @@ export default function RentalApp() {
                     <p className="text-sm text-muted-foreground">Данные берутся из дней, простоев, счетов и оплат.</p>
                   </div></div>
                   {editingArchivedId !== null && <p className="help-note">Редактирование архивного документа. Новая версия будет рассчитана по текущим дням, счетам и оплатам. Для изменения количества бутылей откройте «Дни», для счетов и оплат — «Счета».</p>}
-                  <div className="document-fields">
+                  <div className="document-summary">
+                    <div><span>Номер обоих актов</span><strong>№{actNumber || "—"}</strong></div>
+                    <div><span>Дата составления</span><strong>{validIsoDate(documentDate) ? dateLabel(documentDate) : "Выберите дату"}</strong></div>
+                    <div><span>Сверка на дату</span><strong>{validIsoDate(asOfDate) ? dateLabel(asOfDate) : "Выберите дату"}</strong></div>
+                    <div><span>Итого за месяц</span><strong>{money(netRent)}</strong></div>
+                  </div>
+                  <details className="document-options" key={editingArchivedId ?? "new"} open={editingArchivedId !== null || undefined}>
+                    <summary>Изменить номер, даты и начальный долг</summary>
+                    <div className="document-fields">
                     <label className="col-span-2"><FieldLabel>№ обоих актов</FieldLabel><Input value={actNumber} onChange={(e) => setActNumber(e.target.value)} /></label>
-                    <label><FieldLabel>Дата составления</FieldLabel><Input type="date" value={documentDate} onChange={(e) => setDocumentDate(e.target.value)} /></label>
+                    <label><FieldLabel>Дата составления</FieldLabel><Input type="date" value={documentDate} onChange={(e) => { setAsOfDate(linkedAsOfDate(e.target.value, documentDate, asOfDate)); setDocumentDate(e.target.value); }} /></label>
                     <label><FieldLabel>Сверка по состоянию на</FieldLabel><Input type="date" min={monthBounds.end} value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} /></label>
                     <label className="col-span-2"><FieldLabel>Долг на начало периода, ₽</FieldLabel><Input type="number" step="0.01" inputMode="decimal" value={documentOpeningBalance} onChange={(e) => setDocumentOpeningBalance(e.target.value)} /></label>
-                  </div>
-                  <Button type="button" variant="outline" onClick={() => { setDocumentDate(today); setAsOfDate(today); }}>Составить на сегодня</Button>
-                  {documentDateIssue && <p className="help-note" role="alert">{documentDateIssue}</p>}
+                    </div>
+                    <label className="document-note"><FieldLabel>Замечания и согласованные корректировки</FieldLabel><Input value={documentAdjustments} onChange={(e) => setDocumentAdjustments(e.target.value)} placeholder="Если нет — останется «отсутствуют»" /></label>
+                    <p className="help-note">Номер общий для двух актов. Даты и начальный долг можно изменить; сохранённые значения не заменяются автоматически. При нулевом начальном долге оплаты прошлых месяцев в этот акт не входят.</p>
+                  </details>
+                  <Button type="button" variant="outline" className={documentDateIssue ? "action-attention" : ""} disabled={monthBounds.end > today} onClick={() => { setDocumentDate(today); setAsOfDate(today); }}>Обновить даты на сегодня</Button>
+                  {monthBounds.end > today && <p className="help-note">Итоговая сверка за месяц доступна после {dateLabel(monthBounds.end)}. Пока можно проверять записи и предпросмотр акта-расчёта.</p>}
+                  {documentDateIssue && monthBounds.end <= today && <p className="document-readiness" role="alert">{documentDateIssue}</p>}
                   {!documentDateIssue && (data.invoices.some((invoice) => invoice.invoiceDate > asOfDate) ||
                     [...data.payments, ...((toSignedKopecks(documentOpeningBalance) ?? 0) > 0 ? data.openingPayments ?? [] : [])].some((payment) => payment.paymentDate > asOfDate)) &&
-                    <p className="help-note">В сверку на {dateLabel(asOfDate)} не войдут более поздние счета и оплаты. Для полного расчёта выберите нужную дату или нажмите «Составить на сегодня».</p>}
-                  <label className="document-note"><FieldLabel>Замечания и согласованные корректировки</FieldLabel><Input value={documentAdjustments} onChange={(e) => setDocumentAdjustments(e.target.value)} placeholder="Если нет — останется «отсутствуют»" /></label>
-                  <p className="help-note">При нулевом начальном долге оплаты за предыдущие месяцы в этот акт не входят. Оплаты выбранного месяца учитываются по связи со счётом и дате поступления.</p>
-                  <p className="help-note">В акте-расчёте: календарных дней {actCalculation.calendarDays}; владение {actCalculation.ownershipDays}; простой {actCalculation.downtimeDays}; оплачиваемых дней {actCalculation.payableDays}. N: {number(actCalculation.actualUnits)}. Ф: {money(actCalculation.baseKopecks)}. И: {money(actCalculation.intensityKopecks)}. Переменная часть: {money(actCalculation.variableKopecks)}. Итого: {money(actCalculation.totalKopecks)}.</p>
-                  {missingMonthDays.length > 0 && <p className="help-note text-amber-700">Дни без записи: {number(missingMonthDays.length)}. Проверьте календарь до подписания акта.</p>}
-                  {data.invoices.some((invoice) => (paidByInvoice.get(invoice.id) ?? 0) < invoice.amountKopecks) &&
-                    <p className="help-note text-amber-700">Есть неоплаченные или частично оплаченные счета. Их остатки видны в разделе «Счета».</p>}
+                    <p className="document-readiness">В сверку на {dateLabel(asOfDate)} не войдут более поздние счета и оплаты. Для полного расчёта выберите нужную дату или обновите даты на сегодня.</p>}
+                  <details className="document-options"><summary>Как получилась сумма акта</summary>
+                    <div className="calculation-list"><div><span>Бутылей по записям</span><strong>{number(calculation.actualUnits)}</strong></div><div><span>Бутылей в акте-расчёте</span><strong>{number(actCalculation.actualUnits)}</strong></div><div><span>Постоянная часть</span><strong>{money(actCalculation.baseKopecks)}</strong></div><div><span>Переменная часть</span><strong>{money(actCalculation.variableKopecks)}</strong></div><div><span>Итого в акте</span><strong>{money(actCalculation.totalKopecks)}</strong></div></div>
+                    <p className="help-note">Оплачиваемых дней: {actCalculation.payableDays}; простой: {actCalculation.downtimeDays}. Топливо заказчика вычитается из переменной части, затем при необходимости из постоянной. Даты топлива и общий вычет показаны в акте сверки.</p>
+                  </details>
+                  {missingMonthDays.length > 0 && <div className="document-readiness"><p>Дни без записи: {number(missingMonthDays.length)}. Проверьте календарь до подписания акта.</p><Button type="button" variant="outline" onClick={showMissingDays}>Проверить дни</Button></div>}
+                  {unpaidInvoices.length > 0 &&
+                    <div className="document-readiness"><p>Есть неоплаченные или частично оплаченные счета. Остатки будут указаны в сверке.</p><Button type="button" variant="outline" onClick={() => setTab("invoices")}>Проверить счета и оплаты</Button></div>}
                   {data.payments.reduce((sum, payment) => sum + payment.amountKopecks, 0) > netRent &&
                     <p className="help-note text-amber-700">Оплаты превышают сумму после вычета топлива: переплата {money(data.payments.reduce((sum, payment) => sum + payment.amountKopecks, 0) - netRent)}.</p>}
                   <div className="document-actions">
                     <Button type="button" onClick={() => prepareDocument("act")}>Предпросмотр акта-расчёта</Button>
-                    <Button type="button" variant="outline" onClick={() => prepareDocument("reconciliation")}>Акт сверки</Button>
+                    <Button type="button" variant="outline" disabled={monthBounds.end > today} onClick={() => prepareDocument("reconciliation")}>Предпросмотр акта сверки</Button>
                   </div>
                   <details className="document-archive"><summary>Архив документов · {(data.documentArchive ?? []).filter((item) => item.kind === "act" || item.kind === "reconciliation").length}</summary>
                     {(data.documentArchive ?? []).filter((item) => item.kind === "act" || item.kind === "reconciliation").map((item) => {
@@ -3247,8 +3328,8 @@ export default function RentalApp() {
                             className="invoice-copy-button"
                             onClick={() => {
                               if (!invoiceTextReady) {
-                                toast.error("Сначала заполните данные договора в настройках");
-                                openSettings();
+                                toast.error("Не хватает реквизитов для текста счёта");
+                                openRequisites();
                                 return;
                               }
                               setCopiedKey("");
@@ -3403,16 +3484,11 @@ export default function RentalApp() {
               <Button type="button" variant="outline" onClick={() => backupInputRef.current?.click()}>
                 <Upload />Восстановить
               </Button>
-              <input
-                ref={backupInputRef}
-                type="file"
-                accept=".json,application/json"
-                className="hidden"
-                onChange={(event) => void restoreBackup(event)}
-              />
+
             </div>
           </section>
         )}
+        {offlineMode && <input ref={backupInputRef} type="file" accept=".json,application/json" className="hidden" onChange={(event) => void restoreBackup(event)} />}
       </main>
 
       <Dialog open={Boolean(documentPreview)} onOpenChange={(open) => !open && setDocumentPreview(null)}>
@@ -3438,17 +3514,16 @@ export default function RentalApp() {
               <span>{missingMonthDays.length ? <CalendarDays /> : <CheckCircle2 />}Дни без записи</span>
               <strong>{number(missingMonthDays.length)}</strong>
             </div>
-            <div><span><CarFront />Учётные единицы</span><strong>{number(calculation.actualUnits)}</strong></div>
-            <div><span>Календарных дней D</span><strong>{calculation.calendarDays}</strong></div>
-            <div><span>Дней владения A</span><strong>{calculation.ownershipDays}</strong></div>
+            <div><span><CarFront />Бутылей по записям</span><strong>{number(calculation.actualUnits)}</strong></div>
             <div><span><CirclePause />Дни простоя</span><strong>{number(calculation.downtimeDays)}</strong></div>
-            <div><span>Оплачиваемых дней d</span><strong>{calculation.payableDays}</strong></div>
-            <div><span>Постоянная часть Ф</span><strong>{money(calculation.baseKopecks)}</strong></div>
-            <div><span>Показатель И</span><strong>{money(calculation.intensityKopecks)}</strong></div>
-            <div><span>Переменная часть</span><strong>{money(calculation.variableKopecks)}</strong></div>
+            <div><span>Оплачиваемых дней</span><strong>{calculation.payableDays}</strong></div>
             <div><span><Fuel />Топливо заказчика</span><strong>{money(customerFuel)}</strong></div>
+            {customerFuel > 0 && <div><span>Вычет с округлением</span><strong>−{money(fuelDeduction)}</strong></div>}
+            <div><span>Бутылей в акте-расчёте</span><strong>{number(actCalculation.actualUnits)}</strong></div>
+            <div><span>Постоянная часть в акте</span><strong>{money(actCalculation.baseKopecks)}</strong></div>
+            <div><span>Переменная часть в акте</span><strong>{money(actCalculation.variableKopecks)}</strong></div>
             <div><span><ReceiptText />Уже выставлено</span><strong>{money(totalInvoiced)}</strong></div>
-            <div className="month-close-total"><span><Banknote />Начислено по договору</span><strong>{money(calculation.totalKopecks)}</strong></div>
+            <div className="month-close-total"><span><Banknote />Итого после вычета топлива</span><strong>{money(netRent)}</strong></div>
             <div className="month-close-total month-close-remaining"><span><ReceiptText />Осталось выставить</span><strong>{money(remainingToInvoice)}</strong></div>
           </div>
           {missingMonthDays.length > 0 && (
@@ -3464,7 +3539,7 @@ export default function RentalApp() {
               Проверить незаполненные дни <ChevronRight />
             </button>
           )}
-          <p className="help-note">После фиксации можно сформировать акт-расчёт. Счёт не создаётся автоматически.</p>
+          <p className="help-note">После закрытия можно выставить переменную часть и подготовить два акта. Расходы и счета должны быть внесены за этот месяц.</p>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setCloseMonthOpen(false)}>Отмена</Button>
             <Button type="button" disabled={busy} onClick={() => void closeMonth()}>
@@ -3815,7 +3890,7 @@ export default function RentalApp() {
         <DialogContent className="dialog-card max-h-[92vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingInvoiceId === null ? "Добавить выставленный счёт" : "Редактировать счёт"}</DialogTitle>
-            <DialogDescription>Укажите дни, за которые выставлен счёт: они попадут в акт сверки вместе с количеством бутылей и вычетом топлива. Изменения сохраняются только в приложении.</DialogDescription>
+            <DialogDescription>Проверьте предложенные номер, сумму и дни. Период и бутыли попадут в акт сверки. Здесь сохраняется учёт выставленного счёта.</DialogDescription>
           </DialogHeader>
           <form onSubmit={createInvoice} className="dialog-form">
             <label>
@@ -3844,7 +3919,7 @@ export default function RentalApp() {
             <div className="rounded-xl border border-border p-3 space-y-2">
               <strong className="text-sm">Периоды по записям до {validIsoDate(invoiceDate) ? dateLabel(invoiceDate) : "выбранной даты"}</strong>
               {invoicePeriods.needsReview && <p className="help-note" role="alert">У счетов №{invoicePeriods.legacyInvoiceNumbers.join(", №")} не указан период. Перед выбором проверьте, какие дни они покрывают.</p>}
-              {invoicePeriods.periods.map((period) => <Button type="button" variant="outline" key={`${period.startDate}_${period.endDate}`} className="h-auto w-full flex-col items-start gap-1 whitespace-normal py-3 text-left" onClick={() => {
+              {invoicePeriods.periods.map((period) => <Button type="button" variant="outline" key={`${period.startDate}_${period.endDate}`} aria-pressed={invoiceStartDate === period.startDate && invoiceEndDate === period.endDate} className="invoice-period-choice h-auto w-full flex-col items-start gap-1 whitespace-normal py-3 text-left" onClick={() => {
                 setInvoicePeriodAutomatic(false);
                 setInvoiceStartDate(period.startDate);
                 setInvoiceEndDate(period.endDate);
@@ -3860,19 +3935,22 @@ export default function RentalApp() {
               <label><FieldLabel>Номер счёта</FieldLabel><Input value={invoiceNumber} onChange={(event) => setInvoiceNumber(event.target.value)} placeholder="Например, 24" required /></label>
               <label><FieldLabel>Сумма выставленного счёта, ₽</FieldLabel><Input type="number" min="0.01" step="0.01" inputMode="decimal" value={invoiceAmount} onChange={(event) => setInvoiceAmount(event.target.value)} required /></label>
             </div>
-            <p className="help-note">Введите сумму самого счёта. Оплаты и остаток считаются от этой суммы.{editingInvoiceId === null && " В предложенной сумме топливо сначала вычтено из переменной части; если её не хватает — остаток из постоянной."}</p>
+            <p className="help-note">Укажите сумму самого счёта. Полученную оплату добавьте отдельно.</p>
             <div className="grid grid-cols-2 gap-3">
               <label><FieldLabel>Первый день бутылей</FieldLabel><Input type="date" min={`${month}-01`} max={periodBounds(month).end} value={invoiceStartDate} onChange={(event) => { setInvoicePeriodAutomatic(false); setInvoiceStartDate(event.target.value); }} required={editingInvoiceId === null} /></label>
               <label><FieldLabel>Последний день бутылей</FieldLabel><Input type="date" min={`${month}-01`} max={periodBounds(month).end} value={invoiceEndDate} onChange={(event) => { setInvoicePeriodAutomatic(false); setInvoiceEndDate(event.target.value); }} required={editingInvoiceId === null} /></label>
             </div>
             {invoiceStartDate && invoiceEndDate && invoiceStartDate <= invoiceEndDate &&
-              <p className="help-note">За выбранные дни: {number(selectedBottleUnits)} бутылей, по ставке {money(selectedBottleUnits * documentSettings.rateKopecks)}. Топливо по этим датам: {money(selectedBottleFuel)}. В акте сверки общий вычет топлива показан в конце месяца.</p>}
+              <p className="help-note">В периоде: {number(selectedBottleUnits)} бутылей · {money(selectedBottleUnits * documentSettings.rateKopecks)} по ставке. Топливо: {money(selectedBottleFuel)}; общий вычет — в конце месяца.</p>}
             {editingInvoiceId === null && invoiceKind !== "other" && <p className="help-note">Предложенная сумма — остаток {invoiceKind === "fixed" ? "постоянной" : "переменной"} части аренды за месяц. Её можно изменить для частичного счёта.</p>}
             {editingInvoiceId !== null && !invoiceStartDate && !invoiceEndDate &&
               <p className="help-note">Этот старый счёт сохранён без дат бутылей. Можно оставить его как есть или добавить период для расшифровки в акте сверки.</p>}
-            <label><FieldLabel>Связанный акт-расчёт №</FieldLabel><Input value={invoiceActNumber} onChange={(event) => setInvoiceActNumber(event.target.value)} placeholder="Необязательно для предварительного счёта" /></label>
-            <label><FieldLabel>Срок оплаты</FieldLabel><Input type="date" value={invoiceDueDate} onChange={(event) => setInvoiceDueDate(event.target.value)} /></label>
-            <label><FieldLabel>Примечание</FieldLabel><Textarea value={invoiceNote} onChange={(event) => setInvoiceNote(event.target.value)} placeholder="Необязательно" /></label>
+            <details className="document-options"><summary>Дополнительно: акт, срок оплаты, примечание</summary>
+              <label><FieldLabel>Связанный акт-расчёт №</FieldLabel><Input value={invoiceActNumber} onChange={(event) => setInvoiceActNumber(event.target.value)} placeholder="Необязательно для предварительного счёта" /></label>
+              <label><FieldLabel>Срок оплаты</FieldLabel><Input type="date" value={invoiceDueDate} onChange={(event) => setInvoiceDueDate(event.target.value)} /></label>
+              <p className="help-note">По договору — 10 календарных дней после получения счёта; для переменной части также нужен акт. Укажите срок, когда известна дата получения.</p>
+              <label><FieldLabel>Примечание</FieldLabel><Textarea value={invoiceNote} onChange={(event) => setInvoiceNote(event.target.value)} placeholder="Необязательно" /></label>
+            </details>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setInvoiceOpen(false)}>Отмена</Button>
               <Button type="submit" disabled={busy}>{busy && <LoaderCircle className="animate-spin" />}Сохранить счёт</Button>
@@ -3932,7 +4010,7 @@ export default function RentalApp() {
                 value={expenseCategory}
                 onValueChange={(value) => {
                   setExpenseCategory(value);
-                  if (editingExpenseId === null && value === "base_lease") setExpenseAmount("20000");
+                  if (value !== "fuel") setExpensePayer("self");
                 }}
               >
                 <SelectTrigger className="h-11 w-full"><SelectValue /></SelectTrigger>
@@ -4025,8 +4103,8 @@ export default function RentalApp() {
       <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
         <DialogContent className="dialog-card sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Настройки расчёта</DialogTitle>
-            <DialogDescription>Здесь можно изменить постоянную часть, контрольный объём и ставку за единицу.</DialogDescription>
+            <DialogTitle>Настройки приложения</DialogTitle>
+            <DialogDescription>Оформление и быстрый ввод расходов. Данные нашего договора подставляются в расчёты и документы автоматически.</DialogDescription>
           </DialogHeader>
           <form onSubmit={saveSettings} className="dialog-form">
             <div className="settings-section theme-settings-row">
@@ -4068,58 +4146,41 @@ export default function RentalApp() {
               {expenseShortcutsDraft.length === 0 && <p className="help-note">Быстрых кнопок пока нет.</p>}
               <p className="help-note">Сумма 0 — при добавлении расхода сумма вводится вручную. Можно создать до 8 кнопок.</p>
               <Button type="button" variant="outline" onClick={addExpenseShortcut} disabled={expenseShortcutsDraft.length >= 8 || !expenseCategories.length}><Plus />Добавить кнопку</Button>
-              <Button type="button" onClick={() => void saveExpenseShortcuts()} disabled={busy}>Сохранить быстрые кнопки</Button>
             </div>
 
-            <div className="settings-section">
-              <strong>Условия аренды</strong>
-              <label><FieldLabel>Постоянная часть за полный месяц, ₽</FieldLabel><Input type="number" min="0.01" step="0.01" inputMode="decimal" value={settingsDraft.baseKopecks / 100} onChange={(event) => setSettingsDraft((value) => ({ ...value, baseKopecks: Math.round(Number(event.target.value) * 100) }))} required /></label>
-              <div className="grid grid-cols-2 gap-3">
-                <label><FieldLabel>Контрольный объём, ед.</FieldLabel><Input type="number" min="0" step="1" inputMode="numeric" value={settingsDraft.includedUnits} onChange={(event) => setSettingsDraft((value) => ({ ...value, includedUnits: Number(event.target.value) }))} required /></label>
-                <label><FieldLabel>Ставка за единицу, ₽</FieldLabel><Input type="number" min="0" step="0.01" inputMode="decimal" value={settingsDraft.rateKopecks / 100} onChange={(event) => setSettingsDraft((value) => ({ ...value, rateKopecks: Math.round(Number(event.target.value) * 100) }))} required /></label>
-              </div>
-              <p className="help-note">Итог месяца — большая из сумм: постоянная часть с учётом простоя или количество × ставка. Переменная часть равна положительной разнице между ними.</p>
-            </div>
-
-            <div className="settings-section">
-              <strong>Данные для текста счёта</strong>
-              <p className="help-note">Заполните реквизиты сторон и автомобиля один раз. Они сохранятся только на этом телефоне и будут подставляться в акты и PDF.</p>
-              <div className="grid grid-cols-2 gap-3">
-                <label><FieldLabel>Номер договора</FieldLabel><Input value={settingsDraft.contractNumber} onChange={(event) => setSettingsDraft((value) => ({ ...value, contractNumber: event.target.value }))} required /></label>
-                <label><FieldLabel>Дата договора</FieldLabel><Input type="date" value={settingsDraft.contractDate} onChange={(event) => setSettingsDraft((value) => ({ ...value, contractDate: event.target.value }))} required /></label>
-              </div>
-              <label><FieldLabel>Автомобиль</FieldLabel><Input value={settingsDraft.vehicleModel} onChange={(event) => setSettingsDraft((value) => ({ ...value, vehicleModel: event.target.value }))} placeholder="Например, Fiat Ducato" required /></label>
-              <label><FieldLabel>VIN</FieldLabel><Input value={settingsDraft.vehicleVin} onChange={(event) => setSettingsDraft((value) => ({ ...value, vehicleVin: event.target.value }))} required /></label>
-              <div className="grid grid-cols-2 gap-3">
-                <label><FieldLabel>Начало аренды</FieldLabel><Input type="date" value={settingsDraft.rentalStart} onChange={(event) => setSettingsDraft((value) => ({ ...value, rentalStart: event.target.value }))} required /></label>
-                <label><FieldLabel>Конец аренды</FieldLabel><Input type="date" value={settingsDraft.rentalEnd} onChange={(event) => setSettingsDraft((value) => ({ ...value, rentalEnd: event.target.value }))} required /></label>
-              </div>
-              <label><FieldLabel>Арендодатель</FieldLabel><Input value={settingsDraft.lessorFull} onChange={(event) => setSettingsDraft((value) => ({ ...value, lessorFull: event.target.value }))} required /></label>
-              <label><FieldLabel>Арендодатель кратко для подписи</FieldLabel><Input value={settingsDraft.lessorShort} onChange={(event) => setSettingsDraft((value) => ({ ...value, lessorShort: event.target.value }))} required /></label>
-              <label><FieldLabel>Арендодатель в тексте сверки («перед кем»)</FieldLabel><Input value={settingsDraft.lessorDative} onChange={(event) => setSettingsDraft((value) => ({ ...value, lessorDative: event.target.value }))} required /></label>
-              <label><FieldLabel>Расшифровка подписи арендодателя</FieldLabel><Input value={settingsDraft.lessorSignerShort} onChange={(event) => setSettingsDraft((value) => ({ ...value, lessorSignerShort: event.target.value }))} required /></label>
-              <label><FieldLabel>ИНН арендодателя</FieldLabel><Input value={settingsDraft.lessorInn} onChange={(event) => setSettingsDraft((value) => ({ ...value, lessorInn: event.target.value }))} required /></label>
-              <label><FieldLabel>Арендатор</FieldLabel><Input value={settingsDraft.lesseeFull} onChange={(event) => setSettingsDraft((value) => ({ ...value, lesseeFull: event.target.value }))} required /></label>
-              <label><FieldLabel>Арендатор кратко для подписи</FieldLabel><Input value={settingsDraft.lesseeShort} onChange={(event) => setSettingsDraft((value) => ({ ...value, lesseeShort: event.target.value }))} required /></label>
-              <div className="grid grid-cols-2 gap-3">
-                <label><FieldLabel>ИНН арендатора</FieldLabel><Input value={settingsDraft.lesseeInn} onChange={(event) => setSettingsDraft((value) => ({ ...value, lesseeInn: event.target.value }))} required /></label>
-                <label><FieldLabel>КПП</FieldLabel><Input value={settingsDraft.lesseeKpp} onChange={(event) => setSettingsDraft((value) => ({ ...value, lesseeKpp: event.target.value }))} required /></label>
-              </div>
-              <label><FieldLabel>Генеральный директор для текста «в лице…» (кого?)</FieldLabel><Input value={settingsDraft.lesseeDirector} onChange={(event) => setSettingsDraft((value) => ({ ...value, lesseeDirector: event.target.value }))} placeholder="Иванова Ивана Ивановича" required /></label>
-              <label><FieldLabel>Расшифровка подписи директора</FieldLabel><Input value={settingsDraft.lesseeDirectorShort} onChange={(event) => setSettingsDraft((value) => ({ ...value, lesseeDirectorShort: event.target.value }))} required /></label>
-              <div className="grid grid-cols-2 gap-3">
-                <label><FieldLabel>Год автомобиля</FieldLabel><Input value={settingsDraft.vehicleYear} onChange={(event) => setSettingsDraft((value) => ({ ...value, vehicleYear: event.target.value }))} required /></label>
-                <label><FieldLabel>Госномер</FieldLabel><Input value={settingsDraft.vehiclePlate} onChange={(event) => setSettingsDraft((value) => ({ ...value, vehiclePlate: event.target.value }))} required /></label>
-              </div>
-              <label><FieldLabel>НДС</FieldLabel><Input value={settingsDraft.vatLabel} onChange={(event) => setSettingsDraft((value) => ({ ...value, vatLabel: event.target.value }))} required /></label>
-              <label><FieldLabel>Город</FieldLabel><Input value={settingsDraft.city} onChange={(event) => setSettingsDraft((value) => ({ ...value, city: event.target.value }))} required /></label>
-              <p className="help-note">Эти данные хранятся только на телефоне и автоматически подставляются в тексты для банка и письма.</p>
-            </div>
+            <details className="settings-app-section contract-summary">
+              <summary>Наш договор и реквизиты</summary>
+              <p className="help-note">Используются сохранённые данные телефона. После восстановления копии они подставляются автоматически.</p>
+              <dl>
+                <div><dt>Договор</dt><dd>№{documentSettings.contractNumber} от {dateLabel(documentSettings.contractDate)}</dd></div>
+                <div><dt>Срок аренды</dt><dd>{dateLabel(documentSettings.rentalStart)} — {dateLabel(documentSettings.rentalEnd)}</dd></div>
+                <div><dt>Автомобиль</dt><dd>{documentSettings.vehicleModel}, {documentSettings.vehicleYear} · {documentSettings.vehiclePlate || "госномер не заполнен"}</dd></div>
+                <div><dt>Постоянная часть</dt><dd>{money(documentSettings.baseKopecks)} за полный месяц</dd></div>
+                <div><dt>Контрольный объём и ставка</dt><dd>{number(documentSettings.includedUnits)} бутылей · {money(documentSettings.rateKopecks)} за бутыль</dd></div>
+                {DOCUMENT_TEXT_FIELDS.filter((field) => !["contractNumber", "rentalStart", "rentalEnd", "vehicleModel", "vehicleYear", "vehiclePlate", "lessorDative"].includes(field)).map((field) =>
+                  <div key={field}><dt>{DOCUMENT_FIELD_LABELS[field]}</dt><dd>{documentSettings[field] || "Не заполнено"}</dd></div>)}
+              </dl>
+              {missingDocumentFields.length > 0 && <div className="document-readiness"><p>Не заполнено реквизитов: {missingDocumentFields.length}. Восстановите копию или заполните их при первом запуске.</p><Button type="button" variant="outline" onClick={openRequisites}>Заполнить недостающие реквизиты</Button></div>}
+              <Button type="button" variant="outline" onClick={() => { setSettingsOpen(false); setTab("summary"); window.setTimeout(() => backupInputRef.current?.click(), 100); }}>Восстановить из копии</Button>
+            </details>
 
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setSettingsOpen(false)}>Отмена</Button>
               <Button type="submit" disabled={busy}>{busy && <LoaderCircle className="animate-spin" />}Сохранить настройки</Button>
             </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={requisitesOpen} onOpenChange={setRequisitesOpen}>
+        <DialogContent className="dialog-card sm:max-w-lg">
+          <DialogHeader><DialogTitle>Первичное заполнение реквизитов</DialogTitle>
+            <DialogDescription>Заполните только недостающие данные сторон и автомобиля. Они сохранятся на телефоне и появятся в обоих актах и тексте счёта.</DialogDescription>
+          </DialogHeader>
+          <p className="help-note">Если у вас есть JSON-копия с телефона, восстановите её: вводить эти данные заново не потребуется.</p>
+          <form onSubmit={saveRequisites} className="dialog-form">
+            {missingDocumentFields.map((field) => <label key={field}><FieldLabel>{DOCUMENT_FIELD_LABELS[field]}</FieldLabel><Input value={settingsDraft[field]} onChange={(event) => setSettingsDraft((value) => ({ ...value, [field]: event.target.value }))} required /></label>)}
+            <DialogFooter><Button type="button" variant="outline" onClick={() => setRequisitesOpen(false)}>Отмена</Button><Button type="submit" disabled={busy || !missingDocumentFields.length}>Сохранить реквизиты</Button></DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
