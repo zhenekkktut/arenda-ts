@@ -39,7 +39,6 @@ import { linkedAsOfDate, missingEntryDates, nextInvoiceNumber } from "@/app/work
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
@@ -1448,6 +1447,8 @@ export default function RentalApp() {
   const [expenseNote, setExpenseNote] = useState("");
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [documentsOpen, setDocumentsOpen] = useState(false);
+  const [monthToolsOpen, setMonthToolsOpen] = useState(false);
   const [requisitesOpen, setRequisitesOpen] = useState(false);
   const [settingsDraft, setSettingsDraft] = useState<DocumentSettings>({ ...DEFAULT_DOCUMENT_SETTINGS });
   const [actNumber, setActNumber] = useState("1");
@@ -1792,9 +1793,6 @@ export default function RentalApp() {
   const nextInvoiceForReview = [...(data?.invoices ?? [])].filter((invoice) => invoice.id !== editingInvoiceId && invoiceReviewNumbers.has(invoice.invoiceNumber.trim() || String(invoice.id)))
     .sort((first, second) => first.invoiceDate.localeCompare(second.invoiceDate) || first.id - second.id)[0];
   const cashResult = totalPaid - selfExpenses;
-  const progress = calculation.includedUnits > 0
-    ? Math.min(100, (calculation.actualUnits / calculation.includedUnits) * 100)
-    : 100;
   const importTotalUnits = importRows.reduce((sum, row) => sum + row.units, 0);
   const selectedEntry = data?.entries.find((entry) => entry.entryDate === entryDate);
   const selectedDowntimes = data?.downtimes?.filter((day) => day.startDate <= entryDate && day.endDate >= entryDate) ?? [];
@@ -1874,7 +1872,6 @@ export default function RentalApp() {
     .sort((a, b) => b.entryDate.localeCompare(a.entryDate));
   const canGoToPreviousWeek = addIsoDays(entryDate, -7) >= monthBounds.start;
   const canGoToNextWeek = addIsoDays(entryDate, 7) <= monthBounds.end;
-  const unitsUntilControl = Math.max(0, calculation.includedUnits - calculation.actualUnits);
   const auditEvents = data?.auditLog ?? [];
   const lastBackupLabel = lastBackupAt
     ? `Последняя копия: ${new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long" }).format(new Date(lastBackupAt))}`
@@ -2493,6 +2490,8 @@ export default function RentalApp() {
       setDocumentAdjustments(meta.adjustments ?? "");
       setEditingArchivedId(item.id);
       setDocumentPreview(null);
+      setTab("invoices");
+      setDocumentsOpen(true);
       window.setTimeout(() => documentWorkspaceRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
       toast.info("Реквизиты загружены. Исправьте их и создайте новую версию по текущим данным.");
     } catch {
@@ -2945,8 +2944,15 @@ export default function RentalApp() {
   const activeView = viewMeta[tab] ?? viewMeta.summary;
 
   function showDocuments() {
-    setTab("summary");
+    setTab("invoices");
+    setDocumentsOpen(true);
     window.setTimeout(() => documentWorkspaceRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
+  }
+
+  function showInvoices() {
+    setDocumentsOpen(false);
+    setTab("invoices");
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   function showMissingDays() {
@@ -2965,24 +2971,18 @@ export default function RentalApp() {
     (paidByInvoice.get(invoice.id) ?? 0) < invoice.amountKopecks) ?? [];
   const currentActsReady = (["act", "reconciliation"] as const).every((kind) =>
     data?.documentArchive?.some((item) => item.kind === kind && !archiveIsStale(item)));
+  const canComposeInvoice = remainingToInvoice > 0 && (fixedRemainingKopecks > 0 || Boolean(data?.closure)) && monthBounds.start <= today && monthBounds.end >= documentSettings.rentalStart && monthBounds.start <= documentSettings.rentalEnd;
   const workflowAction = (() => {
-    if (missingDocumentFields.length) return { step: 0, title: "Подтяните данные с телефона", text: "Восстановите JSON-копию: записи, счета и реквизиты договора появятся автоматически. Для первого запуска можно заполнить только недостающие реквизиты.", label: "Восстановить копию", run: () => backupInputRef.current?.click() };
+    if (missingDocumentFields.length) return { step: 0, title: "Подтяните данные с телефона", text: "Восстановите JSON-копию или заполните недостающие реквизиты один раз.", label: "Подтянуть данные", run: openSettings };
     if (monthBounds.start > today || monthBounds.end < documentSettings.rentalStart || monthBounds.start > documentSettings.rentalEnd) return { step: 0, title: "Выберите месяц работы", text: "Для этого месяца пока нет текущего расчёта в пределах договора. Данные и архив можно просматривать.", label: "Перейти к текущему месяцу", run: showCurrentRentalMonth };
     if (month === today.slice(0, 7) && missingDates.has(today)) return { step: 0, title: "Заполните сегодняшний день", text: "Запишите количество бутылей или отметьте «Без выезда — простой», если машина не ездила.", label: "Открыть сегодняшний день", run: () => openDayDetails(today) };
     if (!data?.closure && monthBounds.end <= today) return { step: 0, title: "Проверьте и закройте месяц", text: missingMonthDays.length ? `Дни без записи: ${number(missingMonthDays.length)}. Проверьте календарь, расходы и простой перед итоговым расчётом.` : "Записи и простой учтены. Проверьте топливо и итоговую сумму перед закрытием.", label: "Проверить и закрыть месяц", run: askCloseMonth };
     if (fixedRemainingKopecks > 0) return { step: 2, title: "Можно выставить постоянную часть", text: `Осталось ${money(fixedRemainingKopecks)}. Приложение предложит номер и распределение этой суммы по свободным деньгам дней.`, label: "Составить счёт", run: () => openInvoice("fixed") };
     if (data?.closure && variableRemainingKopecks > 0) return { step: 2, title: "Можно выставить переменную часть", text: `Осталось ${money(variableRemainingKopecks)} после вычета топлива. Проверьте предложенные дни и сумму.`, label: "Составить счёт", run: () => openInvoice("variable") };
-    if (unpaidInvoices.length) return { step: 3, title: "Отметьте полученные оплаты", text: `Счета с остатком: ${unpaidInvoices.length}. Вносите оплату после получения денег; можно частями.`, label: "Открыть счета и оплаты", run: () => setTab("invoices") };
+    if (unpaidInvoices.length) return { step: 3, title: "Отметьте полученные оплаты", text: `Счета с остатком: ${unpaidInvoices.length}. Отмечайте фактически полученные деньги.`, label: "Открыть счета и оплаты", run: showInvoices };
     if (!data?.closure) return { step: 0, title: "Продолжайте учёт месяца", text: "Постоянная часть выставлена. Добавляйте бутылки, расходы и полученные оплаты. По окончании месяца станет доступен итоговый расчёт.", label: "Открыть календарь", run: () => { setTab("entries"); setMonthCalendarOpen(true); } };
-    return { step: 4, title: currentActsReady ? "Акты сформированы" : "Подготовьте два акта", text: currentActsReady ? "Актуальные версии находятся в архиве. PDF можно открыть, отправить или создать заново после изменений." : "Акт-расчёт и акт сверки используют общие реквизиты и номер. Проверьте даты и предпросмотр перед сохранением PDF.", label: "Перейти к актам", run: showDocuments };
+    return { step: 4, title: currentActsReady ? "Акты сформированы" : "Подготовьте два акта", text: currentActsReady ? "Актуальные версии находятся в архиве. PDF можно открыть, отправить или создать заново после изменений." : "Акт-расчёт и акт сверки используют общие реквизиты и номер. Проверьте даты и предпросмотр перед сохранением PDF.", label: "Акты за месяц", run: showDocuments };
   })();
-  const workflowSteps = [
-    { label: "Бутыли", done: Boolean(data?.entries.length) && !missingMonthDays.length, run: () => { setTab("entries"); setMonthCalendarOpen(true); } },
-    { label: "Расходы", done: Boolean(data?.expenses.length), run: () => setTab("expenses") },
-    { label: "Счета", done: totalInvoiced > 0 && remainingToInvoice === 0, run: () => setTab("invoices") },
-    { label: "Оплаты", done: totalInvoiced > 0 && !unpaidInvoices.length, run: () => setTab("invoices") },
-    { label: "Акты", done: currentActsReady, run: showDocuments },
-  ];
 
   return (
     <div className="app-root min-h-screen">
@@ -3015,16 +3015,7 @@ export default function RentalApp() {
                 <span className="hidden sm:inline">Установить</span>
               </Button>
             )}
-            <Button
-              type="button"
-              onClick={exportExcel}
-              disabled={!data || loading}
-              className="export-button"
-              aria-label="Скачать отчёт в Excel"
-            >
-              <FileSpreadsheet className="size-5" />
-              <span className="hidden sm:inline">Excel</span>
-            </Button>
+            {!offlineMode && <Button type="button" onClick={exportExcel} disabled={!data || loading} className="export-button" aria-label="Скачать отчёт в Excel"><FileSpreadsheet className="size-5" /><span className="hidden sm:inline">Excel</span></Button>}
             {offlineMode && (
               <Button
                 type="button"
@@ -3042,13 +3033,6 @@ export default function RentalApp() {
 
       <main className="app-shell app-main">
         <section className="month-bar" aria-label="Выбор расчётного месяца">
-          <div className="month-copy">
-            <span className="month-icon" aria-hidden="true"><CalendarDays /></span>
-            <div>
-              <span className="eyebrow">Месяц</span>
-              <strong>{monthLabel(month)}</strong>
-            </div>
-          </div>
           <label className="month-picker">
             <span>{monthLabel(month).replace(" г.", "")}</span><CalendarDays aria-hidden="true" />
             <Input
@@ -3063,6 +3047,7 @@ export default function RentalApp() {
             aria-label="Месяц"
           />
           </label>
+          {data && !loading && <span className="month-status">{data.closure ? <LockKeyhole aria-hidden="true" /> : null}{data.closure ? "Месяц закрыт" : "Месяц открыт"}</span>}
         </section>
 
         <Tabs
@@ -3116,168 +3101,19 @@ export default function RentalApp() {
           ) : data ? (
             <>
               <TabsContent value="summary" className="space-y-4">
-                {offlineMode && <section className="panel workflow-guide" aria-label="Порядок работы за месяц">
-                  <div className="workflow-guide-heading"><span className="eyebrow">Порядок работы</span><strong>{monthLabel(month)}</strong><small>Выберите шаг или воспользуйтесь подсказкой ниже. Расходы добавляются по мере необходимости.</small></div>
-                  <div className="workflow-steps">{workflowSteps.map((step, index) => <button key={step.label} type="button" className="workflow-step" data-state={index === workflowAction.step ? "current" : step.done ? "done" : "pending"} aria-current={index === workflowAction.step ? "step" : undefined} onClick={step.run}><span>{step.done ? <CheckCircle2 className="size-4" /> : index + 1}</span><strong>{step.label}</strong></button>)}</div>
-                  <div className="workflow-next-action"><div><strong>{workflowAction.title}</strong><p>{workflowAction.text}</p></div><Button type="button" className="workflow-primary-action" onClick={workflowAction.run}>{workflowAction.label}<ChevronRight /></Button></div>
-                  {missingDocumentFields.length > 0 && <Button type="button" variant="outline" onClick={openRequisites}>Первый запуск: заполнить реквизиты</Button>}
-                  <div className="workflow-status"><span className="workflow-badge">{data.closure ? "Месяц закрыт" : "Месяц открыт"}</span><span className="workflow-badge">{number(calculation.actualUnits)} бутылей</span><span className="workflow-badge">{data.invoices.length} счетов</span></div>
-                </section>}
                 <section className="settlement-hero" aria-label="Расчёт с заказчиком за месяц">
-                  <div className="settlement-hero-heading">
-                    <span>Расчёт с заказчиком · {monthLabel(month)}</span>
-                    {data.closure ? <LockKeyhole aria-label="Месяц закрыт" /> : null}
+                  <div className="settlement-hero-heading"><span>Расчёт с заказчиком</span></div>
+                  <div className="settlement-hero-result"><span>Осталось выставить</span><strong>{money(remainingToInvoice)}</strong></div>
+                  <div className="settlement-hero-actions">
+                    <Button type="button" className="settlement-primary-action" disabled={!canComposeInvoice} onClick={() => openInvoice()}>Составить счёт<ChevronRight /></Button>
+                    <button type="button" className="settlement-hero-link" onClick={() => setSettlementOpen(true)}>Показать расчёт<ChevronRight /></button>
                   </div>
-                  <div className="settlement-hero-result">
-                    <span>Осталось выставить</span>
-                    <strong>{money(remainingToInvoice)}</strong>
-                  </div>
-                  <div className="settlement-hero-breakdown">
-                    <div><span>Начислено</span><strong>{money(calculation.totalKopecks)}</strong></div>
-                    <div><span>Вычет топлива заказчика</span><strong>−{money(fuelDeduction)}</strong></div>
-                    <div><span>Уже выставлено</span><strong>−{money(totalInvoiced)}</strong></div>
-                  </div>
-                  <button type="button" className="settlement-hero-link" onClick={() => setSettlementOpen(true)}>
-                    Показать расчёт <ChevronRight />
-                  </button>
+                  {offlineMode && workflowAction.step !== 2 && <div className="summary-next-action"><Button type="button" variant="outline" onClick={workflowAction.run}>{workflowAction.label}<ChevronRight /></Button><small>{workflowAction.text}</small></div>}
                 </section>
-                <section className="dashboard-actions" aria-label="Быстрые действия">
-                  <button type="button" onClick={() => openInvoice()}>
-                    <span><ReceiptText /></span>
-                    <strong>Новый счёт</strong>
-                  </button>
-                  <button type="button" onClick={openExpense}>
-                    <span><WalletCards /></span>
-                    <strong>Расход</strong>
-                  </button>
-                  <button type="button" onClick={() => offlineMode ? setDowntimeListOpen(true) : void exportExcel()}>
-                    <span>{offlineMode ? <CirclePause /> : <FileSpreadsheet />}</span>
-                    <strong>{offlineMode ? "Простой" : "Выгрузить Excel"}</strong>
-                  </button>
-                </section>
-
-                <section className="panel month-progress-compact">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <span className="eyebrow">Объём месяца</span>
-                      <div className="mt-1 flex items-baseline gap-2">
-                        <strong className="text-3xl tracking-tight">{number(calculation.actualUnits)}</strong>
-                        <span className="text-muted-foreground">из {number(calculation.includedUnits)} ед.</span>
-                      </div>
-                    </div>
-                    <span className="month-progress-state">{data.closure ? "Месяц закрыт" : "Месяц открыт"}</span>
-                  </div>
-                  <Progress value={progress} className="mt-4 h-3 bg-slate-100 [&_[data-slot=progress-indicator]]:bg-amber-500" />
-                  <div className="month-progress-footer">
-                    <span>{unitsUntilControl > 0 ? `До ${number(calculation.includedUnits)} осталось ${number(unitsUntilControl)} ед.` : `Контрольный объём выполнен на ${Math.round(progress)}%`}</span>
-                  </div>
-                  {missingMonthDays.length > 0 && (
-                    <button
-                      type="button"
-                      className="missing-days-callout"
-                      onClick={() => {
-                        setTab("entries");
-                        selectEntryDate(missingMonthDays[0]);
-                      }}
-                    >
-                      <CalendarDays />
-                      <span>Дни без записи: {number(missingMonthDays.length)}</span>
-                      <ChevronRight />
-                    </button>
-                  )}
-                </section>
-
-                <details className="panel month-tools">
-                  <summary>
-                    <span><strong>Отчёты и управление месяцем</strong><small>Денежный результат, Excel, история</small></span>
-                    <ChevronDown aria-hidden="true" />
-                  </summary>
-                  <div className="month-tools-body">
-                    <div className="month-tools-cash">
-                      <Banknote aria-hidden="true" />
-                      <div>
-                        <span>Оплаты минус собственные расходы</span>
-                        <strong className={cashResult < 0 ? "negative" : ""}>{money(cashResult)}</strong>
-                      </div>
-                    </div>
-                    <div className="month-tools-actions">
-                      {data.closure ? (
-                        <Button type="button" variant="outline" onClick={askReopenMonth}>
-                          <UnlockKeyhole />Открыть месяц
-                        </Button>
-                      ) : (
-                        <Button type="button" variant="outline" onClick={askCloseMonth} disabled={monthBounds.end > today}>
-                          <LockKeyhole />Закрыть месяц
-                        </Button>
-                      )}
-                      <Button type="button" variant="outline" onClick={exportExcel}>
-                        <Download />Скачать Excel
-                      </Button>
-                      {offlineMode && (
-                        <Button type="button" variant="outline" onClick={() => setAuditOpen(true)}>
-                          <History />История изменений
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                </details>
-                {offlineMode && <section ref={documentWorkspaceRef} className="panel document-workspace">
-                  <div className="flex items-center gap-3"><FileText className="size-6 text-primary" /><div>
-                    <h2 className="text-xl font-bold">Документы · {monthLabel(month)}</h2>
-                    <p className="text-sm text-muted-foreground">Данные берутся из дней, простоев, счетов и оплат.</p>
-                  </div></div>
-                  {pdfSavingId !== null && <p className="pdf-save-state" role="status"><LoaderCircle className="animate-spin" />PDF готовится на телефоне. Дождитесь результата сохранения.</p>}
-                  {editingArchivedId !== null && <p className="help-note">Редактирование архивного документа. Новая версия будет рассчитана по текущим дням, счетам и оплатам. Для изменения количества бутылей откройте «Дни», для счетов и оплат — «Счета».</p>}
-                  <div className="document-summary">
-                    <div><span>Номер обоих актов</span><strong>№{actNumber || "—"}</strong></div>
-                    <div><span>Дата составления</span><strong>{validIsoDate(documentDate) ? dateLabel(documentDate) : "Выберите дату"}</strong></div>
-                    <div><span>Сверка на дату</span><strong>{validIsoDate(asOfDate) ? dateLabel(asOfDate) : "Выберите дату"}</strong></div>
-                    <div><span>Итого за месяц</span><strong>{money(netRent)}</strong></div>
-                  </div>
-                  <details className="document-options" key={editingArchivedId ?? "new"} open={editingArchivedId !== null || undefined}>
-                    <summary>Изменить номер, даты и начальный долг</summary>
-                    <div className="document-fields">
-                    <label className="col-span-2"><FieldLabel>№ обоих актов</FieldLabel><Input value={actNumber} onChange={(e) => setActNumber(e.target.value)} /></label>
-                    <label><FieldLabel>Дата составления</FieldLabel><Input type="date" value={documentDate} onChange={(e) => { setAsOfDate(linkedAsOfDate(e.target.value, documentDate, asOfDate)); setDocumentDate(e.target.value); }} /></label>
-                    <label><FieldLabel>Сверка по состоянию на</FieldLabel><Input type="date" min={monthBounds.end} value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} /></label>
-                    <label className="col-span-2"><FieldLabel>Долг на начало периода, ₽</FieldLabel><Input type="number" step="0.01" inputMode="decimal" value={documentOpeningBalance} onChange={(e) => setDocumentOpeningBalance(e.target.value)} /></label>
-                    </div>
-                    <label className="document-note"><FieldLabel>Замечания и согласованные корректировки</FieldLabel><Input value={documentAdjustments} onChange={(e) => setDocumentAdjustments(e.target.value)} placeholder="Если нет — останется «отсутствуют»" /></label>
-                    <p className="help-note">Номер общий для двух актов. Даты и начальный долг можно изменить; сохранённые значения не заменяются автоматически. При нулевом начальном долге оплаты прошлых месяцев в этот акт не входят.</p>
-                  </details>
-                  <Button type="button" variant="outline" className={documentDateIssue ? "action-attention" : ""} disabled={monthBounds.end > today} onClick={() => { setDocumentDate(today); setAsOfDate(today); }}>Обновить даты на сегодня</Button>
-                  {monthBounds.end > today && <p className="help-note">Итоговая сверка за месяц доступна после {dateLabel(monthBounds.end)}. Пока можно проверять записи и предпросмотр акта-расчёта.</p>}
-                  {documentDateIssue && monthBounds.end <= today && <p className="document-readiness" role="alert">{documentDateIssue}</p>}
-                  {!documentDateIssue && (data.invoices.some((invoice) => invoice.invoiceDate > asOfDate) ||
-                    [...data.payments, ...((toSignedKopecks(documentOpeningBalance) ?? 0) > 0 ? data.openingPayments ?? [] : [])].some((payment) => payment.paymentDate > asOfDate)) &&
-                    <p className="document-readiness">В сверку на {dateLabel(asOfDate)} не войдут более поздние счета и оплаты. Для полного расчёта выберите нужную дату или обновите даты на сегодня.</p>}
-                  <details className="document-options"><summary>Как получилась сумма акта</summary>
-                    <div className="calculation-list"><div><span>Бутылей по записям</span><strong>{number(calculation.actualUnits)}</strong></div><div><span>Бутылей в акте-расчёте</span><strong>{number(actCalculation.actualUnits)}</strong></div><div><span>Постоянная часть</span><strong>{money(actCalculation.baseKopecks)}</strong></div><div><span>Переменная часть</span><strong>{money(actCalculation.variableKopecks)}</strong></div><div><span>Итого в акте</span><strong>{money(actCalculation.totalKopecks)}</strong></div></div>
-                    <p className="help-note">Оплачиваемых дней: {actCalculation.payableDays}; простой: {actCalculation.downtimeDays}. Топливо заказчика вычитается из переменной части, затем при необходимости из постоянной. Даты топлива и общий вычет показаны в акте сверки.</p>
-                  </details>
-                  {missingMonthDays.length > 0 && <div className="document-readiness"><p>Дни без записи: {number(missingMonthDays.length)}. Проверьте календарь до подписания акта.</p><Button type="button" variant="outline" onClick={showMissingDays}>Проверить дни</Button></div>}
-                  {unpaidInvoices.length > 0 &&
-                    <div className="document-readiness"><p>Есть неоплаченные или частично оплаченные счета. Остатки будут указаны в сверке.</p><Button type="button" variant="outline" onClick={() => setTab("invoices")}>Проверить счета и оплаты</Button></div>}
-                  {data.payments.reduce((sum, payment) => sum + payment.amountKopecks, 0) > netRent &&
-                    <p className="help-note text-amber-700">Оплаты превышают сумму после вычета топлива: переплата {money(data.payments.reduce((sum, payment) => sum + payment.amountKopecks, 0) - netRent)}.</p>}
-                  <div className="document-actions">
-                    <Button type="button" onClick={() => prepareDocument("act")}>Предпросмотр акта-расчёта</Button>
-                    <Button type="button" variant="outline" disabled={monthBounds.end > today} onClick={() => prepareDocument("reconciliation")}>Предпросмотр акта сверки</Button>
-                  </div>
-                  <details className="document-archive"><summary>Архив документов · {(data.documentArchive ?? []).filter((item) => item.kind === "act" || item.kind === "reconciliation").length}</summary>
-                    {(data.documentArchive ?? []).filter((item) => item.kind === "act" || item.kind === "reconciliation").map((item) => {
-                      const stale = archiveIsStale(item);
-                      return <div key={item.id} className="document-archive-row"><div><strong>{item.kind === "act" ? "Акт-расчёт" : item.kind === "reconciliation" ? "Акт сверки" : item.kind === "daily" ? "Ведомость" : "Реестр"} №{item.number} · версия {item.version}</strong>
-                        <small>{new Date(item.generatedAt).toLocaleString("ru-RU")} {stale ? "· Данные изменились после формирования" : "· Актуально"}</small></div>
-                        {item.pdfUri && <Button type="button" variant="outline" onClick={() => window.AndroidApp?.openArchivedPdf?.(item.pdfUri!)}>Открыть PDF</Button>}
-                        {item.pdfUri && <Button type="button" variant="ghost" onClick={() => window.AndroidApp?.shareArchivedPdf?.(item.pdfUri!)}>Отправить</Button>}
-                        <Button type="button" variant="outline" disabled={pdfSavingId !== null} onClick={() => saveArchivedPdf(item)}>{pdfSavingId === item.id ? "PDF готовится…" : item.pdfUri ? "Повторить PDF" : "Сохранить PDF"}</Button>
-                        <Button type="button" variant="outline" onClick={() => editArchivedDocument(item)}><Pencil />Изменить и создать заново</Button>
-                        <Button type="button" variant="ghost" onClick={() => askDeleteDocument(item)}><Trash2 />Удалить из архива</Button>
-                      </div>;
-                    })}
-                  </details>
-                </section>}
+                <Button type="button" variant="outline" className="summary-calendar" onClick={() => { setTab("entries"); setMonthCalendarOpen(true); }}>
+                  <CalendarDays aria-hidden="true" /><div><strong>{number(calculation.actualUnits)} бутылей за месяц</strong><small>Открыть календарь</small></div><ChevronRight aria-hidden="true" />
+                </Button>
+                {missingMonthDays.length > 0 && <button type="button" className="missing-days-callout summary-missing-days" onClick={showMissingDays}><CalendarDays /><span>Дни без записи: {number(missingMonthDays.length)}</span><ChevronRight /></button>}
               </TabsContent>
 
               <TabsContent value="entries" className="space-y-4">
@@ -3417,32 +3253,83 @@ export default function RentalApp() {
               </TabsContent>
 
               <TabsContent value="invoices" className="space-y-4">
-                {offlineMode && <section className="panel tax-summary">
-                  <div><span className="eyebrow">УСН 6% · {taxQuarter} квартал {taxYear}</span>
-                    <strong>{money(tax.outstandingKopecks)}</strong>
-                    <small>Ориентир к доплате с учётом отмеченных платежей</small></div>
-                  <Button type="button" variant="outline" onClick={openTax}>Открыть расчёт</Button>
+                <div className="invoice-workspace-toolbar">
+                  {offlineMode && <Button type="button" variant="outline" aria-expanded={documentsOpen} onClick={() => documentsOpen ? setDocumentsOpen(false) : showDocuments()}><FileText />{documentsOpen ? "Свернуть акты" : "Акты за месяц"}</Button>}
+                  <Button type="button" variant="outline" onClick={() => setMonthToolsOpen(true)}><SlidersHorizontal />Управление месяцем</Button>
+                  {offlineMode && <Button type="button" variant="outline" onClick={openTax}><Calculator />УСН 6%</Button>}
+                </div>
+                {offlineMode && documentsOpen && <section ref={documentWorkspaceRef} className="panel document-workspace">
+                  <div className="flex items-center gap-3"><FileText className="size-6 text-primary" /><div>
+                    <h2 className="text-xl font-bold">Документы · {monthLabel(month)}</h2>
+                    <p className="text-sm text-muted-foreground">Данные берутся из дней, простоев, счетов и оплат.</p>
+                  </div></div>
+                  {pdfSavingId !== null && <p className="pdf-save-state" role="status"><LoaderCircle className="animate-spin" />PDF готовится на телефоне. Дождитесь результата сохранения.</p>}
+                  {editingArchivedId !== null && <p className="help-note">Редактирование архивного документа. Новая версия будет рассчитана по текущим дням, счетам и оплатам. Для изменения количества бутылей откройте «Дни», для счетов и оплат — «Счета».</p>}
+                  <div className="document-summary">
+                    <div><span>Номер обоих актов</span><strong>№{actNumber || "—"}</strong></div>
+                    <div><span>Дата составления</span><strong>{validIsoDate(documentDate) ? dateLabel(documentDate) : "Выберите дату"}</strong></div>
+                    <div><span>Сверка на дату</span><strong>{validIsoDate(asOfDate) ? dateLabel(asOfDate) : "Выберите дату"}</strong></div>
+                    <div><span>Итого за месяц</span><strong>{money(netRent)}</strong></div>
+                  </div>
+                  <details className="document-options" key={editingArchivedId ?? "new"} open={editingArchivedId !== null || undefined}>
+                    <summary>Изменить номер, даты и начальный долг</summary>
+                    <div className="document-fields">
+                    <label className="col-span-2"><FieldLabel>№ обоих актов</FieldLabel><Input value={actNumber} onChange={(e) => setActNumber(e.target.value)} /></label>
+                    <label><FieldLabel>Дата составления</FieldLabel><Input type="date" value={documentDate} onChange={(e) => { setAsOfDate(linkedAsOfDate(e.target.value, documentDate, asOfDate)); setDocumentDate(e.target.value); }} /></label>
+                    <label><FieldLabel>Сверка по состоянию на</FieldLabel><Input type="date" min={monthBounds.end} value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} /></label>
+                    <label className="col-span-2"><FieldLabel>Долг на начало периода, ₽</FieldLabel><Input type="number" step="0.01" inputMode="decimal" value={documentOpeningBalance} onChange={(e) => setDocumentOpeningBalance(e.target.value)} /></label>
+                    </div>
+                    <label className="document-note"><FieldLabel>Замечания и согласованные корректировки</FieldLabel><Input value={documentAdjustments} onChange={(e) => setDocumentAdjustments(e.target.value)} placeholder="Если нет — останется «отсутствуют»" /></label>
+                    <p className="help-note">Номер общий для двух актов. Даты и начальный долг можно изменить; сохранённые значения не заменяются автоматически. При нулевом начальном долге оплаты прошлых месяцев в этот акт не входят.</p>
+                  </details>
+                  <Button type="button" variant="outline" className={documentDateIssue ? "action-attention" : ""} disabled={monthBounds.end > today} onClick={() => { setDocumentDate(today); setAsOfDate(today); }}>Обновить даты на сегодня</Button>
+                  {monthBounds.end > today && <p className="help-note">Итоговая сверка за месяц доступна после {dateLabel(monthBounds.end)}. Пока можно проверять записи и предпросмотр акта-расчёта.</p>}
+                  {documentDateIssue && monthBounds.end <= today && <p className="document-readiness" role="alert">{documentDateIssue}</p>}
+                  {!documentDateIssue && (data.invoices.some((invoice) => invoice.invoiceDate > asOfDate) ||
+                    [...data.payments, ...((toSignedKopecks(documentOpeningBalance) ?? 0) > 0 ? data.openingPayments ?? [] : [])].some((payment) => payment.paymentDate > asOfDate)) &&
+                    <p className="document-readiness">В сверку на {dateLabel(asOfDate)} не войдут более поздние счета и оплаты. Для полного расчёта выберите нужную дату или обновите даты на сегодня.</p>}
+                  <details className="document-options"><summary>Как получилась сумма акта</summary>
+                    <div className="calculation-list"><div><span>Бутылей по записям</span><strong>{number(calculation.actualUnits)}</strong></div><div><span>Бутылей в акте-расчёте</span><strong>{number(actCalculation.actualUnits)}</strong></div><div><span>Постоянная часть</span><strong>{money(actCalculation.baseKopecks)}</strong></div><div><span>Переменная часть</span><strong>{money(actCalculation.variableKopecks)}</strong></div><div><span>Итого в акте</span><strong>{money(actCalculation.totalKopecks)}</strong></div></div>
+                    <p className="help-note">Оплачиваемых дней: {actCalculation.payableDays}; простой: {actCalculation.downtimeDays}. Топливо заказчика вычитается из переменной части, затем при необходимости из постоянной. Даты топлива и общий вычет показаны в акте сверки.</p>
+                  </details>
+                  {missingMonthDays.length > 0 && <div className="document-readiness"><p>Дни без записи: {number(missingMonthDays.length)}. Проверьте календарь до подписания акта.</p><Button type="button" variant="outline" onClick={showMissingDays}>Проверить дни</Button></div>}
+                  {unpaidInvoices.length > 0 &&
+                    <div className="document-readiness"><p>Есть неоплаченные или частично оплаченные счета. Остатки будут указаны в сверке.</p><Button type="button" variant="outline" onClick={showInvoices}>Проверить счета и оплаты</Button></div>}
+                  {data.payments.reduce((sum, payment) => sum + payment.amountKopecks, 0) > netRent &&
+                    <p className="help-note text-amber-700">Оплаты превышают сумму после вычета топлива: переплата {money(data.payments.reduce((sum, payment) => sum + payment.amountKopecks, 0) - netRent)}.</p>}
+                  <div className="document-actions">
+                    <Button type="button" onClick={() => prepareDocument("act")}>Предпросмотр акта-расчёта</Button>
+                    <Button type="button" variant="outline" disabled={monthBounds.end > today} onClick={() => prepareDocument("reconciliation")}>Предпросмотр акта сверки</Button>
+                  </div>
+                  <details className="document-archive"><summary>Архив документов · {(data.documentArchive ?? []).filter((item) => item.kind === "act" || item.kind === "reconciliation").length}</summary>
+                    {(data.documentArchive ?? []).filter((item) => item.kind === "act" || item.kind === "reconciliation").map((item) => {
+                      const stale = archiveIsStale(item);
+                      return <div key={item.id} className="document-archive-row"><div><strong>{item.kind === "act" ? "Акт-расчёт" : item.kind === "reconciliation" ? "Акт сверки" : item.kind === "daily" ? "Ведомость" : "Реестр"} №{item.number} · версия {item.version}</strong>
+                        <small>{new Date(item.generatedAt).toLocaleString("ru-RU")} {stale ? "· Данные изменились после формирования" : "· Актуально"}</small></div>
+                        {item.pdfUri && <Button type="button" variant="outline" onClick={() => window.AndroidApp?.openArchivedPdf?.(item.pdfUri!)}>Открыть PDF</Button>}
+                        {item.pdfUri && <Button type="button" variant="ghost" onClick={() => window.AndroidApp?.shareArchivedPdf?.(item.pdfUri!)}>Отправить</Button>}
+                        <Button type="button" variant="outline" disabled={pdfSavingId !== null} onClick={() => saveArchivedPdf(item)}>{pdfSavingId === item.id ? "PDF готовится…" : item.pdfUri ? "Повторить PDF" : "Сохранить PDF"}</Button>
+                        <Button type="button" variant="outline" onClick={() => editArchivedDocument(item)}><Pencil />Изменить и создать заново</Button>
+                        <Button type="button" variant="ghost" onClick={() => askDeleteDocument(item)}><Trash2 />Удалить из архива</Button>
+                      </div>;
+                    })}
+                  </details>
                 </section>}
                 <section className="finance-summary">
                   <div><span>Выставлено</span><strong>{money(totalInvoiced)}</strong></div>
                   <div><span>Получено</span><strong>{money(totalPaid)}</strong></div>
                   <div><span>Долг по счетам</span><strong>{money(Math.max(0, totalInvoiced - totalPaid))}</strong></div>
                 </section>
-                <section className="panel payment-schedule">
-                  <div className="section-heading">
-                    <div>
-                      <span className="eyebrow">Порядок по договору</span>
-                      <h2>Сначала постоянная, затем переменная</h2>
-                    </div>
-                  </div>
+                <details className="panel payment-schedule document-options">
+                  <summary>Остатки постоянной и переменной частей</summary>
                   <div className="schedule-grid">
                     <div><span>Постоянная часть</span><strong>{money(fixedTargetKopecks)}</strong><small>{settlement.fixedFuelKopecks > 0 ? "после остатка вычета топлива; можно несколькими счетами" : "по договору и дням простоя; можно несколькими счетами"}</small></div>
                     <div><span>Осталось постоянной части</span><strong>{money(fixedRemainingKopecks)}</strong></div>
                     <div><span>Переменная часть</span><strong>{money(variableTargetKopecks)}</strong><small>{data.closure ? customerFuel > 0 ? "после вычета топлива" : "рассчитана по итогам месяца" : "после закрытия месяца"}</small></div>
                   </div>
-                </section>
+                </details>
                 <Button type="button" onClick={() => openInvoice()} className="h-12 w-full sm:w-auto">
-                  <Plus />Добавить выставленный счёт
+                  <Plus />Составить счёт
                 </Button>
 
                 {data.invoices.length === 0 ? (
@@ -3502,7 +3389,7 @@ export default function RentalApp() {
                           </Button>
 
                           {invoicePayments.length > 0 && (
-                            <div className="payment-list">
+                            <details className="invoice-payments document-options"><summary>Оплаты · {invoicePayments.length}</summary><div className="payment-list">
                               {invoicePayments.map((payment) => (
                                 <div key={payment.id}>
                                   <span>{dateLabel(payment.paymentDate)} · {payment.method === "bank" ? "Безналичные" : "Наличные"}</span>
@@ -3511,7 +3398,7 @@ export default function RentalApp() {
                             <Button type="button" variant="ghost" size="icon" onClick={() => askDeletePayment(payment)} aria-label="Удалить оплату"><Trash2 /></Button>
                                 </div>
                               ))}
-                            </div>
+                            </div></details>
                           )}
                           <Button type="button" variant="outline" onClick={() => openPayment(invoice)} className="mt-4 w-full sm:w-auto">
                             <Plus />Добавить оплату
@@ -3550,7 +3437,7 @@ export default function RentalApp() {
                     </Button>
                   ))}
                 </div>
-                <section className="panel expense-visual" aria-label="Структура расходов за месяц">
+                <details className="panel expense-chart-details document-options"><summary>Структура расходов за месяц</summary><section className="expense-visual" aria-label="Структура расходов за месяц">
                   <div className="expense-donut" style={{ background: expenseDonutBackground }}>
                     <div>
                       <span>Всего</span>
@@ -3569,7 +3456,7 @@ export default function RentalApp() {
                       </button>
                     ))}
                   </div>
-                </section>
+                </section></details>
                 <section className="panel expense-total">
                   <div>
                     <span className="eyebrow">{expenseFilter === "all" ? "Расходы за месяц" : `${expenseCategoryName(expenseFilter)} за месяц`}</span>
@@ -3629,27 +3516,6 @@ export default function RentalApp() {
           ) : null}
         </Tabs>
 
-        {offlineMode && tab === "summary" && (
-          <section className="panel offline-storage-panel mt-4">
-            <div>
-              <span className="eyebrow">Хранение данных</span>
-              <strong>Всё сохранено на этом телефоне</strong>
-              <p>Приложение работает без интернета. Иногда сохраняйте копию, чтобы не потерять записи при поломке или замене телефона.</p>
-              <span className={backupDue ? "backup-status backup-status-due" : "backup-status"}>
-                {backupDue ? "● " : "✓ "}{lastBackupLabel}
-              </span>
-            </div>
-            <div className="offline-storage-actions">
-              <Button type="button" variant="outline" onClick={exportBackup}>
-                <Download />Сохранить копию
-              </Button>
-              <Button type="button" variant="outline" onClick={() => backupInputRef.current?.click()}>
-                <Upload />Восстановить
-              </Button>
-
-            </div>
-          </section>
-        )}
         {offlineMode && <input ref={backupInputRef} type="file" accept=".json,application/json" className="hidden" onChange={(event) => void restoreBackup(event)} />}
       </main>
 
@@ -3956,6 +3822,17 @@ export default function RentalApp() {
                 <div key={row.id}><span>{dateLabel(row.date)} · {row.kind === "income" ? "Доход" : "УСН уплачен"}{row.note ? ` · ${row.note}` : ""}</span>
                   <strong>{money(row.amountKopecks)}</strong>
                   <Button type="button" variant="ghost" size="icon" aria-label="Удалить налоговую запись" onClick={() => void request({ action: "delete_tax_adjustment", id: row.id }, "Запись удалена")}><Trash2 /></Button></div>)}</div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={monthToolsOpen} onOpenChange={setMonthToolsOpen}>
+        <DialogContent className="dialog-card sm:max-w-md">
+          <DialogHeader><DialogTitle>Управление месяцем</DialogTitle><DialogDescription>{monthLabel(month)}. Проверьте записи и топливо перед итоговым расчётом.</DialogDescription></DialogHeader>
+          <div className="calculation-list"><div><span>Оплаты минус собственные расходы</span><strong>{money(cashResult)}</strong></div></div>
+          <div className="settings-data-actions">
+            {data?.closure ? <Button type="button" variant="outline" onClick={() => { setMonthToolsOpen(false); askReopenMonth(); }}><UnlockKeyhole />Открыть месяц</Button> : <Button type="button" onClick={() => { setMonthToolsOpen(false); askCloseMonth(); }} disabled={monthBounds.end > today}><LockKeyhole />Проверить и закрыть месяц</Button>}
+            {offlineMode && <><Button type="button" variant="outline" onClick={() => { setMonthToolsOpen(false); setDowntimeListOpen(true); }}><CirclePause />Простои за месяц</Button><Button type="button" variant="outline" onClick={() => { setMonthToolsOpen(false); setAuditOpen(true); }}><History />История изменений</Button></>}
           </div>
         </DialogContent>
       </Dialog>
@@ -4316,12 +4193,23 @@ export default function RentalApp() {
       </Dialog>
 
       <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <DialogContent className="dialog-card sm:max-w-lg">
+        <DialogContent className="dialog-card settings-dialog max-h-[92dvh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Настройки приложения</DialogTitle>
-            <DialogDescription>Оформление и быстрый ввод расходов. Данные нашего договора подставляются в расчёты и документы автоматически.</DialogDescription>
+            <DialogDescription>Резервные копии, оформление и быстрые расходы. Реквизиты договора подставляются автоматически.</DialogDescription>
           </DialogHeader>
           <form onSubmit={saveSettings} className="dialog-form">
+            <div className="settings-section">
+              <strong>Копии и выгрузка</strong>
+              <p className={backupDue ? "backup-status backup-status-due" : "backup-status"}>{lastBackupLabel}</p>
+              <div className="settings-data-actions">
+                <Button type="button" variant="outline" onClick={exportBackup}><Download />Сохранить копию</Button>
+                <Button type="button" variant="outline" onClick={() => { setSettingsOpen(false); window.setTimeout(() => backupInputRef.current?.click(), 100); }}><Upload />Восстановить копию</Button>
+                <Button type="button" variant="outline" disabled={!data || loading} onClick={exportExcel}><FileSpreadsheet />Скачать Excel</Button>
+              </div>
+              <p className="help-note">JSON-копия сохраняет все записи и реквизиты. Excel — отчёт за выбранный месяц.</p>
+              {missingDocumentFields.length > 0 && <Button type="button" variant="outline" onClick={openRequisites}>Заполнить недостающие реквизиты</Button>}
+            </div>
             <div className="settings-section theme-settings-row">
               <div>
                 <strong>Оформление</strong>
@@ -4345,8 +4233,8 @@ export default function RentalApp() {
               <input type="checkbox" checked={motionEnabled} onChange={(event) => changeMotion(event.target.checked)} />
             </label>
 
-            <div className="settings-section expense-shortcuts-settings">
-              <strong>Быстрые кнопки расходов</strong>
+            <details className="settings-section expense-shortcuts-settings document-options">
+              <summary>Быстрые кнопки расходов</summary>
               <p className="help-note">Настройте название, категорию, плательщика и сумму для быстрого ввода.</p>
               {expenseShortcutsDraft.map((shortcut, index) => <div key={shortcut.id} className="expense-shortcut-editor">
                 <div className="expense-shortcut-editor-heading"><strong>{shortcut.title || `Кнопка № ${index + 1}`}</strong>
@@ -4366,7 +4254,7 @@ export default function RentalApp() {
               {expenseShortcutsDraft.length === 0 && <p className="help-note">Быстрых кнопок пока нет.</p>}
               <p className="help-note">Сумма 0 — при добавлении расхода сумма вводится вручную. Можно создать до 8 кнопок.</p>
               <Button type="button" variant="outline" onClick={addExpenseShortcut} disabled={expenseShortcutsDraft.length >= 8 || !expenseCategories.length}><Plus />Добавить кнопку</Button>
-            </div>
+            </details>
 
             <details className="settings-app-section contract-summary">
               <summary>Наш договор и реквизиты</summary>
@@ -4381,7 +4269,6 @@ export default function RentalApp() {
                   <div key={field}><dt>{DOCUMENT_FIELD_LABELS[field]}</dt><dd>{documentSettings[field] || "Не заполнено"}</dd></div>)}
               </dl>
               {missingDocumentFields.length > 0 && <div className="document-readiness"><p>Не заполнено реквизитов: {missingDocumentFields.length}. Восстановите копию или заполните их при первом запуске.</p><Button type="button" variant="outline" onClick={openRequisites}>Заполнить недостающие реквизиты</Button></div>}
-              <Button type="button" variant="outline" onClick={() => { setSettingsOpen(false); setTab("summary"); window.setTimeout(() => backupInputRef.current?.click(), 100); }}>Восстановить из копии</Button>
             </details>
 
             <DialogFooter>

@@ -3579,29 +3579,13 @@ html[data-theme="dark"] .audit-row time {
 }
 
 .settlement-hero {
-  position: relative;
-  isolation: isolate;
-  overflow: hidden;
-  padding: 1.3rem;
-  border-radius: 1.45rem;
-  color: #fff;
-  background:
-    radial-gradient(circle at 100% 0%, rgba(113, 188, 255, 0.24), transparent 12rem),
-    linear-gradient(125deg, #113052, #124b79 66%, #18577c);
-  box-shadow: 0 15px 32px rgba(19, 73, 119, 0.17);
-}
-
-.settlement-hero::after {
-  position: absolute;
-  z-index: -1;
-  top: -7rem;
-  right: -5.5rem;
-  width: 16rem;
-  height: 16rem;
-  border: 2rem solid rgba(255, 255, 255, 0.045);
-  border-radius: 999px;
-  content: "";
-  pointer-events: none;
+  min-width: 0;
+  padding: 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: 1.2rem;
+  color: var(--foreground);
+  background: var(--card);
+  box-shadow: 0 3px 14px rgba(16, 24, 40, 0.035);
 }
 
 .settlement-hero-heading {
@@ -3609,10 +3593,9 @@ html[data-theme="dark"] .audit-row time {
   align-items: center;
   justify-content: space-between;
   gap: 0.6rem;
-  color: rgba(255, 255, 255, 0.72);
-  font-size: 0.75rem;
-  font-weight: 680;
-  letter-spacing: 0.01em;
+  color: var(--muted-foreground);
+  font-size: .8rem;
+  font-weight: 650;
 }
 
 .settlement-hero-heading svg {
@@ -3623,52 +3606,48 @@ html[data-theme="dark"] .audit-row time {
 .settlement-hero-result {
   display: grid;
   gap: 0.3rem;
-  margin-top: 1.1rem;
+  margin-top: .85rem;
 }
 
 .settlement-hero-result span {
-  color: rgba(255, 255, 255, 0.88);
-  font-size: 0.94rem;
+  color: var(--foreground);
+  font-size: .9rem;
 }
 
 .settlement-hero-result strong {
-  font-size: clamp(2.1rem, 9vw, 3.4rem);
-  font-variant-numeric: tabular-nums;
-  font-weight: 820;
-  letter-spacing: -0.055em;
-  line-height: 1.08;
-  overflow-wrap: anywhere;
-}
-
-.settlement-hero-breakdown {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.55rem;
-  margin-top: 1.2rem;
-  padding: 1rem 0 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.2);
-}
-
-.settlement-hero-breakdown > div {
-  display: grid;
-  align-content: start;
-  gap: 0.24rem;
   min-width: 0;
-}
-
-.settlement-hero-breakdown span {
-  color: rgba(255, 255, 255, 0.7);
-  font-size: 0.68rem;
-  line-height: 1.25;
-}
-
-.settlement-hero-breakdown strong {
-  font-size: clamp(0.82rem, 3.2vw, 1rem);
+  font-size: clamp(2rem, 8vw, 3rem);
   font-variant-numeric: tabular-nums;
-  font-weight: 760;
-  line-height: 1.2;
+  font-weight: 790;
+  letter-spacing: -.035em;
+  line-height: 1.15;
   overflow-wrap: anywhere;
 }
+
+.settlement-hero-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .5rem .85rem;
+  margin-top: 1rem;
+}
+
+button.settlement-primary-action,
+button.settlement-primary-action[data-slot="button"] {
+  height: auto;
+  min-height: 2.9rem;
+  min-width: 0;
+  max-width: 100%;
+  padding: .7rem 1rem;
+  border: 1px solid #176fc2;
+  color: #fff;
+  background: #176fc2;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+button.settlement-primary-action:hover:not(:disabled) { border-color: #105898; background: #105898; }
 
 .settlement-hero-link {
   display: inline-flex;
@@ -3676,14 +3655,19 @@ html[data-theme="dark"] .audit-row time {
   cursor: pointer;
   align-items: center;
   gap: 0.3rem;
-  margin: 0.75rem 0 -0.4rem -0.25rem;
-  padding: 0.5rem 0.25rem;
+  max-width: 100%;
+  margin: 0;
+  padding: .5rem .25rem;
   border: 0;
-  color: #d3eaff;
+  color: var(--muted-foreground);
   background: transparent;
   font-size: 0.82rem;
-  font-weight: 740;
+  font-weight: 650;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
+.settlement-hero-link:hover { color: var(--foreground); }
 
 .settlement-hero-link svg {
   width: 1rem;
@@ -3693,6 +3677,71 @@ html[data-theme="dark"] .audit-row time {
 
 .settlement-hero-link:active svg {
   transform: translateX(3px);
+}
+
+.summary-next-action {
+  display: grid;
+  min-width: 0;
+  justify-items: start;
+  gap: .3rem;
+  margin-top: .85rem;
+  padding-top: .85rem;
+  border-top: 1px solid var(--border);
+}
+.summary-next-action > small { color: var(--muted-foreground); font-size: .78rem; line-height: 1.45; overflow-wrap: anywhere; }
+.summary-next-action button[data-slot="button"] { height: auto; min-width: 0; max-width: 100%; padding: .35rem 0; justify-content: flex-start; text-align: left; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; }
+
+button.summary-calendar,
+button.summary-calendar[data-slot="button"] {
+  display: flex;
+  width: 100%;
+  height: auto;
+  min-width: 0;
+  min-height: 4.4rem;
+  align-items: center;
+  justify-content: flex-start;
+  gap: .8rem;
+  padding: .85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  color: var(--foreground);
+  background: var(--card);
+  box-shadow: none;
+  text-align: left;
+  white-space: normal;
+}
+.summary-calendar > svg { width: 1.2rem; height: 1.2rem; flex: 0 0 auto; color: var(--muted-foreground); }
+.summary-calendar > svg:last-child { width: 1rem; height: 1rem; margin-left: auto; }
+.summary-calendar > div { display: grid; min-width: 0; gap: .15rem; }
+.summary-calendar strong { font-size: .9rem; line-height: 1.35; overflow-wrap: anywhere; }
+.summary-calendar small { color: var(--muted-foreground); font-size: .78rem; font-weight: 500; line-height: 1.35; overflow-wrap: anywhere; }
+button.summary-calendar:hover:not(:disabled) { background: var(--muted); }
+.summary-missing-days { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: .4rem; padding-inline: .25rem; }
+.summary-missing-days button[data-slot="button"],
+button.summary-missing-days[data-slot="button"] { height: auto; min-width: 0; max-width: 100%; color: var(--muted-foreground); font-size: .8rem; line-height: 1.4; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+
+.invoice-workspace-toolbar,
+.settings-data-actions { display: flex; min-width: 0; flex-wrap: wrap; gap: .5rem; }
+.invoice-workspace-toolbar button[data-slot="button"],
+.settings-data-actions button[data-slot="button"] { height: auto; min-width: 0; max-width: 100%; flex: 1 1 11rem; padding: .65rem .8rem; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; }
+.invoice-list-heading { display: flex; min-width: 0; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .4rem .75rem; }
+.invoice-list-heading h2 { margin: 0; font-size: 1rem; font-weight: 750; line-height: 1.4; }
+.invoice-list-heading > span { color: var(--muted-foreground); font-size: .8rem; }
+.documents-workspace { min-width: 0; scroll-margin-top: 6rem; }
+details.documents-workspace > summary { min-height: 2.75rem; align-content: center; color: var(--foreground); font-size: 1rem; font-weight: 750; line-height: 1.4; cursor: pointer; overflow-wrap: anywhere; }
+details.documents-workspace[open] > summary { margin-bottom: .85rem; }
+
+html[data-theme="dark"] .settlement-hero,
+html[data-theme="dark"] .month-bar { background: var(--card); box-shadow: none; }
+html[data-theme="dark"] button.settlement-primary-action { border-color: #74baff; color: #081c31; background: #74baff; }
+html[data-theme="dark"] button.settlement-primary-action:hover:not(:disabled) { border-color: #a3d0ff; background: #a3d0ff; }
+
+@media (max-width: 480px) {
+  .settlement-hero-actions { align-items: stretch; flex-direction: column; gap: .35rem; }
+  .settlement-hero-actions .settlement-primary-action { width: 100%; }
+  .settlement-hero-link { align-self: flex-start; }
+  button.summary-calendar { gap: .6rem; }
+  .invoice-workspace-toolbar button[data-slot="button"] { flex-basis: 100%; }
 }
 
 .dashboard-actions {
@@ -3890,10 +3939,6 @@ html[data-theme="dark"] .month-tools-cash strong.negative {
     padding: 1.05rem;
   }
 
-  .settlement-hero-breakdown {
-    gap: 0.35rem;
-  }
-
   .month-tools-actions {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -3976,6 +4021,16 @@ html[data-theme="dark"] .month-tools-cash strong.negative {
   opacity: 0;
   cursor: pointer;
 }
+.month-bar {
+  min-width: 0;
+  min-height: 3.8rem;
+  padding: .55rem .75rem;
+  border-radius: 1rem;
+  box-shadow: none;
+}
+.month-bar .month-picker { min-width: 0; max-width: 100%; flex: 0 1 auto; }
+.month-status { display: inline-flex; min-width: 0; align-items: center; gap: .3rem; color: var(--muted-foreground); font-size: .75rem; font-weight: 550; line-height: 1.3; text-align: right; }
+.month-status svg { width: .85rem; height: .85rem; flex: 0 0 auto; }
 .month-native::-webkit-calendar-picker-indicator {
   position: absolute;
   inset: 0;
@@ -4099,6 +4154,7 @@ html[data-theme="dark"] .expense-shortcut-fields select { color-scheme: dark; }
 
 @media (max-width: 390px) {
   .month-bar { padding-inline: .75rem; }
+  .month-status { max-width: 38%; font-size: .7rem; }
   .month-copy { gap: .5rem; }
   .month-copy .month-icon { width: 2.4rem; height: 2.4rem; }
   .month-copy strong { font-size: .82rem; }
@@ -4106,84 +4162,7 @@ html[data-theme="dark"] .expense-shortcut-fields select { color-scheme: dark; }
   .month-day-amount { font-size: .56rem; }
 }
 
-/* Рабочий процесс: текущий шаг и следующее действие читаются без раскрытия меню. */
-.panel.workflow-guide {
-  display: grid;
-  min-width: 0;
-  gap: .95rem;
-  border: 1px solid #d5e6f8;
-  background: #f6faff;
-}
-.workflow-guide-heading { display: grid; min-width: 0; gap: .2rem; }
-.workflow-guide-heading > strong { color: var(--foreground); font-size: 1.1rem; line-height: 1.3; }
-.workflow-guide-heading > small { color: var(--muted-foreground); font-size: .8rem; line-height: 1.45; }
-.workflow-guide-heading .eyebrow { color: #256ba9; }
-.workflow-steps { display: grid; min-width: 0; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .45rem; }
-button.workflow-step {
-  display: flex;
-  min-width: 0;
-  min-height: 3.1rem;
-  align-items: center;
-  justify-content: flex-start;
-  gap: .5rem;
-  padding: .65rem .6rem;
-  border: 1px solid #dce4ed;
-  border-radius: .8rem;
-  color: #526176;
-  background: #fff;
-  text-align: left;
-  white-space: normal;
-  cursor: pointer;
-}
-.workflow-step > span {
-  display: grid;
-  width: 1.6rem;
-  height: 1.6rem;
-  flex: 0 0 auto;
-  place-items: center;
-  border-radius: 50%;
-  color: #57657a;
-  background: #edf1f6;
-  font-size: .75rem;
-  font-weight: 800;
-}
-.workflow-step > strong { min-width: 0; font-size: .78rem; line-height: 1.3; overflow-wrap: anywhere; }
-button.workflow-step[data-state="current"] { border-color: #176fc2; color: #124d81; background: #e7f2ff; box-shadow: inset 0 0 0 1px #176fc2; }
-.workflow-step[data-state="current"] > span { color: #fff; background: #176fc2; }
-button.workflow-step[data-state="done"] { border-color: #cae7da; color: #166247; background: #edf8f2; }
-.workflow-step[data-state="done"] > span { color: #fff; background: #25805d; }
-.workflow-next-action {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: .85rem;
-  padding: .95rem;
-  border: 1px solid #c6ddf5;
-  border-radius: .9rem;
-  background: #fff;
-}
-.workflow-next-action > div { flex: 1; min-width: 0; }
-.workflow-next-action strong { color: var(--foreground); font-size: .95rem; line-height: 1.35; overflow-wrap: anywhere; }
-.workflow-next-action p { margin: .25rem 0 0; color: var(--muted-foreground); font-size: .8rem; line-height: 1.45; overflow-wrap: anywhere; }
-button.workflow-primary-action,
-button.workflow-primary-action[data-slot="button"] {
-  height: auto;
-  min-width: 0;
-  min-height: 2.9rem;
-  flex: 0 1 auto;
-  padding: .7rem 1rem;
-  border: 1px solid #176fc2;
-  color: #fff;
-  background: #176fc2;
-  font-weight: 750;
-  line-height: 1.3;
-  text-align: center;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-button.workflow-primary-action:hover:not(:disabled) { border-color: #105898; background: #105898; }
-.workflow-status { display: flex; min-width: 0; flex-wrap: wrap; gap: .45rem; }
+/* Краткие статусы в документах и формах. */
 .workflow-badge {
   display: inline-flex;
   max-width: 100%;
@@ -4228,6 +4207,12 @@ details.document-options { min-width: 0; padding: .8rem; border: 1px solid var(-
 .document-options > label { display: grid; min-width: 0; gap: .35rem; margin-top: .65rem; }
 .document-options .calculation-list > div { min-width: 0; }
 .document-options .calculation-list :is(span, strong) { min-width: 0; overflow-wrap: anywhere; }
+.invoice-payments > summary,
+.expense-chart-details > summary,
+.expense-shortcuts-settings > summary { min-height: 2.75rem; align-content: center; }
+.expense-chart-details > .expense-visual { min-width: 0; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.settings-dialog .help-note,
+html[data-theme="dark"] .settings-dialog .help-note { padding: 0; border: 0; border-radius: 0; color: var(--muted-foreground); background: transparent; box-shadow: none; font-size: .8rem; line-height: 1.45; overflow-wrap: anywhere; }
 .contract-summary { min-width: 0; }
 .contract-summary dl { display: grid; min-width: 0; gap: .65rem; margin: .75rem 0 0; font-size: .83rem; line-height: 1.45; }
 .contract-summary dl > div { display: grid; min-width: 0; grid-template-columns: minmax(0, .8fr) minmax(0, 1.3fr); gap: .2rem .9rem; }
@@ -4243,24 +4228,15 @@ details.document-options { min-width: 0; padding: .8rem; border: 1px solid var(-
 button.action-attention,
 button.action-attention[data-slot="button"] { min-height: 2.75rem; border: 1px solid #d2ab4d; color: #76520f; background: #fff5d9; white-space: normal; }
 button.action-attention:hover:not(:disabled) { border-color: #b78d2e; background: #ffecc0; }
-button.workflow-step:focus-visible,
-button.workflow-primary-action:focus-visible,
+button.settlement-primary-action:focus-visible,
+.settlement-hero-link:focus-visible,
+button.summary-calendar:focus-visible,
+details.documents-workspace > summary:focus-visible,
 button.invoice-period-choice:focus-visible,
 button.action-attention:focus-visible,
 .document-options > summary:focus-visible { outline: 3px solid #3b8cd7; outline-offset: 3px; }
 
-html[data-theme="dark"] .panel.workflow-guide { border-color: #29445f; background: #142334; }
-html[data-theme="dark"] .workflow-guide-heading .eyebrow { color: #8ec9ff; }
-html[data-theme="dark"] button.workflow-step { border-color: #354459; color: #afbdd0; background: #1d2a3b; }
-html[data-theme="dark"] .workflow-step > span { color: #c2cddd; background: #314157; }
-html[data-theme="dark"] button.workflow-step[data-state="current"] { border-color: #69b3fa; color: #b9dfff; background: #1e4266; box-shadow: inset 0 0 0 1px #69b3fa; }
-html[data-theme="dark"] .workflow-step[data-state="current"] > span { color: #082038; background: #91caff; }
-html[data-theme="dark"] button.workflow-step[data-state="done"] { border-color: #375e50; color: #b5e5cf; background: #1b382f; }
-html[data-theme="dark"] .workflow-step[data-state="done"] > span { color: #09281d; background: #92dcb9; }
-html[data-theme="dark"] .workflow-next-action { border-color: #355575; background: #1b2d42; }
-html[data-theme="dark"] button.workflow-primary-action,
 html[data-theme="dark"] button.invoice-period-choice[aria-pressed="true"] { border-color: #74baff; color: #081c31; background: #74baff; }
-html[data-theme="dark"] button.workflow-primary-action:hover:not(:disabled),
 html[data-theme="dark"] button.invoice-period-choice[aria-pressed="true"]:hover:not(:disabled) { border-color: #a3d0ff; background: #a3d0ff; }
 html[data-theme="dark"] .workflow-badge[data-state="current"] { border-color: #385e83; color: #b9dfff; background: #1e4266; }
 html[data-theme="dark"] .workflow-badge[data-state="done"] { border-color: #375e50; color: #b5e5cf; background: #1b382f; }
@@ -4268,36 +4244,30 @@ html[data-theme="dark"] .workflow-badge[data-state="warning"],
 html[data-theme="dark"] .document-readiness { border-color: #69572e; color: #f1d789; background: #342d1d; }
 html[data-theme="dark"] button.action-attention { border-color: #9b7b3e; color: #f1d789; background: #40331b; }
 html[data-theme="dark"] button.action-attention:hover:not(:disabled) { background: #53411f; }
-html[data-theme="dark"] button.workflow-step:focus-visible,
-html[data-theme="dark"] button.workflow-primary-action:focus-visible,
+html[data-theme="dark"] button.settlement-primary-action:focus-visible,
+html[data-theme="dark"] .settlement-hero-link:focus-visible,
+html[data-theme="dark"] button.summary-calendar:focus-visible,
+html[data-theme="dark"] details.documents-workspace > summary:focus-visible,
 html[data-theme="dark"] button.invoice-period-choice:focus-visible,
 html[data-theme="dark"] button.action-attention:focus-visible,
 html[data-theme="dark"] .document-options > summary:focus-visible { outline-color: #b5dbff; }
 
-@media (max-width: 680px) {
-  .workflow-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .workflow-steps > :last-child:nth-child(odd) { grid-column: 1 / -1; }
-  .workflow-next-action { align-items: stretch; flex-direction: column; }
-  .workflow-next-action .workflow-primary-action { width: 100%; }
-}
 @media (max-width: 390px) {
-  .panel.workflow-guide { gap: .8rem; padding: .85rem; }
-  .workflow-steps { gap: .35rem; }
-  button.workflow-step { gap: .4rem; padding: .55rem; }
-  .workflow-step > strong { font-size: .75rem; }
-  .workflow-next-action { padding: .8rem; }
   .document-summary { gap: .45rem; }
   .document-summary > div { padding: .65rem; }
   .contract-summary dl > div { grid-template-columns: minmax(0, 1fr); gap: .2rem; }
   .contract-summary dd { margin-bottom: .45rem; }
 }
 @media (prefers-reduced-motion: reduce) {
-  button.workflow-step,
-  button.workflow-primary-action,
+  button.settlement-primary-action,
+  .settlement-hero-link,
+  .settlement-hero-link svg,
+  button.summary-calendar,
   button.invoice-period-choice,
   button.action-attention { animation: none; transition: none; }
-  button.workflow-step:active,
-  button.workflow-primary-action:active,
+  button.settlement-primary-action:active,
+  .settlement-hero-link:active svg,
+  button.summary-calendar:active,
   button.invoice-period-choice:active,
   button.action-attention:active { transform: none; }
 }
@@ -4439,6 +4409,7 @@ html[data-theme="dark"] .motion-settings-row [data-slot="switch"]:focus-visible 
 :root[data-app-motion="off"] *::before,
 :root[data-app-motion="off"] *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
 :root[data-app-motion="off"] :is([data-slot="button"], .dashboard-actions button, .week-day, .month-day):active { transform: none !important; }
+:root[data-app-motion="off"] .settlement-hero-link:active svg { transform: none !important; }
 @media (prefers-reduced-motion: reduce) {
   .calendar-day-details,
   .invoice-allocation-preview,

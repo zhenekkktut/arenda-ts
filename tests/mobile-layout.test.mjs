@@ -122,7 +122,7 @@ test("expense categories can be renamed, added, and deleted in the offline app",
 
 test("modern dashboard highlights missing days and protects month closing", () => {
   assert.match(app, /const missingMonthDays = useMemo/);
-  assert.match(app, /className="missing-days-callout"/);
+  assert.match(app, /className="missing-days-callout(?: [^"]*)?"/);
   assert.match(app, /open=\{closeMonthOpen\}/);
   assert.match(app, /Проверка перед закрытием/);
   assert.match(app, /month-close-checklist/);
