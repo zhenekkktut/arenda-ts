@@ -2302,7 +2302,7 @@ export default function RentalApp() {
   }
 
   function documentInputSnapshot(kind: ArchivedDocument["kind"], meta: DocumentMeta) {
-    return JSON.stringify({ kind, meta, settings: documentSettings, calculation, fuelCalculation: "whole-bottles-ceil-v1",
+    return JSON.stringify({ kind, meta, settings: documentSettings, calculation, fuelCalculation: "whole-bottles-variable-first-v2",
       entries: data?.entries ?? [], downtimes: data?.downtimes ?? [],
       ...(kind === "act" ? { expenses: (data?.expenses ?? []).filter((expense) => expense.category === "fuel" && expense.payer === "customer") } : {}),
       ...(kind === "reconciliation" || kind === "ledger"
@@ -2564,6 +2564,8 @@ export default function RentalApp() {
         ["Вычтено на топливо, бутылей", settlement.fuelUnits],
         ["Корректировка округления топлива, ₽", settlement.roundingKopecks / 100],
         ["Вычет топлива с округлением, ₽", fuelDeduction / 100],
+        ["Вычет топлива из переменной части, ₽", settlement.variableFuelKopecks / 100],
+        ["Остаток вычета из постоянной части, ₽", settlement.fixedFuelKopecks / 100],
         ["Учтено в акте-расчёте, ед.", actCalculation.actualUnits],
         ["Постоянная часть в акте-расчёте, ₽", actCalculation.baseKopecks / 100],
         ["Переменная часть в акте-расчёте, ₽", actCalculation.variableKopecks / 100],
@@ -2735,7 +2737,7 @@ export default function RentalApp() {
         <div><span>Уже выставлено</span><strong>{money(totalInvoiced)}</strong></div>
         <div className="calculation-total"><span>Осталось выставить</span><strong>{money(remainingToInvoice)}</strong></div>
       </div>
-      {customerFuel > 0 && <p className="help-note">Топливо заказчика: {money(customerFuel)}. {settlement.fuelUnits > 0 ? `Для расчёта вычтено ${number(settlement.fuelUnits)} бутылей, с округлением вверх: ${money(fuelDeduction)}.` : `Вычет при нулевой ставке: ${money(fuelDeduction)}.`} По дням оно видно в акте сверки.</p>}
+      {customerFuel > 0 && <p className="help-note">Топливо заказчика: {money(customerFuel)}. {settlement.fuelUnits > 0 ? `Для расчёта вычтено ${number(settlement.fuelUnits)} бутылей, с округлением вверх: ${money(fuelDeduction)}.` : `Вычет при нулевой ставке: ${money(fuelDeduction)}.`} Из переменной части: {money(settlement.variableFuelKopecks)}.{settlement.fixedFuelKopecks > 0 && ` Остаток вычета из постоянной части: ${money(settlement.fixedFuelKopecks)}.`} По дням оно видно в акте сверки.</p>}
       {totalInvoiced > netRent && <p className="help-note">Выставлено больше суммы после вычета топлива на {money(totalInvoiced - netRent)}. Проверьте ранее выставленные счета.</p>}
       <Button className="mt-4 w-full" type="button" disabled={remainingToInvoice <= 0} onClick={() => {
         setSettlementOpen(false);
@@ -3191,9 +3193,9 @@ export default function RentalApp() {
                     </div>
                   </div>
                   <div className="schedule-grid">
-                    <div><span>Постоянная часть</span><strong>{money(fixedTargetKopecks)}</strong><small>после вычета топлива; можно несколькими счетами</small></div>
+                    <div><span>Постоянная часть</span><strong>{money(fixedTargetKopecks)}</strong><small>{settlement.fixedFuelKopecks > 0 ? "после остатка вычета топлива; можно несколькими счетами" : "по договору и дням простоя; можно несколькими счетами"}</small></div>
                     <div><span>Осталось постоянной части</span><strong>{money(fixedRemainingKopecks)}</strong></div>
-                    <div><span>Переменная часть</span><strong>{money(variableTargetKopecks)}</strong><small>{data.closure ? "рассчитана по итогам месяца" : "после закрытия месяца"}</small></div>
+                    <div><span>Переменная часть</span><strong>{money(variableTargetKopecks)}</strong><small>{data.closure ? customerFuel > 0 ? "после вычета топлива" : "рассчитана по итогам месяца" : "после закрытия месяца"}</small></div>
                   </div>
                 </section>
                 <Button type="button" onClick={() => openInvoice()} className="h-12 w-full sm:w-auto">
@@ -3858,7 +3860,7 @@ export default function RentalApp() {
               <label><FieldLabel>Номер счёта</FieldLabel><Input value={invoiceNumber} onChange={(event) => setInvoiceNumber(event.target.value)} placeholder="Например, 24" required /></label>
               <label><FieldLabel>Сумма выставленного счёта, ₽</FieldLabel><Input type="number" min="0.01" step="0.01" inputMode="decimal" value={invoiceAmount} onChange={(event) => setInvoiceAmount(event.target.value)} required /></label>
             </div>
-            <p className="help-note">Введите сумму самого счёта после вычета топлива заказчика. Оплаты и остаток считаются от этой суммы.</p>
+            <p className="help-note">Введите сумму самого счёта. Оплаты и остаток считаются от этой суммы.{editingInvoiceId === null && " В предложенной сумме топливо сначала вычтено из переменной части; если её не хватает — остаток из постоянной."}</p>
             <div className="grid grid-cols-2 gap-3">
               <label><FieldLabel>Первый день бутылей</FieldLabel><Input type="date" min={`${month}-01`} max={periodBounds(month).end} value={invoiceStartDate} onChange={(event) => { setInvoicePeriodAutomatic(false); setInvoiceStartDate(event.target.value); }} required={editingInvoiceId === null} /></label>
               <label><FieldLabel>Последний день бутылей</FieldLabel><Input type="date" min={`${month}-01`} max={periodBounds(month).end} value={invoiceEndDate} onChange={(event) => { setInvoicePeriodAutomatic(false); setInvoiceEndDate(event.target.value); }} required={editingInvoiceId === null} /></label>

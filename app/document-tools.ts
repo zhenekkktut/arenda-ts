@@ -199,7 +199,8 @@ export function calculateRental(
 }
 
 // Keep calendar quantities and issued documents intact. Fuel is converted once
-// for the whole month; both rent components use the same deduction.
+// for the whole month and deducted from the variable part first. Any remainder
+// reduces the fixed part, so the full deduction can go below the fixed minimum.
 export function calculateFuelAdjustment(
   period: string,
   gross: DocumentCalculation,
@@ -214,13 +215,15 @@ export function calculateFuelAdjustment(
   const fuelUnits = gross.rateKopecks > 0 ? Math.ceil(customerFuelKopecks / gross.rateKopecks) : 0;
   const roundedFuelKopecks = gross.rateKopecks > 0 ? fuelUnits * gross.rateKopecks : customerFuelKopecks;
   const actualUnits = Math.max(0, gross.actualUnits - fuelUnits);
-  const baseKopecks = Math.max(0, gross.baseKopecks - roundedFuelKopecks);
+  const variableFuelKopecks = Math.min(roundedFuelKopecks, gross.variableKopecks);
+  const fixedFuelKopecks = Math.min(Math.max(0, roundedFuelKopecks - variableFuelKopecks), gross.baseKopecks);
+  const baseKopecks = gross.baseKopecks - fixedFuelKopecks;
   const intensityKopecks = actualUnits * gross.rateKopecks;
   const totalKopecks = Math.max(baseKopecks, intensityKopecks);
   const calculation: DocumentCalculation = { ...gross, actualUnits, baseKopecks, intensityKopecks,
     excessUnits: Math.max(0, actualUnits - gross.includedUnits),
     variableKopecks: Math.max(0, intensityKopecks - baseKopecks), totalKopecks };
-  return { customerFuelKopecks, fuelUnits, roundedFuelKopecks,
+  return { customerFuelKopecks, fuelUnits, roundedFuelKopecks, variableFuelKopecks, fixedFuelKopecks,
     roundingKopecks: roundedFuelKopecks - customerFuelKopecks,
     fuelDeductionKopecks: gross.totalKopecks - totalKopecks, calculation };
 }
@@ -378,7 +381,7 @@ function rentActBody(input: OfficialDocumentInput) {
     ["Полных дней подтверждённого простоя P", `${c.downtimeDays} дней`],
     ["Оплачиваемых дней d = A - P", `${c.payableDays} ${plural(c.payableDays, "день", "дня", "дней")}`],
     ["Учтено единиц интенсивности N, штук", integer(c.actualUnits)],
-    [fuel.customerFuelKopecks > 0 ? "Постоянная часть Ф" : `Постоянная часть Ф = ${integer(s.baseKopecks / 100)} × d / D`, `${rubles(c.baseKopecks)} руб.`],
+    [fuel.fixedFuelKopecks > 0 ? "Постоянная часть Ф" : `Постоянная часть Ф = ${integer(s.baseKopecks / 100)} × d / D`, `${rubles(c.baseKopecks)} руб.`],
     [`Показатель интенсивности И = ${integer(c.rateKopecks / 100)} × N`, `${rubles(c.intensityKopecks)} руб.`],
     ["Переменная часть: И - Ф, если результат положительный", `${rubles(c.variableKopecks)} руб.`],
     ["Итого: большая из сумм Ф и И", `${rubles(c.totalKopecks)} руб.`],
@@ -418,8 +421,8 @@ export function fuelInvoiceForDate(invoices: InvoiceLike[], date: string) {
     invoice.bottleStartDate <= date && invoice.bottleEndDate >= date);
   if (matching.length === 1) return matching[0].id;
   if (matching.length === 2 && sharedBottlePeriodParts(matching[0], matching[1])) {
-    // Вычет относится к постоянной части; общий блок дней показывает его один раз.
-    return matching.find((invoice) => invoice.kind === "fixed")!.id;
+    // При общем периоде топливо сначала относится к переменной части.
+    return matching.find((invoice) => invoice.kind === "variable")!.id;
   }
   return undefined;
 }

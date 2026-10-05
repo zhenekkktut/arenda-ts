@@ -112,14 +112,14 @@ test("rent act deducts customer fuel through intensity and reconciliation uses t
   assert.match(act, /108[\s ]000,00/);
   assert.match(act, /108[\s ]000 \(Сто восемь тысяч\) рублей 00 копеек/);
   assert.match(act, /Учтено единиц интенсивности N, штук<\/td><td class="value">2[\s ]700/);
-  assert.match(act, /Постоянная часть Ф<\/td><td class="value">76[\s ]000,00/);
+  assert.match(act, /Постоянная часть Ф = 80[\s ]000 × d \/ D<\/td><td class="value">80[\s ]000,00/);
   assert.equal(input.calculation.actualUnits, 2_800);
   assert.equal(input.calculation.totalKopecks, 11_200_000);
   assert.match(act, /Переменная часть: И - Ф, если результат положительный/);
   assert.match(act, /в лице генерального директора Иванова Ивана Ивановича/);
   assert.match(reconciliation, /АКТ СВЕРКИ ВЗАИМНЫХ РАСЧЁТОВ/);
   assert.equal((act.match(/class="signature-header"/g) ?? []).length, 2);
-  assert.match(act, /32[\s ]000,00 руб/);
+  assert.match(act, /28[\s ]000,00 руб/);
   assert.match(act, /Подтверждённого технического простоя не было; P = 0 дней/);
   assert.doesNotMatch(act, /Зачёт расходов на топливо/);
   assert.match(reconciliation, /Вычет топлива, оплаченного заказчиком/);
@@ -240,7 +240,7 @@ test("fixed and variable invoices share gross daily totals and one monthly fuel 
   };
   const html = tools.buildReconciliationHtml(input);
   const daily = html.split('class="reconciliation-daily"')[1];
-  assert.equal(tools.fuelInvoiceForDate(invoices, "2026-08-02"), 1);
+  assert.equal(tools.fuelInvoiceForDate(invoices, "2026-08-02"), 2);
   assert.equal((daily.match(/02\.08\.2026<\/td>/g) ?? []).length, 1);
   assert.match(daily, /Итого по дням счетов № F, № V/);
   assert.match(daily, /2[\s ]800<\/td><td class="value">—<\/td>\s*<td class="value">112[\s ]000,00/);
@@ -257,7 +257,7 @@ test("fixed and variable invoices share gross daily totals and one monthly fuel 
   ];
   const splitHtml = tools.buildReconciliationHtml({ ...input, invoices: splitInvoices });
   const splitDaily = splitHtml.split('class="reconciliation-daily"')[1];
-  assert.equal(tools.fuelInvoiceForDate(splitInvoices, "2026-08-02"), 3);
+  assert.equal(tools.fuelInvoiceForDate(splitInvoices, "2026-08-02"), 2);
   assert.equal((splitDaily.match(/02\.08\.2026<\/td>/g) ?? []).length, 1);
   assert.match(splitDaily, /2[\s ]800<\/td><td class="value">—<\/td>\s*<td class="value">112[\s ]000,00/);
   assert.match(splitDaily, /Итого к оплате за месяц после вычета топлива<\/td><td class="value">109[\s ]480,00/);
