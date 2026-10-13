@@ -4699,3 +4699,113 @@ html[data-theme="dark"] .dialog-card [data-slot="button"]:disabled { border-colo
 @media (prefers-reduced-motion: reduce) {
   :is(.document-options, .entry-history, .document-archive)[open] > :not(summary) { animation: none; }
 }
+
+/* Контрастная карточка расчёта и стеклянные поверхности навигации. */
+body,
+.app-root,
+[data-slot="dialog-content"],
+[data-slot="alert-dialog-content"],
+[data-slot="select-content"] {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.app-root {
+  background:
+    radial-gradient(ellipse 36rem 25rem at 105% -8%, #dce5ff 0, transparent 74%),
+    radial-gradient(ellipse 28rem 30rem at -22% 62%, #e4ebff 0, transparent 74%),
+    #f3f5fa;
+}
+.app-header { border-bottom-color: transparent; }
+.app-header h1 { font-size: clamp(1.45rem, 6.4vw, 1.85rem); font-weight: 750; line-height: 1.12; letter-spacing: -.055em; }
+.brand-mark { border-radius: 1.15rem; background: linear-gradient(145deg, #4fafff, #087cf0 52%, #4255dc); box-shadow: inset 0 1px 2px #ffffff80, 0 6px 15px #126ee829; }
+.month-bar { border-color: #ffffffbd; border-radius: 1.65rem; background: #ffffffb8; box-shadow: inset 0 1px 0 #fff, 0 8px 24px #223e6a06; }
+.month-picker { border: 1px solid #e2e8f1; background: #f7f9fc; box-shadow: 0 2px 4px #20324b04; }
+.settlement-hero,
+html[data-theme="dark"] .settlement-hero {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  padding: 1.5rem;
+  border: 1px solid #6fa9ff80;
+  border-radius: 2rem;
+  color: #fff;
+  background: radial-gradient(ellipse at 112% -22%, #8fdcff 0, #438ef500 58%), linear-gradient(130deg, #126be8, #2358da 58%, #494bd0);
+  box-shadow: inset 0 1px 0 #ffffff45, 0 18px 38px -20px #245edc99;
+}
+.settlement-hero::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: -6rem;
+  right: -4.5rem;
+  width: 17rem;
+  height: 17rem;
+  border: 1px solid #ffffff1c;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2rem #ffffff06, 0 0 0 4rem #ffffff04;
+  pointer-events: none;
+}
+.settlement-hero-heading { margin-bottom: 1.6rem; color: #e5efff; font-size: .77rem; font-weight: 600; letter-spacing: .015em; }
+.settlement-hero-result { gap: .2rem; }
+.settlement-hero-result span { color: #e0ebff; font-size: .87rem; }
+.settlement-hero-result strong { color: #fff; font-size: clamp(2.35rem, 10.7vw, 3.6rem); font-weight: 700; letter-spacing: -.065em; line-height: 1.2; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+button.settlement-primary-action,
+html[data-theme="light"] button.settlement-primary-action,
+html[data-theme="dark"] button.settlement-primary-action {
+  min-height: 3.2rem;
+  border: 1px solid #fff;
+  color: #154ea8;
+  background: #fff;
+  font-weight: 700;
+  box-shadow: 0 4px 10px #153eaa20, inset 0 1px 0 #fff;
+}
+button.settlement-primary-action:hover { color: #0b3c91; background: #edf5ff; }
+.settlement-hero-link,
+html[data-theme="dark"] .settlement-hero-link { color: #e4efff; font-weight: 600; }
+.settlement-hero-link:hover { color: #fff; }
+.settlement-hero .summary-next-action { border-color: #ffffff38; }
+.settlement-hero .summary-next-action small { color: #e0ebff; }
+.settlement-hero .summary-next-action button { color: #fff; border-color: #ffffff66; background: #ffffff17; }
+button.summary-calendar { min-height: 5.3rem; padding: 1.05rem; border-color: #fff; border-radius: 1.5rem; box-shadow: 0 8px 25px #233a6207; }
+button.summary-calendar > svg:first-child { box-sizing: content-box; width: 1.3rem; height: 1.3rem; padding: .7rem; border-radius: 1rem; color: #1766dc; background: linear-gradient(145deg, #edf5ff, #dbeaff); }
+button.summary-calendar strong { font-size: .97rem; letter-spacing: -.025em; }
+button.summary-calendar small { margin-top: .25rem; font-size: .76rem; font-weight: 500; }
+.summary-missing-days { border-radius: 1.2rem; background: #fff0ec; color: #a75036; }
+.app-tabs,
+html[data-theme="dark"] .app-tabs { border-radius: 2.3rem; box-shadow: 0 16px 44px #213d6830, inset 0 1px 0 #ffffffd9, inset 0 -1px 0 #ffffff40; }
+.app-tab[data-state="active"] { background: linear-gradient(155deg, #fff, #ddecff) !important; box-shadow: inset 0 1px 1px #fff, 0 3px 8px #34609a12; }
+.app-quick-action > span { background: linear-gradient(145deg, #36a5ff, #0879f5 62%, #3d60e1); box-shadow: inset 0 1px 1px #ffffff80, 0 5px 12px #0879f540; }
+.dialog-card { border-radius: 2rem; box-shadow: 0 24px 90px #1428462e, inset 0 1px 0 #fff; }
+.dialog-card [data-slot="dialog-title"] { font-size: 1.4rem; letter-spacing: -.045em; }
+.dialog-form :is(input, textarea), [data-slot="select-trigger"] { min-height: 3rem; border: 1px solid #e2e7f0; border-radius: 1rem; background: #f4f6fa; }
+.invoice-components > label { border-color: #e5ebf5; border-radius: 1.2rem; background: #f4f7fc; }
+.invoice-components input { background: #fff; }
+.invoice-link-options { padding: .25rem; gap: .25rem; border-radius: 1.5rem; background: var(--muted); }
+.invoice-link-options button { border-color: transparent; background: transparent; }
+.invoice-link-options button[aria-pressed="true"] { color: #145ab5; background: #fff; border-color: #d4e4fa; box-shadow: 0 3px 8px #244a7812; }
+html[data-theme="dark"] .app-root { background: radial-gradient(ellipse 35rem 28rem at 110% -5%, #24345b, transparent 75%), radial-gradient(ellipse 25rem 28rem at -35% 60%, #172742, transparent 75%), #0c111b; }
+html[data-theme="dark"] .month-bar { background: #1a2433c9; border-color: #ffffff12; box-shadow: inset 0 1px 0 #ffffff08; }
+html[data-theme="dark"] .month-picker { border-color: #ffffff0e; background: #ffffff08; }
+html[data-theme="dark"] .settlement-hero { background: radial-gradient(ellipse at 112% -22%, #5099ef 0, #266cdf00 60%), linear-gradient(130deg, #1358b4, #214fc3 60%, #4644ad); }
+html[data-theme="dark"] button.summary-calendar { border-color: #ffffff12; background: linear-gradient(135deg, #1c293b, #17202e); }
+html[data-theme="dark"] button.summary-calendar > svg:first-child { color: #a7d2ff; background: linear-gradient(145deg, #2c4e77, #203e60); }
+html[data-theme="dark"] .summary-missing-days { color: #f3bba7; background: #382822; }
+html[data-theme="dark"] .app-tabs { border-color: #ffffff30; box-shadow: 0 16px 45px #0007, inset 0 1px 0 #ffffff20, inset 0 -1px 0 #ffffff08; }
+html[data-theme="dark"] .app-tab[data-state="active"] { background: linear-gradient(145deg, #3e5b7f, #2a405e) !important; box-shadow: inset 0 1px 0 #ffffff29, 0 3px 10px #0002; }
+html[data-theme="dark"] .app-quick-action > span { background: linear-gradient(145deg, #52b2ff, #157bea 65%, #4b69dd); box-shadow: inset 0 1px 1px #ffffff66, 0 4px 14px #006aff40; }
+html[data-theme="dark"] .dialog-card { box-shadow: 0 24px 90px #0009, inset 0 1px 0 #ffffff12; }
+html[data-theme="dark"] .dialog-form :is(input, textarea),
+html[data-theme="dark"] [data-slot="select-trigger"] { border-color: #ffffff0c; background: #202b3b; }
+html[data-theme="dark"] .invoice-components > label { border-color: #ffffff0c; background: #1a2637; }
+html[data-theme="dark"] .invoice-components input { background: #121d2e; }
+html[data-theme="dark"] .invoice-link-options button[aria-pressed="true"] { color: #c1e0ff; border-color: #486487; background: #304c70; }
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .app-tabs { background: #f7faffb8 !important; backdrop-filter: blur(28px) saturate(180%); -webkit-backdrop-filter: blur(28px) saturate(180%); }
+  html[data-theme="dark"] .app-tabs { background: #202c40b8 !important; }
+}
+@media (max-width: 390px) {
+  .settlement-hero { padding: 1.3rem; }
+  .app-header h1 { font-size: 1.45rem; }
+  button.summary-calendar { gap: .7rem; padding: .85rem; }
+  button.summary-calendar strong { font-size: .9rem; }
+}
