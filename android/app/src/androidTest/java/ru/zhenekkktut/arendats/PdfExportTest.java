@@ -19,6 +19,8 @@ import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import static org.junit.Assert.*;
 
 @RunWith(AndroidJUnit4.class)
@@ -33,6 +35,7 @@ public class PdfExportTest {
             exportAndCheck(instrumentation, activity, "reconciliation", 2);
             exportAndCheck(instrumentation, activity, "reconciliation-compact", 1);
             exportAndCheck(instrumentation, activity, "rent", 1);
+            exportAndCheck(instrumentation, activity, "reconciliation-mixed", 2);
         } finally { instrumentation.runOnMainSync(activity::finish); }
     }
 
@@ -45,6 +48,7 @@ public class PdfExportTest {
             while ((length = input.read(buffer)) != -1) bytes.write(buffer, 0, length);
             html = new String(bytes.toByteArray(), StandardCharsets.UTF_8);
         }
+        if (name.equals("reconciliation-mixed")) assertMixedFixture(html);
         Method save = MainActivity.class.getDeclaredMethod("beginPdfSave", String.class, String.class, String.class);
         save.setAccessible(true);
         Field destination = MainActivity.class.getDeclaredField("pdfDestination");
@@ -112,6 +116,52 @@ public class PdfExportTest {
                 }
             }
         }
+    }
+
+    private void assertMixedFixture(String html) {
+        String normalized = html.replace('\u00a0', ' ').replace('\u202f', ' ');
+        String invoices = tableContent(normalized, "reconciliation-invoices");
+        String daily = tableContent(normalized, "reconciliation-daily");
+        assertEquals("The bank invoice must appear once, with one total payment", 1,
+            occurrences(invoices, "№ 30<br>"));
+        assertEquals("Earlier fixed invoices must retain their explicit unlinked status", 2,
+            occurrences(invoices, "Без привязки к дням"));
+        assertTrue("The combined face, shared receipt and remaining invoice debt must reconcile",
+            Pattern.compile("№ 30<br>08\\.10\\.2026</td>\\s*<td class=\"value\">29 500,00</td>\\s*"
+                + "<td class=\"value\">10 000,00</td><td class=\"value\">19 500,00</td>")
+                .matcher(invoices).find());
+        assertFalse("No invented day links for the earlier fixed invoice", daily.contains("№ 28"));
+        assertFalse("No invented day links for the second fixed invoice", daily.contains("№ 29"));
+        assertTrue("The last included day must retain its partial invoice amount", daily.contains("№ 30: 3 300,00 руб."));
+        assertTrue("Physical delivery money outside the invoice must remain visible",
+            daily.contains("Не включено в счета: 1 700,00 руб."));
+        int[] days = {10, 11, 12, 14, 15, 16, 17, 18, 22, 23, 24, 25, 28, 29, 30};
+        for (int day : days) {
+            assertEquals("Every actual delivery date must occur once across PDF continuations", 1,
+                occurrences(daily, "<td>" + day + ".09.2026</td>"));
+        }
+        assertTrue("One shared allocation must explain the complete combined invoice",
+            daily.contains("включено по датам 29 500,00 руб.; итого по счёту 29 500,00 руб."));
+        assertEquals("Monthly customer fuel must be deducted once", 1,
+            occurrences(daily, "Вычет топлива заказчика за месяц"));
+        assertTrue("Fuel rounding must use the monthly 313 bottles", daily.contains("313 бутылей"));
+        assertTrue("The monthly rounded deduction must be 12,520 rubles", daily.contains("−12 520,00</td>"));
+        assertTrue("The net monthly amount must remain 73,000 rubles", daily.contains("73 000,00</td>"));
+        assertTrue("The physical monthly bottle count must remain unchanged", daily.contains(">2 138</td>"));
+    }
+
+    private String tableContent(String html, String className) {
+        Matcher tables = Pattern.compile("<table class=\"" + className + "\">[\\s\\S]*?</table>").matcher(html);
+        StringBuilder result = new StringBuilder();
+        while (tables.find()) result.append(tables.group());
+        assertTrue("The expected document table is missing: " + className, result.length() > 0);
+        return result.toString();
+    }
+
+    private int occurrences(String text, String fragment) {
+        int count = 0;
+        for (int at = 0; (at = text.indexOf(fragment, at)) >= 0; at += fragment.length()) count++;
+        return count;
     }
 
     private java.io.OutputStream testOutput(MainActivity activity, String name) throws Exception {

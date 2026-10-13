@@ -1,12 +1,35 @@
 type NumberedInvoice = { invoiceNumber: string };
+type InvoiceAuditRecord = { entity?: string; title?: string };
 type RentalDates = { rentalStart: string; rentalEnd: string };
 type RecordedDay = { entryDate: string };
 type DowntimeDates = { startDate: string; endDate: string };
 
+/** Preserve the highest numeric invoice number even after deletion or renaming. */
+export function deriveInvoiceNumberFloor(
+  invoices: readonly NumberedInvoice[],
+  auditLog: readonly InvoiceAuditRecord[],
+  savedFloor?: number,
+): number | undefined {
+  let maximum = typeof savedFloor === "number" && Number.isSafeInteger(savedFloor) && savedFloor > 0
+    ? savedFloor : undefined;
+  const include = (value: unknown) => {
+    if (typeof value !== "string" || !/^\d+$/.test(value.trim())) return;
+    const number = Number(value.trim());
+    if (Number.isSafeInteger(number) && number > 0) maximum = Math.max(maximum ?? 0, number);
+  };
+  for (const invoice of invoices) include(invoice?.invoiceNumber);
+  for (const record of auditLog) {
+    if (record?.entity !== "invoice" || typeof record.title !== "string") continue;
+    include(record.title.match(/сч[её]т\s*№\s*(.+)$/i)?.[1]);
+  }
+  return maximum;
+}
+
 /** Suggest a number from the full phone history without rewriting saved numbers. */
-export function nextInvoiceNumber(invoices: NumberedInvoice[]): string {
-  if (!invoices.length) return "1";
-  let maximum: number | null = null;
+export function nextInvoiceNumber(invoices: NumberedInvoice[], floor?: number): string {
+  const savedMaximum = typeof floor === "number" && Number.isSafeInteger(floor) && floor > 0 ? floor : null;
+  if (!invoices.length && savedMaximum === null) return "1";
+  let maximum: number | null = savedMaximum;
   for (const invoice of invoices) {
     if (!invoice || typeof invoice.invoiceNumber !== "string") return "";
     const value = invoice.invoiceNumber.trim();

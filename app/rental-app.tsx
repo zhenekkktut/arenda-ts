@@ -35,7 +35,7 @@ import {
 import { toast } from "sonner";
 import { calculateTaxYear, type TaxAdjustment, type TaxYearOptions } from "@/app/tax-calculation";
 import { normalizeExpenseShortcuts, validateExpenseShortcuts, type ExpenseShortcut } from "@/app/expense-shortcuts";
-import { linkedAsOfDate, missingEntryDates, nextInvoiceNumber } from "@/app/workflow-tools";
+import { linkedAsOfDate, missingEntryDates, nextInvoiceNumber, deriveInvoiceNumberFloor } from "@/app/workflow-tools";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -83,7 +83,7 @@ import {
   type DocumentSettings,
   type Downtime,
 } from "@/app/document-tools";
-import { proposeInvoiceAllocation, validateInvoiceAllocation, type InvoiceBottleAllocation,
+import { proposeInvoiceAllocation, validateInvoiceAllocation, validateUnlinkedInvoice, normalizeInvoiceParts, type InvoiceBottleAllocation,
   type InvoiceAllocationInput, type InvoiceAllocationProposal } from "@/app/invoice-allocation";
 
 type Entry = {
@@ -98,9 +98,12 @@ type Invoice = {
   period: string;
   invoiceNumber: string;
   invoiceDate: string;
-  kind: "fixed" | "variable" | "other";
+  kind: "fixed" | "variable" | "mixed" | "other";
   actNumber?: string;
   amountKopecks: number;
+  fixedAmountKopecks?: number;
+  variableAmountKopecks?: number;
+  allocationMode?: "auto" | "unlinked";
   bottleStartDate?: string;
   bottleEndDate?: string;
   allocationVersion?: number;
@@ -205,6 +208,7 @@ type ArchivedDocument = {
 
 type OfflineStore = {
   version: 6;
+  invoiceNumberFloor?: number;
   entries: Entry[];
   invoices: Invoice[];
   payments: Payment[];
@@ -384,7 +388,7 @@ function isOfflineRuntime() {
     (window.location.protocol === "file:" || Boolean(window.AndroidApp));
 }
 
-function normalizeOfflineStore(value: unknown): OfflineStore {
+export function normalizeOfflineStore(value: unknown): OfflineStore {
   if (!value || typeof value !== "object") throw new Error("Неверный формат резервной копии");
   const store = value as Partial<OfflineStore>;
   if (
@@ -396,9 +400,31 @@ function normalizeOfflineStore(value: unknown): OfflineStore {
   ) {
     throw new Error("В резервной копии не хватает данных");
   }
+  for (const invoice of store.invoices) {
+    if (invoice.kind === "mixed" || invoice.allocationMode !== undefined) {
+      if (!Number.isSafeInteger(invoice.id) || invoice.id <= 0 || !validIsoDate(`${invoice.period}-01`) ||
+          !validIsoDate(invoice.invoiceDate) || typeof invoice.invoiceNumber !== "string" || !invoice.invoiceNumber.trim() ||
+          !["auto", "unlinked"].includes(String(invoice.allocationMode)) ||
+          !["fixed", "variable", "mixed", "other"].includes(invoice.kind)) {
+        throw new Error("В резервной копии повреждены новые данные счёта");
+      }
+      normalizeInvoiceParts(invoice);
+      if (invoice.allocationMode === "unlinked" && (invoice.bottleStartDate || invoice.bottleEndDate ||
+          invoice.allocationVersion !== undefined || invoice.bottleAllocations !== undefined || invoice.rentalSupplementKopecks !== undefined)) {
+        throw new Error("Счёт без привязки содержит лишние даты. Проверьте резервную копию");
+      }
+      if (invoice.allocationMode === "auto" && (invoice.allocationVersion !== 1 || !Array.isArray(invoice.bottleAllocations) ||
+          invoice.bottleAllocations.some((row) => !row || !validIsoDate(row.date) ||
+            !Number.isSafeInteger(row.amountKopecks) || row.amountKopecks <= 0) ||
+          !Number.isSafeInteger(invoice.rentalSupplementKopecks) || Number(invoice.rentalSupplementKopecks) < 0)) {
+        throw new Error("В резервной копии повреждена привязка нового счёта");
+      }
+    }
+  }
   return {
     version: 6,
     entries: store.entries,
+    invoiceNumberFloor: deriveInvoiceNumberFloor(store.invoices, Array.isArray(store.auditLog) ? store.auditLog : [], store.invoiceNumberFloor),
     invoices: store.invoices,
     payments: store.payments,
     expenses: store.expenses,
@@ -434,6 +460,7 @@ function readOfflineStore() {
 }
 
 function writeOfflineStore(store: OfflineStore) {
+  store.invoiceNumberFloor = deriveInvoiceNumberFloor(store.invoices, store.auditLog, store.invoiceNumberFloor);
   window.localStorage.setItem(OFFLINE_STORAGE_KEY, JSON.stringify(store));
 }
 
@@ -597,11 +624,11 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
   } else if (action === "create_invoice" || action === "update_invoice") {
     const amountKopecks = Number(payload.amountKopecks);
     if (
-      typeof payload.period !== "string" ||
+      typeof payload.period !== "string" || !validIsoDate(`${payload.period}-01`) ||
       typeof payload.invoiceNumber !== "string" ||
       !payload.invoiceNumber.trim() ||
       !validIsoDate(payload.invoiceDate) ||
-      !["fixed", "variable", "other"].includes(String(payload.kind)) ||
+      !["fixed", "variable", "mixed", "other"].includes(String(payload.kind)) ||
       !Number.isSafeInteger(amountKopecks) ||
       amountKopecks <= 0
     ) {
@@ -612,20 +639,48 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
     const editId = action === "update_invoice" ? Number(payload.id) : null;
     const previousInvoice = editId === null ? null : store.invoices.find((row) => row.id === editId) ?? null;
     if (editId !== null && !store.invoices.some((row) => row.id === editId)) throw new Error("Запись не найдена");
+    if (payload.allocationMode !== undefined && !["auto", "unlinked"].includes(String(payload.allocationMode))) {
+      throw new Error("Выберите способ связи счёта с днями");
+    }
+    if (payload.kind === "mixed" && payload.allocationMode === undefined) {
+      throw new Error("Для общего счёта выберите автоматическую привязку или «Без привязки»");
+    }
+    const parts = normalizeInvoiceParts({ kind: String(payload.kind), amountKopecks,
+      fixedAmountKopecks: payload.fixedAmountKopecks as number | undefined,
+      variableAmountKopecks: payload.variableAmountKopecks as number | undefined });
+    const raw = calculateRental(payload.period, store.entries, store.downtimes, store.settings);
+    const otherInvoices = store.invoices.filter((row) => row.id !== editId);
+    const settlement = calculateSettlement(payload.period, raw, otherInvoices, store.expenses);
+    const moneyUnchanged = previousInvoice && previousInvoice.period === payload.period && previousInvoice.kind === payload.kind &&
+      previousInvoice.amountKopecks === amountKopecks && (payload.kind !== "mixed" ||
+        (previousInvoice.fixedAmountKopecks === parts.fixedAmountKopecks &&
+          previousInvoice.variableAmountKopecks === parts.variableAmountKopecks));
+    if (!moneyUnchanged && (payload.allocationMode !== undefined || payload.kind === "mixed")) {
+      if (parts.variableAmountKopecks > 0 && !store.closures.some((row) => row.period === payload.period)) {
+        throw new Error("Закройте месяц для расчёта переменной части");
+      }
+      if (parts.variableAmountKopecks > 0 && parts.fixedAmountKopecks < settlement.fixedRemainingKopecks) {
+        throw new Error("Включите в счёт остаток постоянной части или выставьте его отдельно");
+      }
+    }
     let bottleStartDate = typeof payload.bottleStartDate === "string" ? payload.bottleStartDate : "";
     let bottleEndDate = typeof payload.bottleEndDate === "string" ? payload.bottleEndDate : "";
-    const usesAllocation = payload.allocationVersion !== undefined || payload.bottleAllocations !== undefined || payload.rentalSupplementKopecks !== undefined;
+    const unlinked = payload.allocationMode === "unlinked";
+    const usesAllocation = !unlinked && (payload.allocationMode === "auto" || payload.allocationVersion !== undefined || payload.bottleAllocations !== undefined || payload.rentalSupplementKopecks !== undefined);
     let allocation: ReturnType<typeof validateInvoiceAllocation> | undefined;
-    if (usesAllocation) {
-      const raw = calculateRental(payload.period, store.entries, store.downtimes, store.settings);
-      const settlement = calculateSettlement(payload.period, raw, store.invoices, store.expenses);
-      allocation = validateInvoiceAllocation({
-        period: payload.period, invoiceDate: payload.invoiceDate, amountKopecks,
-        kind: payload.kind as Invoice["kind"], entries: store.entries, invoices: store.invoices,
-        settings: store.settings, fixedTargetKopecks: settlement.fixedTargetKopecks,
-        netRentKopecks: settlement.netRentKopecks, excludeInvoiceId: editId ?? undefined,
-        allowRentalSupplement: localIsoDate() >= periodBounds(payload.period).end,
-      }, payload);
+    const allocationInput: InvoiceAllocationInput = {
+      period: payload.period, invoiceDate: payload.invoiceDate, amountKopecks,
+      kind: payload.kind as Invoice["kind"], ...parts, entries: store.entries, invoices: store.invoices,
+      settings: store.settings, fixedTargetKopecks: settlement.fixedTargetKopecks,
+      netRentKopecks: settlement.netRentKopecks, excludeInvoiceId: editId ?? undefined,
+      allowRentalSupplement: localIsoDate() >= periodBounds(payload.period).end,
+    };
+    if (unlinked) {
+      validateUnlinkedInvoice(allocationInput);
+      bottleStartDate = "";
+      bottleEndDate = "";
+    } else if (usesAllocation) {
+      allocation = validateInvoiceAllocation(allocationInput, payload);
       bottleStartDate = allocation.bottleAllocations[0]?.date ?? "";
       bottleEndDate = allocation.bottleAllocations.at(-1)?.date ?? "";
     } else if (previousInvoice?.allocationVersion === 1) {
@@ -653,6 +708,8 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
       kind: payload.kind as Invoice["kind"],
       actNumber: String(payload.actNumber ?? "").trim().slice(0, 40),
       amountKopecks,
+      ...(payload.kind === "mixed" ? parts : {}),
+      ...(payload.allocationMode !== undefined ? { allocationMode: payload.allocationMode as "auto" | "unlinked" } : {}),
       ...(bottleStartDate ? { bottleStartDate, bottleEndDate } : {}),
       ...(allocation ?? {}),
       dueDate,
@@ -684,10 +741,10 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
     const payments = payload.payments as Payment[] | undefined;
     if (
       !invoice || !Number.isSafeInteger(invoice.id) || invoice.id <= 0 ||
-      !/^\d{4}-\d{2}$/.test(invoice.period) ||
+      !/^\d{4}-\d{2}$/.test(invoice.period) || !validIsoDate(`${invoice.period}-01`) ||
       !validIsoDate(invoice.invoiceDate) ||
       !invoice.invoiceNumber?.trim() ||
-      !["fixed", "variable", "other"].includes(invoice.kind) ||
+      !["fixed", "variable", "mixed", "other"].includes(invoice.kind) ||
       !Number.isSafeInteger(invoice.amountKopecks) || invoice.amountKopecks <= 0 ||
       !Array.isArray(payments) || payments.some((payment) => (
         !Number.isSafeInteger(payment.id) || payment.id <= 0 ||
@@ -700,12 +757,20 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
     const restoredId = store.invoices.some((row) => row.id === invoice.id)
       ? nextId(store.invoices)
       : invoice.id;
-    if (invoice.allocationVersion !== undefined) {
+    normalizeInvoiceParts(invoice);
+    if (invoice.allocationMode !== undefined && !["auto", "unlinked"].includes(invoice.allocationMode)) {
+      throw new Error("Не удалось восстановить способ связи счёта с днями");
+    }
+    if (invoice.allocationMode === "unlinked" && (invoice.allocationVersion !== undefined || invoice.bottleAllocations !== undefined ||
+      invoice.bottleStartDate || invoice.bottleEndDate || invoice.rentalSupplementKopecks !== undefined)) {
+      throw new Error("Счёт без привязки содержит лишние даты");
+    }
+    if (invoice.allocationMode === "auto" || invoice.allocationVersion !== undefined) {
       const raw = calculateRental(invoice.period, store.entries, store.downtimes, store.settings);
       const settlement = calculateSettlement(invoice.period, raw, store.invoices, store.expenses);
       validateInvoiceAllocation({
         period: invoice.period, invoiceDate: invoice.invoiceDate, amountKopecks: invoice.amountKopecks,
-        kind: invoice.kind, entries: store.entries,
+        kind: invoice.kind, ...normalizeInvoiceParts(invoice), entries: store.entries,
         invoices: [...store.invoices, { ...invoice, id: restoredId }], excludeInvoiceId: restoredId,
         settings: store.settings, fixedTargetKopecks: settlement.fixedTargetKopecks,
         netRentKopecks: settlement.netRentKopecks, allowRentalSupplement: localIsoDate() >= periodBounds(invoice.period).end,
@@ -1095,6 +1160,7 @@ function saveBrowserFile(blob: Blob, fileName: string) {
 const invoiceLabels: Record<Invoice["kind"], string> = {
   fixed: "Постоянная часть",
   variable: "Переменная часть",
+  mixed: "Постоянная и переменная части",
   other: "Прочее",
 };
 
@@ -1124,7 +1190,8 @@ function money(kopecks: number) {
   return new Intl.NumberFormat("ru-RU", {
     style: "currency",
     currency: "RUB",
-    maximumFractionDigits: 0,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
   }).format(kopecks / 100);
 }
 
@@ -1180,33 +1247,41 @@ function documentPeriod(value: string) {
   return `${monthNamesGenitive[Number(month) - 1]} ${year} года`;
 }
 
-function invoiceLine(invoice: Invoice, settings: DocumentSettings) {
+export function invoiceLine(invoice: Invoice, settings: DocumentSettings): string {
+  if (invoice.kind === "mixed") {
+    return [
+      `${invoiceLine({ ...invoice, kind: "fixed" }, settings)} Сумма: ${money(invoice.fixedAmountKopecks ?? 0)}.`,
+      `${invoiceLine({ ...invoice, kind: "variable" }, settings)} Сумма: ${money(invoice.variableAmountKopecks ?? 0)}.`,
+    ].join("\n\n");
+  }
   const part =
     invoice.kind === "fixed"
       ? "Часть постоянной арендной платы"
       : invoice.kind === "variable"
         ? "Переменная часть арендной платы"
         : "Арендная плата";
-  const days = invoice.bottleStartDate && invoice.bottleEndDate
+  const days = invoice.allocationMode !== "unlinked" && invoice.bottleStartDate && invoice.bottleEndDate
     ? `, бутыли за ${dateLabel(invoice.bottleStartDate)}–${dateLabel(invoice.bottleEndDate)}` : "";
   return `${part} за ${documentPeriod(invoice.period)}${days} по договору аренды транспортного средства без экипажа № ${settings.contractNumber} от ${dateLabel(settings.contractDate)}, автомобиль ${settings.vehicleModel}, VIN ${settings.vehicleVin}.`;
 }
 
-function paymentPurpose(invoice: Invoice, settings: DocumentSettings) {
+export function paymentPurpose(invoice: Invoice, settings: DocumentSettings) {
   const part =
     invoice.kind === "fixed"
       ? "часть постоянной арендной платы"
       : invoice.kind === "variable"
         ? "переменную часть арендной платы"
+        : invoice.kind === "mixed"
+          ? "постоянную и переменную части арендной платы"
         : "арендную плату";
-  return `Оплата по счёту № ${invoice.invoiceNumber} от ${dateLabel(invoice.invoiceDate)} за ${part} за ${documentPeriod(invoice.period)} по договору № ${settings.contractNumber} от ${dateLabel(settings.contractDate)}. Без НДС.`;
+  return `Оплата по счёту № ${invoice.invoiceNumber} от ${dateLabel(invoice.invoiceDate)} за ${part} за ${documentPeriod(invoice.period)} по договору № ${settings.contractNumber} от ${dateLabel(settings.contractDate)}. ${settings.vatLabel}.`;
 }
 
 function emailSubject(invoice: Invoice, settings: DocumentSettings) {
   return `Счёт № ${invoice.invoiceNumber} — аренда ${settings.vehicleModel} за ${documentPeriod(invoice.period)}`;
 }
 
-function emailText(invoice: Invoice, settings: DocumentSettings) {
+export function emailText(invoice: Invoice, settings: DocumentSettings) {
   const action =
     invoice.kind === "fixed"
       ? "на частичную оплату постоянной арендной платы"
@@ -1214,7 +1289,9 @@ function emailText(invoice: Invoice, settings: DocumentSettings) {
         ? "на оплату переменной части арендной платы"
         : "на оплату арендной платы";
 
-  return `Направляю счёт № ${invoice.invoiceNumber} ${action} за ${settings.vehicleModel} за ${documentPeriod(invoice.period)} по договору № ${settings.contractNumber} от ${dateLabel(settings.contractDate)}.`;
+  const components = invoice.kind === "mixed"
+    ? `\nПостоянная часть: ${money(invoice.fixedAmountKopecks ?? 0)}.\nПеременная часть: ${money(invoice.variableAmountKopecks ?? 0)}.` : "";
+  return `Добрый день!\n\nНаправляю счёт № ${invoice.invoiceNumber} ${action} за ${settings.vehicleModel} за ${documentPeriod(invoice.period)} по договору № ${settings.contractNumber} от ${dateLabel(settings.contractDate)}.\n\nСумма к оплате: ${money(invoice.amountKopecks)}. ${settings.vatLabel}.${components}\n\nПрошу оплатить по реквизитам, указанным в счёте.\n\nСпасибо!`;
 }
 
 function toKopecks(value: string) {
@@ -1421,6 +1498,9 @@ export default function RentalApp() {
   const [invoicePeriodAutomatic, setInvoicePeriodAutomatic] = useState(true);
   const [invoiceReplan, setInvoiceReplan] = useState(true);
   const [invoiceAmount, setInvoiceAmount] = useState("80000");
+  const [invoiceFixedAmount, setInvoiceFixedAmount] = useState("");
+  const [invoiceVariableAmount, setInvoiceVariableAmount] = useState("");
+  const [invoiceAllocationMode, setInvoiceAllocationMode] = useState<"auto" | "unlinked" | "legacy">("auto");
   const [invoiceNote, setInvoiceNote] = useState("");
 
   const [editingPaymentId, setEditingPaymentId] = useState<number | null>(null);
@@ -1673,6 +1753,10 @@ export default function RentalApp() {
           await loadData();
           return true;
         }
+        if ((payload.action === "create_invoice" || payload.action === "update_invoice") &&
+          (payload.kind === "mixed" || payload.allocationMode !== undefined)) {
+          throw new Error("Эти возможности доступны в автономном приложении на телефоне и его локальном предпросмотре");
+        }
         const response = await fetch("/api/dashboard", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1756,12 +1840,25 @@ export default function RentalApp() {
   const netRent = settlement.netRentKopecks;
   const remainingToInvoice = settlement.remainingToInvoiceKopecks;
   const editingInvoice = data?.invoices.find((invoice) => invoice.id === editingInvoiceId);
+  const invoiceAmountKopecks = invoiceKind === "mixed"
+    ? toKopecks(invoiceFixedAmount) + toKopecks(invoiceVariableAmount) : toKopecks(invoiceAmount);
+  const draftParts = invoiceKind === "mixed"
+    ? { fixedAmountKopecks: toKopecks(invoiceFixedAmount), variableAmountKopecks: toKopecks(invoiceVariableAmount) }
+    : { fixedAmountKopecks: invoiceKind === "fixed" ? invoiceAmountKopecks : 0,
+        variableAmountKopecks: invoiceKind === "variable" ? invoiceAmountKopecks : 0 };
+  const draftSettlement = calculateSettlement(month, calculation,
+    (data?.invoices ?? []).filter((invoice) => invoice.id !== editingInvoiceId), data?.expenses ?? []);
+  const suggestedMixedFixed = Math.min(draftSettlement.fixedRemainingKopecks, draftSettlement.remainingToInvoiceKopecks);
+  const suggestedMixedVariable = Math.min(draftSettlement.variableRemainingKopecks,
+    Math.max(0, draftSettlement.remainingToInvoiceKopecks - suggestedMixedFixed));
   const invoiceAllocationInput = useMemo<InvoiceAllocationInput>(() => ({ period: month, kind: invoiceKind,
-    invoiceDate, amountKopecks: toKopecks(invoiceAmount), entries: data?.entries ?? [], invoices: data?.invoices ?? [],
+    invoiceDate, amountKopecks: invoiceAmountKopecks,
+    ...(invoiceKind === "mixed" ? { fixedAmountKopecks: toKopecks(invoiceFixedAmount), variableAmountKopecks: toKopecks(invoiceVariableAmount) } : {}),
+    entries: data?.entries ?? [], invoices: data?.invoices ?? [],
     settings: documentSettings, fixedTargetKopecks, netRentKopecks: netRent,
     excludeInvoiceId: editingInvoiceId ?? undefined, allowRentalSupplement: today >= periodBounds(month).end,
     ...(!invoicePeriodAutomatic ? { startDate: invoiceStartDate, endDate: invoiceEndDate } : {}) }),
-    [month, invoiceKind, invoiceDate, invoiceAmount, data?.entries, data?.invoices, documentSettings,
+    [month, invoiceKind, invoiceDate, invoiceAmountKopecks, invoiceFixedAmount, invoiceVariableAmount, data?.entries, data?.invoices, documentSettings,
       fixedTargetKopecks, netRent, editingInvoiceId, today, invoicePeriodAutomatic, invoiceStartDate, invoiceEndDate]);
   const invoiceAllocationState = useMemo(() => {
     const proposal = proposeInvoiceAllocation(invoiceAllocationInput);
@@ -1788,7 +1885,20 @@ export default function RentalApp() {
     return { proposal: preserved, error, preserving: true };
   }, [invoiceAllocationInput, invoiceReplan, editingInvoice]);
   const invoiceAllocation = invoiceAllocationState.proposal;
-  const invoiceUsesAllocation = invoiceReplan || editingInvoice?.allocationVersion === 1;
+  const invoiceUsesAllocation = invoiceAllocationMode === "auto";
+  let invoiceUnlinkedError = "";
+  if (invoiceAllocationMode === "unlinked") {
+    try { validateUnlinkedInvoice(invoiceAllocationInput); }
+    catch (reason) { invoiceUnlinkedError = reason instanceof Error ? reason.message : "Проверьте сумму счёта"; }
+  }
+  const invoiceMoneyUnchanged = editingInvoice && editingInvoice.period === month && editingInvoice.kind === invoiceKind &&
+    editingInvoice.amountKopecks === invoiceAmountKopecks && (invoiceKind !== "mixed" ||
+      (editingInvoice.fixedAmountKopecks === draftParts.fixedAmountKopecks && editingInvoice.variableAmountKopecks === draftParts.variableAmountKopecks));
+  const invoicePartError = !invoiceMoneyUnchanged && (invoiceKind === "variable" || invoiceKind === "mixed")
+    ? !data?.closure ? "Закройте месяц для расчёта переменной части."
+      : draftParts.fixedAmountKopecks < draftSettlement.fixedRemainingKopecks
+        ? "Включите в счёт остаток постоянной части или сначала выставьте его отдельно." : ""
+    : "";
   const invoiceReviewNumbers = new Set([...invoiceAllocation.legacyInvoiceNumbers, ...invoiceAllocation.invalidInvoiceNumbers]);
   const nextInvoiceForReview = [...(data?.invoices ?? [])].filter((invoice) => invoice.id !== editingInvoiceId && invoiceReviewNumbers.has(invoice.invoiceNumber.trim() || String(invoice.id)))
     .sort((first, second) => first.invoiceDate.localeCompare(second.invoiceDate) || first.id - second.id)[0];
@@ -1798,10 +1908,10 @@ export default function RentalApp() {
   const selectedDowntimes = data?.downtimes?.filter((day) => day.startDate <= entryDate && day.endDate >= entryDate) ?? [];
   const selectedDowntime = selectedDowntimes.find((day) => day.kind === "no_trip") ?? selectedDowntimes[0];
   const selectedDayClaims = (data?.invoices ?? []).flatMap((invoice) =>
-    invoice.allocationVersion === 1 ? (invoice.bottleAllocations ?? [])
+    invoice.allocationMode !== "unlinked" && invoice.allocationVersion === 1 && Array.isArray(invoice.bottleAllocations) ? invoice.bottleAllocations
       .filter((row) => row.date === entryDate).map((row) => ({ invoice, amountKopecks: row.amountKopecks })) : []);
   const selectedDayAllocated = selectedDayClaims.reduce((sum, row) => sum + row.amountKopecks, 0);
-  const selectedDayLegacy = (data?.invoices ?? []).filter((invoice) => invoice.allocationVersion !== 1);
+  const selectedDayLegacy = (data?.invoices ?? []).filter((invoice) => invoice.allocationMode !== "unlinked" && invoice.allocationVersion !== 1);
   const expenseCategories = useMemo(
     () => normalizeExpenseCategories(data?.expenseCategories),
     [data?.expenseCategories],
@@ -2083,7 +2193,9 @@ export default function RentalApp() {
     setEditingInvoiceId(null);
     const selectedDate = today;
     const kind = requestedKind ?? (
-      fixedRemainingKopecks > 0
+      data?.closure && fixedRemainingKopecks > 0 && Math.min(variableRemainingKopecks, remainingToInvoice - fixedRemainingKopecks) > 0
+        ? "mixed"
+        : fixedRemainingKopecks > 0
         ? "fixed"
         : data?.closure && variableRemainingKopecks > 0 && remainingToInvoice > 0
           ? "variable"
@@ -2095,13 +2207,17 @@ export default function RentalApp() {
         ? variableRemainingKopecks
         : remainingToInvoice;
     setInvoiceKind(kind);
+    setInvoiceFixedAmount(String(Math.min(fixedRemainingKopecks, remainingToInvoice) / 100));
+    setInvoiceVariableAmount(String(Math.min(variableRemainingKopecks, Math.max(0, remainingToInvoice - fixedRemainingKopecks)) / 100));
     setInvoiceAmount(suggestedAmount > 0 ? String(suggestedAmount / 100) : "");
-    setInvoiceNumber(nextInvoiceNumber(isOfflineRuntime() ? readOfflineStore().invoices : data?.invoices ?? []));
+    const numberHistory = isOfflineRuntime() ? readOfflineStore() : null;
+    setInvoiceNumber(nextInvoiceNumber(numberHistory?.invoices ?? data?.invoices ?? [], numberHistory?.invoiceNumberFloor));
     setInvoiceActNumber(actNumber);
     setInvoiceDate(selectedDate);
     setInvoiceDueDate("");
     setInvoicePeriodAutomatic(true);
     setInvoiceReplan(true);
+    setInvoiceAllocationMode("auto");
     setInvoiceStartDate("");
     setInvoiceEndDate("");
     setInvoiceNote("");
@@ -2110,9 +2226,13 @@ export default function RentalApp() {
 
   async function createInvoice(event: FormEvent) {
     event.preventDefault();
-    const amountKopecks = toKopecks(invoiceAmount);
+    const amountKopecks = invoiceAmountKopecks;
     if (!invoiceNumber.trim() || !amountKopecks) {
       toast.error("Укажите номер и сумму счёта");
+      return;
+    }
+    if (invoicePartError || invoiceUnlinkedError) {
+      toast.error(invoicePartError || invoiceUnlinkedError);
       return;
     }
     let allocation: ReturnType<typeof validateInvoiceAllocation> | undefined;
@@ -2128,14 +2248,6 @@ export default function RentalApp() {
         rentalSupplementKopecks: invoiceAllocation.rentalSupplementKopecks }); }
       catch (error) { toast.error(error instanceof Error ? error.message : "Проверьте распределение суммы"); return; }
     }
-    if (editingInvoiceId === null && invoiceKind === "variable" && !data?.closure) {
-      toast.error("Переменная часть выставляется после закрытия месяца");
-      return;
-    }
-    if (editingInvoiceId === null && invoiceKind === "variable" && fixedRemainingKopecks > 0) {
-      toast.error("Сначала выставьте постоянную часть");
-      return;
-    }
     const ok = await request(
       {
         action: editingInvoiceId === null ? "create_invoice" : "update_invoice",
@@ -2146,8 +2258,10 @@ export default function RentalApp() {
         kind: invoiceKind,
         actNumber: invoiceActNumber,
         amountKopecks,
-        bottleStartDate: allocation ? allocation.bottleAllocations[0]?.date ?? "" : invoiceStartDate,
-        bottleEndDate: allocation ? allocation.bottleAllocations.at(-1)?.date ?? "" : invoiceEndDate,
+        ...(invoiceKind === "mixed" ? draftParts : {}),
+        ...(invoiceAllocationMode !== "legacy" ? { allocationMode: invoiceAllocationMode } : {}),
+        bottleStartDate: invoiceAllocationMode === "unlinked" ? "" : allocation ? allocation.bottleAllocations[0]?.date ?? "" : invoiceStartDate,
+        bottleEndDate: invoiceAllocationMode === "unlinked" ? "" : allocation ? allocation.bottleAllocations.at(-1)?.date ?? "" : invoiceEndDate,
         ...(allocation ?? {}),
         dueDate: invoiceDueDate,
         note: invoiceNote,
@@ -2319,12 +2433,15 @@ export default function RentalApp() {
     setEditingInvoiceId(invoice.id);
     setInvoicePeriodAutomatic(true);
     setInvoiceReplan(reviewAllocation);
+    setInvoiceAllocationMode(reviewAllocation ? "auto" : invoice.allocationMode ?? (invoice.allocationVersion === 1 ? "auto" : "legacy"));
     setInvoiceKind(invoice.kind); setInvoiceNumber(invoice.invoiceNumber);
     setInvoiceActNumber(invoice.actNumber ?? data?.documentMeta?.actNumber ?? "");
     setInvoiceDate(invoice.invoiceDate); setInvoiceDueDate(invoice.dueDate ?? "");
     setInvoiceStartDate(invoice.bottleStartDate ?? "");
     setInvoiceEndDate(invoice.bottleEndDate ?? "");
     setInvoiceAmount(String(invoice.amountKopecks / 100)); setInvoiceNote(invoice.note);
+    setInvoiceFixedAmount(invoice.kind === "mixed" ? String((invoice.fixedAmountKopecks ?? 0) / 100) : "");
+    setInvoiceVariableAmount(invoice.kind === "mixed" ? String((invoice.variableAmountKopecks ?? 0) / 100) : "");
     setInvoiceOpen(true);
   }
 
@@ -2764,7 +2881,7 @@ export default function RentalApp() {
           "Вид начисления",
           "Первый день бутылей",
           "Последний день бутылей",
-          "Сумма счёта после вычета топлива, ₽",
+          "Сумма счёта, ₽",
           "Оплачено, ₽",
           "Остаток, ₽",
           "Срок оплаты",
@@ -2776,6 +2893,9 @@ export default function RentalApp() {
           "Назначение платежа",
           "Тема письма",
           "Текст письма",
+          "Постоянная часть, ₽",
+          "Переменная часть, ₽",
+          "Связь с днями",
         ],
         ...data.invoices.map((invoice) => {
           const invoicePayments = data.payments.filter((payment) => payment.invoiceId === invoice.id);
@@ -2799,6 +2919,9 @@ export default function RentalApp() {
             paymentPurpose(invoice, documentSettings),
             emailSubject(invoice, documentSettings),
             emailText(invoice, documentSettings),
+            normalizeInvoiceParts(invoice).fixedAmountKopecks / 100,
+            normalizeInvoiceParts(invoice).variableAmountKopecks / 100,
+            invoice.allocationMode === "unlinked" ? "Без привязки" : invoice.allocationVersion === 1 ? "По дням" : "Прежние данные",
           ];
         }),
         ["ИТОГО", "", "", "", "", totalInvoiced / 100, totalPaid / 100,
@@ -3365,10 +3488,11 @@ export default function RentalApp() {
                             <div><span>Оплачено</span><strong>{money(paid)}</strong></div>
                             <div><span>Остаток</span><strong>{money(Math.max(0, invoice.amountKopecks - paid))}</strong></div>
                           </div>
+                          {invoice.kind === "mixed" && <p className="due-line">Постоянная: <strong>{money(invoice.fixedAmountKopecks ?? 0)}</strong> · переменная: <strong>{money(invoice.variableAmountKopecks ?? 0)}</strong></p>}
                             {invoice.dueDate && <p className="due-line">Срок оплаты: <strong>{dateLabel(invoice.dueDate)}</strong></p>}
                             <p className="due-line">Период: <strong>{monthLabel(invoice.period)}</strong>{invoice.actNumber && <> · акт-расчёт №{invoice.actNumber}</>}</p>
-                            <p className="due-line">Дни бутылей: <strong>{invoice.bottleStartDate && invoice.bottleEndDate
-                              ? `${dateLabel(invoice.bottleStartDate)} — ${dateLabel(invoice.bottleEndDate)}` : "не указаны"}</strong></p>
+                            <p className="due-line">{invoice.allocationMode === "unlinked" ? "Без привязки к дням" : <>Дни бутылей: <strong>{invoice.bottleStartDate && invoice.bottleEndDate
+                              ? `${dateLabel(invoice.bottleStartDate)} — ${dateLabel(invoice.bottleEndDate)}` : "не указаны"}</strong></>}</p>
                           {invoice.note && <p className="record-note">{invoice.note}</p>}
 
                           <Button
@@ -3855,12 +3979,20 @@ export default function RentalApp() {
           </DialogHeader>
           {textInvoice && (
             <div className="copy-stack copy-dialog-stack">
-              <CopyBlock
+              {textInvoice.kind === "mixed" ? <>
+                {(["fixed", "variable"] as const).map((kind) => <CopyBlock key={kind}
+                  title={`Строка ${kind === "fixed" ? "постоянной" : "переменной"} части · ${money(kind === "fixed" ? textInvoice.fixedAmountKopecks ?? 0 : textInvoice.variableAmountKopecks ?? 0)}`}
+                  text={invoiceLine({ ...textInvoice, kind }, documentSettings)}
+                  copied={copiedKey === `line-${kind}-${textInvoice.id}`}
+                  onCopy={() => void copyText(invoiceLine({ ...textInvoice, kind }, documentSettings), `line-${kind}-${textInvoice.id}`)}
+                />)}
+                <p className="help-note">В банке добавьте две позиции по указанным суммам. Номер счёта один, общая сумма — {money(textInvoice.amountKopecks)}.</p>
+              </> : <CopyBlock
                 title="Строка счёта в банке"
                 text={invoiceLine(textInvoice, documentSettings)}
                 copied={copiedKey === `line-${textInvoice.id}`}
                 onCopy={() => void copyText(invoiceLine(textInvoice, documentSettings), `line-${textInvoice.id}`)}
-              />
+              />}
               <CopyBlock
                 title="Назначение платежа"
                 text={paymentPurpose(textInvoice, documentSettings)}
@@ -3949,8 +4081,8 @@ export default function RentalApp() {
       <Dialog open={invoiceOpen} onOpenChange={setInvoiceOpen}>
         <DialogContent className="dialog-card max-h-[92vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{editingInvoiceId === null ? "Добавить выставленный счёт" : "Редактировать счёт"}</DialogTitle>
-            <DialogDescription>Укажите сумму. Приложение подберёт дни ровно на неё, начиная с остатка предыдущего счёта. Реальное количество бутылей не изменится.</DialogDescription>
+            <DialogTitle>{editingInvoiceId === null ? "Составить счёт" : "Редактировать счёт"}</DialogTitle>
+            <DialogDescription>{monthLabel(month)}. Сумма и период предложены по записям. Дата выставления счёта указывается отдельно.</DialogDescription>
           </DialogHeader>
           <form onSubmit={createInvoice} className="dialog-form">
             <label>
@@ -3961,30 +4093,49 @@ export default function RentalApp() {
                   const kind = value as Invoice["kind"];
                   setInvoiceKind(kind);
                   setInvoiceReplan(true);
+                  if (invoiceAllocationMode === "legacy") setInvoiceAllocationMode("auto");
                   if (editingInvoiceId === null) setInvoicePeriodAutomatic(true);
                   if (editingInvoiceId === null && kind === "fixed") setInvoiceAmount(fixedRemainingKopecks > 0 ? String(fixedRemainingKopecks / 100) : "");
                   if (editingInvoiceId === null && kind === "variable") setInvoiceAmount(variableRemainingKopecks > 0 ? String(variableRemainingKopecks / 100) : "");
                   if (editingInvoiceId === null && kind === "other") setInvoiceAmount(remainingToInvoice > 0 ? String(remainingToInvoice / 100) : "");
+                  if (kind === "mixed") {
+                    setInvoiceFixedAmount(String(suggestedMixedFixed / 100));
+                    setInvoiceVariableAmount(String(suggestedMixedVariable / 100));
+                  }
                 }}
               >
                 <SelectTrigger className="h-11 w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="fixed">Часть постоянной арендной платы</SelectItem>
                   <SelectItem value="variable" disabled={editingInvoiceId === null && (!data?.closure || fixedRemainingKopecks > 0)}>Переменная часть</SelectItem>
+                  <SelectItem value="mixed" disabled={editingInvoiceId === null && (!data?.closure || suggestedMixedFixed <= 0 || suggestedMixedVariable <= 0)}>Обе части в одном счёте</SelectItem>
                   <SelectItem value="other">Прочее начисление</SelectItem>
                 </SelectContent>
               </Select>
-              {editingInvoiceId === null && <p className="help-note">Постоянную часть можно выставлять несколькими счетами. Переменная доступна после закрытия месяца.</p>}
+              {editingInvoiceId === null && <p className="help-note">{!data?.closure ? "Постоянную часть можно выставлять частями. Для переменной сначала проверьте и закройте месяц." : fixedRemainingKopecks > 0 ? "Остаток постоянной части можно включить вместе с переменной в один счёт." : "Постоянная часть выставлена. Можно составить счёт на переменную часть."}</p>}
             </label>
             <label><FieldLabel>Дата счёта</FieldLabel><Input type="date" value={invoiceDate} onChange={(event) => setInvoiceDate(event.target.value)} required /></label>
             <div className="grid grid-cols-2 gap-3">
               <label><FieldLabel>Номер счёта</FieldLabel><Input value={invoiceNumber} onChange={(event) => setInvoiceNumber(event.target.value)} placeholder="Например, 24" required /></label>
-              <label><FieldLabel>Сумма выставленного счёта, ₽</FieldLabel><Input type="number" min="0.01" step="0.01" inputMode="decimal" value={invoiceAmount} onChange={(event) => { setInvoiceAmount(event.target.value); setInvoiceReplan(true); }} required /></label>
+              {invoiceKind !== "mixed" && <label><FieldLabel>Сумма счёта, ₽</FieldLabel><Input type="number" min="0.01" step="0.01" inputMode="decimal" value={invoiceAmount} onChange={(event) => { setInvoiceAmount(event.target.value); setInvoiceReplan(true); if (invoiceAllocationMode === "legacy") setInvoiceAllocationMode("auto"); }} required /></label>}
             </div>
+            {invoiceKind === "mixed" && <section className="invoice-components" aria-label="Две позиции одного счёта">
+              <label><FieldLabel>Постоянная часть, ₽</FieldLabel><Input type="number" min="0.01" step="0.01" inputMode="decimal" value={invoiceFixedAmount} onChange={(event) => { setInvoiceFixedAmount(event.target.value); setInvoiceReplan(true); }} required /></label>
+              <label><FieldLabel>Переменная часть, ₽</FieldLabel><Input type="number" min="0.01" step="0.01" inputMode="decimal" value={invoiceVariableAmount} onChange={(event) => { setInvoiceVariableAmount(event.target.value); setInvoiceReplan(true); }} required /></label>
+              <div className="invoice-component-total"><span>Один счёт — итого</span><strong>{money(invoiceAmountKopecks)}</strong></div>
+            </section>}
             <p className="help-note">Укажите сумму самого счёта. Полученную оплату добавьте отдельно.</p>
+            <div>
+              <FieldLabel>Связь с днями</FieldLabel>
+              <div className="invoice-link-options" role="group" aria-label="Способ связи счёта с днями">
+                <Button type="button" variant="outline" aria-pressed={invoiceAllocationMode === "auto"} onClick={() => { setInvoiceAllocationMode("auto"); setInvoiceReplan(true); setInvoicePeriodAutomatic(true); }}>Автоматически</Button>
+                <Button type="button" variant="outline" aria-pressed={invoiceAllocationMode === "unlinked"} onClick={() => { setInvoiceAllocationMode("unlinked"); setInvoiceReplan(false); }}>Без привязки</Button>
+              </div>
+            </div>
+            {invoicePartError && <p className="help-note" role="alert">{invoicePartError}</p>}
             {invoiceUsesAllocation ? <section className="invoice-allocation-preview rounded-xl border border-border p-3 space-y-3" aria-label="Предложенная привязка суммы счёта">
               <div>
-                <strong>{invoiceAllocation.ready ? "Привязка ровно на " : "Сумма счёта: "}{money(toKopecks(invoiceAmount))}</strong>
+                <strong>{invoiceAllocation.ready ? "Привязка ровно на " : "Сумма счёта: "}{money(invoiceAmountKopecks)}</strong>
                 {!invoiceAllocation.needsReview && invoiceAllocation.startDate && invoiceAllocation.endDate && <p>{dateLabel(invoiceAllocation.startDate)} — {dateLabel(invoiceAllocation.endDate)}</p>}
                 {invoiceAllocationState.preserving && !invoiceAllocationState.error && <p className="help-note">Сохранённая привязка остаётся прежней. Изменение номера, примечания или срока оплаты её не меняет.</p>}
               </div>
@@ -3993,13 +4144,14 @@ export default function RentalApp() {
                   ? `Перед новым счётом нужно проверить старые привязки: №${[...invoiceAllocation.legacyInvoiceNumbers, ...invoiceAllocation.invalidInvoiceNumbers].join(", №")}. Суммы и оплаты старых счетов сохраняются.`
                   : "Проверьте дату счёта, срок аренды и ежедневные записи. Для этих данных точный подбор пока недоступен."}</p>
                 {nextInvoiceForReview && <Button type="button" variant="outline" className="w-full" onClick={() => editInvoice(nextInvoiceForReview, true)}>Проверить счёт №{nextInvoiceForReview.invoiceNumber}</Button>}
+                <p className="help-note">Если даты сейчас не нужны, выберите «Без привязки». Сумма будет учтена, а распределение можно добавить позже.</p>
               </div>}
               {!invoiceAllocation.needsReview && (invoiceAllocation.legacyInvoiceNumbers.length > 0 || invoiceAllocation.invalidInvoiceNumbers.length > 0) &&
                 <p className="help-note" role="status">После этого проверьте более поздние счета: №{[...invoiceAllocation.legacyInvoiceNumbers, ...invoiceAllocation.invalidInvoiceNumbers].join(", №")}. Их суммы и оплаты не изменены.</p>}
               {invoiceAllocationState.error && <p className="help-note" role="alert">{invoiceAllocationState.error}</p>}
               {!invoiceAllocation.needsReview && invoiceAllocation.uncoveredKopecks > 0 && <div role="alert" className="space-y-2">
                 <p className="help-note">На эту сумму пока не хватает записей или остатка аренды. Можно подтвердить {money(invoiceAllocation.coveredKopecks)}; не покрыто {money(invoiceAllocation.uncoveredKopecks)}. Добавьте недостающие дни либо проверьте сумму.</p>
-                {editingInvoiceId === null && invoiceAllocation.coveredKopecks > 0 && <Button type="button" variant="outline" className="w-full" onClick={() => {
+                {editingInvoiceId === null && invoiceKind !== "mixed" && invoiceAllocation.coveredKopecks > 0 && <Button type="button" variant="outline" className="w-full" onClick={() => {
                   setInvoiceAmount(String(invoiceAllocation.coveredKopecks / 100)); setInvoiceReplan(true);
                 }}>Выставить только доступные {money(invoiceAllocation.coveredKopecks)}</Button>}
               </div>}
@@ -4018,25 +4170,30 @@ export default function RentalApp() {
               </details>}
               {!invoiceAllocation.needsReview && invoiceAllocation.lastDayRemainingKopecks > 0 && <p className="help-note">Последний день включён частично. Его остаток {money(invoiceAllocation.lastDayRemainingKopecks)} будет учитываться при следующем подборе в пределах оставшейся аренды.</p>}
               {!invoiceAllocation.needsReview && invoiceAllocation.rentalSupplementKopecks > 0 && <p>Доплата до постоянной части: <strong>{money(invoiceAllocation.rentalSupplementKopecks)}</strong>. Это аренда по договору; дополнительные бутыли не создаются.</p>}
-              <p className="help-note">Топливо учтено в остатке аренды и вычитается в конце месяца. Из записей отдельных дней оно здесь не вычитается.</p>
               {invoiceAllocation.ready && <div className="invoice-allocation-summary">
-                {invoiceKind !== "other" && <p>Останется {invoiceKind === "fixed" ? "постоянной" : "переменной"} части: <strong>{money(Math.max(0, (invoiceKind === "fixed" ? fixedTargetKopecks : variableTargetKopecks) - (data?.invoices.filter((item) => item.id !== editingInvoiceId && item.kind === invoiceKind).reduce((sum, item) => sum + item.amountKopecks, 0) ?? 0) - toKopecks(invoiceAmount)))}</strong></p>}
-                <p>Останется выставить за месяц: <strong>{money(Math.max(0, netRent - (data?.invoices.filter((item) => item.id !== editingInvoiceId).reduce((sum, item) => sum + item.amountKopecks, 0) ?? 0) - toKopecks(invoiceAmount)))}</strong></p>
+                {(invoiceKind === "fixed" || invoiceKind === "mixed") && <p>Останется постоянной части: <strong>{money(Math.max(0, draftSettlement.fixedRemainingKopecks - draftParts.fixedAmountKopecks))}</strong></p>}
+                {(invoiceKind === "variable" || invoiceKind === "mixed") && <p>Останется переменной части: <strong>{money(Math.max(0, draftSettlement.variableRemainingKopecks - draftParts.variableAmountKopecks))}</strong></p>}
+                <p>Останется выставить за месяц: <strong>{money(Math.max(0, draftSettlement.remainingToInvoiceKopecks - invoiceAmountKopecks))}</strong></p>
               </div>}
               {!invoiceReplan && <Button type="button" variant="outline" className="w-full" onClick={() => { setInvoiceReplan(true); setInvoicePeriodAutomatic(true); }}>Подобрать даты заново</Button>}
+            </section> : invoiceAllocationMode === "unlinked" ? <section className="invoice-link-summary" aria-label="Счёт без привязки к дням">
+              <strong>Без привязки к дням · {money(invoiceAmountKopecks)}</strong>
+              <p className="help-note">Счёт относится к {monthLabel(month).toLowerCase()} и уменьшает остаток аренды. Даты бутылей ему не назначаются. Привязку можно добавить позже через редактирование.</p>
+              <p>Останется выставить за месяц: <strong>{money(Math.max(0, draftSettlement.remainingToInvoiceKopecks - invoiceAmountKopecks))}</strong></p>
+              {invoiceUnlinkedError && <p className="help-note" role="alert">{invoiceUnlinkedError}</p>}
             </section> : <div className="rounded-xl border border-border p-3 space-y-2">
               <p className="help-note">Старый счёт: здесь можно исправить номер, дату и примечание, сохранив прежнюю сумму. Точная денежная привязка к дням пока не добавлена.</p>
-              <Button type="button" className="w-full" onClick={() => { setInvoiceReplan(true); setInvoicePeriodAutomatic(true); }}>Подобрать точную привязку</Button>
+              <Button type="button" className="w-full" onClick={() => { setInvoiceAllocationMode("auto"); setInvoiceReplan(true); setInvoicePeriodAutomatic(true); }}>Подобрать точную привязку</Button>
             </div>}
-            <details className="document-options"><summary>Выбрать дни вручную</summary>
+            {invoiceUsesAllocation && <details className="document-options"><summary>Выбрать дни вручную</summary>
               <p className="help-note">Обычно даты подбираются автоматически. Укажите границы, если счёт должен относиться только к части месяца.</p>
               <div className="grid grid-cols-2 gap-3">
                 <label><FieldLabel>Первый день бутылей</FieldLabel><Input type="date" min={`${month}-01`} max={periodBounds(month).end} value={invoiceStartDate} onChange={(event) => { setInvoicePeriodAutomatic(false); setInvoiceReplan(true); setInvoiceStartDate(event.target.value); }} /></label>
                 <label><FieldLabel>Последний день бутылей</FieldLabel><Input type="date" min={`${month}-01`} max={periodBounds(month).end} value={invoiceEndDate} onChange={(event) => { setInvoicePeriodAutomatic(false); setInvoiceReplan(true); setInvoiceEndDate(event.target.value); }} /></label>
               </div>
               <Button type="button" variant="outline" className="w-full" aria-pressed={invoicePeriodAutomatic} onClick={() => { setInvoicePeriodAutomatic(true); setInvoiceReplan(true); }}>Подобрать период автоматически</Button>
-            </details>
-            {editingInvoiceId === null && invoiceKind !== "other" && <p className="help-note">Предложенная сумма — остаток {invoiceKind === "fixed" ? "постоянной" : "переменной"} части аренды за месяц. Её можно изменить для частичного счёта.</p>}
+            </details>}
+            {editingInvoiceId === null && invoiceKind !== "other" && <p className="help-note">Предложенные суммы — остаток аренды за выбранный месяц. Их можно изменить для частичного счёта.</p>}
             <details className="document-options"><summary>Дополнительно: акт, срок оплаты, примечание</summary>
               <label><FieldLabel>Связанный акт-расчёт №</FieldLabel><Input value={invoiceActNumber} onChange={(event) => setInvoiceActNumber(event.target.value)} placeholder="Необязательно для предварительного счёта" /></label>
               <label><FieldLabel>Срок оплаты</FieldLabel><Input type="date" value={invoiceDueDate} onChange={(event) => setInvoiceDueDate(event.target.value)} /></label>
@@ -4045,7 +4202,7 @@ export default function RentalApp() {
             </details>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setInvoiceOpen(false)}>Отмена</Button>
-              <Button type="submit" disabled={busy || (invoiceUsesAllocation && !invoiceAllocation.ready)}>{busy && <LoaderCircle className="animate-spin" />}{invoiceReplan ? "Подтвердить и сохранить счёт" : "Сохранить изменения"}</Button>
+              <Button type="submit" disabled={busy || Boolean(invoicePartError || invoiceUnlinkedError) || (invoiceUsesAllocation && !invoiceAllocation.ready)}>{busy && <LoaderCircle className="animate-spin" />}{editingInvoiceId === null ? "Подтвердить и сохранить счёт" : "Сохранить изменения"}</Button>
             </DialogFooter>
           </form>
         </DialogContent>

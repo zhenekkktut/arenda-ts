@@ -75,6 +75,43 @@ export function allocationInput(tools = documentTools()) {
     meta: tools.defaultDocumentMeta("2026-09", 3, "2026-10-03") };
 }
 
+// One bank invoice covers both remaining rent components. Earlier paid fixed
+// invoices deliberately have no day links, while the combined face uses one
+// shared daily money ledger and only part of the last actual delivery day.
+export function mixedInvoiceInput(tools = documentTools()) {
+  const { settings } = sampleInput(tools);
+  const period = "2026-09";
+  const counts = [[10, 174], [11, 155], [12, 76], [14, 117], [15, 133],
+    [16, 125], [17, 145], [18, 255], [22, 116], [23, 146], [24, 152],
+    [25, 116], [28, 161], [29, 149], [30, 118]];
+  const entries = counts.map(([day, units]) => ({ entryDate: `${period}-${day}`, units }));
+  const downtimes = [{ id: 1, kind: "no_trip", startDate: "2026-09-01", endDate: "2026-09-09",
+    reason: "Выезда не было", basis: "Запись календаря", note: "" }];
+  const expenses = [[12, 277000], [18, 354000], [23, 354000], [28, 265000]]
+    .map(([day, amountKopecks]) => ({ expenseDate: `${period}-${day}`, amountKopecks,
+      category: "fuel", payer: "customer", documentNumber: "", note: "" }));
+  const invoices = [
+    { id: 28, invoiceNumber: "28", period, invoiceDate: "2026-09-26", kind: "fixed",
+      amountKopecks: 3120000, allocationMode: "unlinked" },
+    { id: 29, invoiceNumber: "29", period, invoiceDate: "2026-10-02", kind: "fixed",
+      amountKopecks: 1230000, allocationMode: "unlinked" },
+    { id: 30, invoiceNumber: "30", period, invoiceDate: "2026-10-08", kind: "mixed",
+      amountKopecks: 2950000, fixedAmountKopecks: 1250000, variableAmountKopecks: 1700000,
+      allocationMode: "auto", allocationVersion: 1, rentalSupplementKopecks: 0,
+      bottleStartDate: "2026-09-10", bottleEndDate: "2026-09-16",
+      bottleAllocations: [{ date: "2026-09-10", amountKopecks: 696000 },
+        { date: "2026-09-11", amountKopecks: 620000 }, { date: "2026-09-12", amountKopecks: 304000 },
+        { date: "2026-09-14", amountKopecks: 468000 }, { date: "2026-09-15", amountKopecks: 532000 },
+        { date: "2026-09-16", amountKopecks: 330000 }] },
+  ];
+  const payments = [[28, "2026-09-28", 3120000], [29, "2026-10-03", 1230000], [30, "2026-10-09", 1000000]]
+    .map(([invoiceId, paymentDate, amountKopecks]) => ({ invoiceId, paymentDate, amountKopecks,
+      method: "bank", documentNumber: "" }));
+  return { settings, entries, downtimes, expenses, invoices, payments,
+    calculation: tools.calculateRental(period, entries, downtimes, settings),
+    meta: tools.defaultDocumentMeta(period, 4, "2026-10-13") };
+}
+
 if (process.argv[2]) {
   const target = process.argv[2];
   fs.mkdirSync(target, { recursive: true });
@@ -84,4 +121,5 @@ if (process.argv[2]) {
   const allocated = allocationInput(tools);
   fs.writeFileSync(`${target}/reconciliation-compact.html`, tools.buildReconciliationHtml(allocated));
   fs.writeFileSync(`${target}/rent.html`, tools.buildRentActHtml(allocated));
+  fs.writeFileSync(`${target}/reconciliation-mixed.html`, tools.buildReconciliationHtml(mixedInvoiceInput(tools)));
 }

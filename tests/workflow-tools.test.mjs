@@ -9,7 +9,7 @@ const compiled = ts.transpileModule(source, {
 }).outputText;
 const module = { exports: {} };
 new Function("exports", "module", compiled)(module.exports, module);
-const { nextInvoiceNumber, missingEntryDates, linkedAsOfDate } = module.exports;
+const { nextInvoiceNumber, deriveInvoiceNumberFloor, missingEntryDates, linkedAsOfDate } = module.exports;
 
 const invoices = (...numbers) => numbers.map((invoiceNumber) => ({ invoiceNumber }));
 const fullLease = { rentalStart: "2026-01-01", rentalEnd: "2027-12-31" };
@@ -47,6 +47,64 @@ test("number suggestion stops before unsafe arithmetic and does not choose a col
     assert.equal(nextInvoiceNumber(history), "");
     assert.deepEqual(history, unchanged);
   }
+});
+
+test("invoice number floor includes deleted numeric invoices from audit without changing source records", () => {
+  const history = invoices(" 0028 ", "29", "30А", "2026/31");
+  const audit = [
+    { entity: "invoice", title: "Удалён счёт № 0032" },
+    { entity: "invoice", title: "Изменён счет №31" },
+    { entity: "invoice", title: "Добавлен СЧЁТ №30" },
+    { entity: "invoice", title: "Удалён счёт №35А" },
+    { entity: "payment", title: "Добавлена оплата по счёту №999" },
+    { entity: "document", title: "Счёт №1000" },
+  ];
+  const unchanged = structuredClone({ history, audit });
+  const floor = deriveInvoiceNumberFloor(history, audit);
+  assert.equal(floor, 32);
+  assert.equal(nextInvoiceNumber(history, floor), "33");
+  assert.deepEqual({ history, audit }, unchanged);
+});
+
+test("saved invoice number floor survives deletion, renaming and a pruned audit log", () => {
+  assert.equal(deriveInvoiceNumberFloor(invoices("28", "29"), [], 32), 32);
+  assert.equal(deriveInvoiceNumberFloor(invoices("С-32"), [], 32), 32);
+  assert.equal(deriveInvoiceNumberFloor([], [], 32), 32);
+  assert.equal(nextInvoiceNumber([], 32), "33");
+  assert.equal(nextInvoiceNumber(invoices("28", "29"), 32), "33");
+  assert.equal(nextInvoiceNumber(invoices("35"), 32), "36");
+  assert.equal(deriveInvoiceNumberFloor(invoices("35"), [], 32), 35);
+});
+
+test("invoice floor never reads a numeric prefix from manual numbers or unrelated audit text", () => {
+  const manual = invoices("30A", "30А", "2026/30", "-30", "1.5", "1e3", "0");
+  const audit = [
+    { entity: "invoice", title: "Удалён счёт №30A" },
+    { entity: "invoice", title: "Изменён счёт №2026/30" },
+    { entity: "invoice", title: "Счёт №31 — примечание" },
+    { entity: "invoice", title: "Изменён акт №32" },
+    { entity: "invoice", title: "Счёт №0" },
+    { entity: "invoice", title: null },
+    null,
+  ];
+  assert.equal(deriveInvoiceNumberFloor(manual, audit), undefined);
+  assert.equal(nextInvoiceNumber(manual), "1", "The original zero-number behaviour stays unchanged");
+  assert.equal(nextInvoiceNumber(invoices("30А", "2026/30")), "");
+  assert.equal(nextInvoiceNumber([], deriveInvoiceNumberFloor([], audit)), "1");
+});
+
+test("number floor accepts only safe positive integers and stops before overflowing the next number", () => {
+  assert.equal(deriveInvoiceNumberFloor(invoices(String(Number.MAX_SAFE_INTEGER)), []), Number.MAX_SAFE_INTEGER);
+  assert.equal(nextInvoiceNumber([], Number.MAX_SAFE_INTEGER), "");
+  assert.equal(nextInvoiceNumber(invoices("2"), Number.MAX_SAFE_INTEGER - 1), String(Number.MAX_SAFE_INTEGER));
+  for (const invalid of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, "32"]) {
+    assert.equal(deriveInvoiceNumberFloor([], [], invalid), undefined);
+    assert.equal(nextInvoiceNumber([], invalid), "1");
+  }
+  assert.equal(deriveInvoiceNumberFloor(invoices("0", "9".repeat(400)), [
+    { entity: "invoice", title: `Счёт №${Number.MAX_SAFE_INTEGER + 1}` },
+  ]), undefined);
+  assert.equal(deriveInvoiceNumberFloor(invoices("0031"), [], 30), 31);
 });
 
 test("missing records include today, skip Sundays and accept a saved zero quantity", () => {

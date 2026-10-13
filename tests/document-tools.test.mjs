@@ -523,3 +523,88 @@ test("full no-trip days reduce the fixed part and are described without a techni
   const legacy = { ...input, downtimes: [{ ...input.downtimes[0], kind: undefined, reason: "Ремонт" }] };
   assert.match(tools.buildRentActHtml(legacy), /01\.09\.2026–01\.09\.2026: Ремонт; основание/);
 });
+
+test("the September combined invoice completes both balances once and preserves the two paid fixed invoices", () => {
+  const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS };
+  const entries = [{ entryDate: "2026-09-10", units: 2_138 }];
+  const downtimes = [{ id: 1, startDate: "2026-09-01", endDate: "2026-09-09", reason: "Простой", note: "" }];
+  const calculation = tools.calculateRental("2026-09", entries, downtimes, settings);
+  const expenses = [{ expenseDate: "2026-09-12", category: "fuel", payer: "customer", amountKopecks: 1_250_000 }];
+  const invoices = [
+    { id: 28, invoiceNumber: "28", period: "2026-09", invoiceDate: "2026-09-26", kind: "fixed",
+      amountKopecks: 3_120_000, allocationMode: "unlinked" },
+    { id: 29, invoiceNumber: "29", period: "2026-09", invoiceDate: "2026-10-02", kind: "fixed",
+      amountKopecks: 1_230_000, allocationMode: "unlinked" },
+    { id: 30, invoiceNumber: "30", period: "2026-09", invoiceDate: "2026-10-08", kind: "mixed",
+      amountKopecks: 2_950_000, fixedAmountKopecks: 1_250_000, variableAmountKopecks: 1_700_000,
+      allocationMode: "auto", allocationVersion: 1,
+      bottleStartDate: "2026-09-10", bottleEndDate: "2026-09-10",
+      bottleAllocations: [{ date: "2026-09-10", amountKopecks: 2_950_000 }], rentalSupplementKopecks: 0 },
+  ];
+  const payments = [{ invoiceId: 28, paymentDate: "2026-09-28", amountKopecks: 3_120_000, method: "bank", documentNumber: "" },
+    { invoiceId: 29, paymentDate: "2026-10-03", amountKopecks: 1_230_000, method: "bank", documentNumber: "" },
+    { invoiceId: 30, paymentDate: "2026-10-09", amountKopecks: 1_000_000, method: "bank", documentNumber: "" }];
+  const input = { settings, entries, calculation, downtimes, expenses, invoices, payments,
+    meta: tools.defaultDocumentMeta("2026-09", 3, "2026-10-13") };
+  const original = structuredClone(input);
+  const before = tools.calculateSettlement("2026-09", calculation, invoices.slice(0, 2), expenses);
+  assert.equal(before.fixedRemainingKopecks, 1_250_000);
+  assert.equal(before.variableRemainingKopecks, 1_700_000);
+  const after = tools.calculateSettlement("2026-09", calculation, invoices, expenses);
+  assert.equal(after.totalInvoicedKopecks, 7_300_000);
+  assert.equal(after.fixedRemainingKopecks, 0);
+  assert.equal(after.variableRemainingKopecks, 0);
+  assert.equal(after.remainingToInvoiceKopecks, 0);
+  const html = tools.buildReconciliationHtml(input);
+  const table = html.match(/<table class="reconciliation-invoices">[\s\S]*?<\/table>/)[0];
+  assert.equal((table.match(/№ 30<br>/g) ?? []).length, 1);
+  assert.match(table, /№ 30<br>08\.10\.2026<\/td>\s*<td class="value">29[\s ]500,00<\/td>\s*<td class="value">10[\s ]000,00<\/td><td class="value">19[\s ]500,00/);
+  const daily = dailyDetail(html);
+  assert.match(daily, /№ 30 · 10\.09\.2026–10\.09\.2026: 29[\s ]500,00 руб/);
+  assert.equal((daily.match(/<td>10\.09\.2026<\/td>/g) ?? []).length, 1);
+  assert.match(daily, /<td class="value">2[\s ]138<\/td>/);
+  assert.doesNotMatch(daily, /№ 28|№ 29/);
+  assert.doesNotMatch(tools.buildRentActHtml(input), /топлив|округлен/i);
+  assert.deepEqual(input, original);
+});
+
+test("explicit unlinked records have no invented ranges in reconciliation or legacy period suggestions", () => {
+  const input = allocationInput(tools);
+  input.invoices = [{ ...input.invoices[0], allocationMode: "unlinked" }];
+  const original = structuredClone(input);
+  const html = tools.buildReconciliationHtml(input);
+  assert.match(html, /№ 201<br>10\.09\.2026<br>Без привязки к дням/);
+  assert.doesNotMatch(html, /Привязку суммы к датам нужно проверить/);
+  const daily = dailyDetail(html);
+  assert.doesNotMatch(daily, /№ 201/);
+  assert.match(daily, /Дни без связи со счётом/);
+  for (const day of ["10", "11", "12"]) {
+    assert.equal((daily.match(new RegExp(`<td>${day}\\.09\\.2026</td>`, "g")) ?? []).length, 1);
+  }
+  const suggestion = tools.suggestInvoicePeriods({ period: "2026-09", kind: "mixed", invoiceDate: "2026-10-13",
+    entries: input.entries, invoices: input.invoices, expenses: [], settings: input.settings });
+  assert.equal(suggestion.needsReview, false);
+  assert.deepEqual(suggestion.legacyInvoiceNumbers, []);
+  assert.equal(suggestion.periods[0].units, 820);
+  assert.equal(tools.fuelInvoiceForDate(input.invoices, "2026-09-10"), undefined);
+  assert.deepEqual(input, original);
+});
+
+test("mixed settlement components are counted for both allocation modes and reject inconsistent faces", () => {
+  const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS };
+  const calculation = tools.calculateRental("2026-09", [{ entryDate: "2026-09-10", units: 3_000 }], [], settings);
+  const mixed = { id: 1, invoiceNumber: "M", period: "2026-09", invoiceDate: "2026-10-01", kind: "mixed",
+    amountKopecks: 1_000_000, fixedAmountKopecks: 700_000, variableAmountKopecks: 300_000 };
+  for (const allocationMode of ["auto", "unlinked", undefined]) {
+    const settlement = tools.calculateSettlement("2026-09", calculation,
+      [{ ...mixed, allocationMode }], []);
+    assert.equal(settlement.totalInvoicedKopecks, 1_000_000);
+    assert.equal(settlement.fixedRemainingKopecks, 7_300_000);
+    assert.equal(settlement.variableRemainingKopecks, 3_700_000);
+  }
+  for (const changes of [{ fixedAmountKopecks: undefined }, { fixedAmountKopecks: 0 },
+    { variableAmountKopecks: -1 }, { amountKopecks: 1_000_001 }, { variableAmountKopecks: 300_000.5 }]) {
+    assert.throws(() => tools.calculateSettlement("2026-09", calculation,
+      [{ ...mixed, ...changes }], []), /части общего счёта/);
+  }
+});

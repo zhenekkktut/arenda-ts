@@ -9,7 +9,8 @@ const compiled = ts.transpileModule(source, { compilerOptions: {
 } }).outputText;
 const module = { exports: {} };
 new Function("exports", "module", compiled)(module.exports, module);
-const { proposeInvoiceAllocation: propose, validateInvoiceAllocation: validate } = module.exports;
+const { proposeInvoiceAllocation: propose, validateInvoiceAllocation: validate,
+  validateUnlinkedInvoice: validateUnlinked, normalizeInvoiceParts: parts } = module.exports;
 
 const entry = (day, units) => ({ entryDate: `2026-09-${String(day).padStart(2, "0")}`, units });
 const row = (day, amountKopecks) => ({ date: `2026-09-${String(day).padStart(2, "0")}`, amountKopecks });
@@ -221,4 +222,115 @@ test("zero rates, duplicate physical records and arithmetic overflow are handled
   const invalidDate = base({ invoiceDate: "2026-09-31" });
   assert.equal(propose(invalidDate).ready, false);
   assert.throws(() => validate(invalidDate, candidate([row(17, 1_230_000)])), /месяц и дату/);
+});
+
+test("explicit unlinked invoices reduce financial ceilings without claiming days or triggering legacy review", () => {
+  const old = { id: 1, invoiceNumber: "OLD", period: "2026-09", invoiceDate: "2026-09-20",
+    kind: "fixed", amountKopecks: 5_200_000, allocationMode: "unlinked",
+    // Even stray fields from an earlier version must not create a false link.
+    bottleStartDate: "2026-09-17", bottleEndDate: "2026-09-19",
+    ...candidate([row(17, 5_200_000)]) };
+  const input = base({ amountKopecks: 400_000, invoices: [old] });
+  const unchanged = structuredClone(input);
+  const result = propose(input);
+  assert.equal(result.needsReview, false);
+  assert.deepEqual(result.legacyInvoiceNumbers, []);
+  assert.deepEqual(result.bottleAllocations, [row(17, 400_000)]);
+  assert.equal(result.ready, true);
+  validate(input, accepted(result));
+  validateUnlinked(input);
+  assert.throws(() => validateUnlinked({ ...input, amountKopecks: 400_001 }), /превышает оставшуюся/);
+  assert.deepEqual(input, unchanged);
+});
+
+test("an unlinked invoice can be saved without daily entries and without silently classifying legacy invoices", () => {
+  const legacy = { id: 1, invoiceNumber: "OLD", period: "2026-09", invoiceDate: "2026-09-20",
+    kind: "fixed", amountKopecks: 3_120_000 };
+  const input = base({ entries: [], invoices: [legacy] });
+  const original = structuredClone(input);
+  assert.deepEqual(validateUnlinked(input), { allocationMode: "unlinked" });
+  assert.equal(propose(input).needsReview, true, "The explicit choice is required to skip a legacy review");
+  assert.deepEqual(input, original);
+  assert.throws(() => validateUnlinked({ ...input, invoiceDate: "2026-08-31" }), /начала выбранного/);
+  assert.throws(() => validateUnlinked({ ...input, invoiceDate: "2026-09-31" }), /месяц и дату/);
+});
+
+test("a mixed invoice allocates one total across the shared daily pool and consumes both component balances", () => {
+  const old = { id: 1, invoiceNumber: "OLD", period: "2026-09", invoiceDate: "2026-09-20",
+    kind: "fixed", amountKopecks: 4_350_000, allocationMode: "unlinked" };
+  const input = base({ kind: "mixed", amountKopecks: 2_950_000,
+    fixedAmountKopecks: 1_250_000, variableAmountKopecks: 1_700_000,
+    entries: [entry(17, 500), entry(18, 400)], invoices: [old] });
+  const result = propose(input);
+  assert.deepEqual(result.bottleAllocations, [row(17, 2_000_000), row(18, 950_000)]);
+  assert.equal(result.ready, true);
+  assert.equal(result.lastDayRemainingKopecks, 650_000);
+  validate(input, accepted(result));
+  validateUnlinked(input);
+  const saved = invoice(2, input.amountKopecks, result.bottleAllocations, { kind: "mixed",
+    fixedAmountKopecks: input.fixedAmountKopecks, variableAmountKopecks: input.variableAmountKopecks });
+  for (const kind of ["fixed", "variable", "mixed", "other"]) {
+    const next = propose({ ...input, kind, invoices: [old, saved] });
+    assert.equal(next.availableKopecks, 0, "A combined invoice has one face, not two independently billable records");
+    assert.equal(next.ready, false);
+  }
+});
+
+test("mixed invoices cannot borrow an exhausted component even when the total remains available", () => {
+  const previous = { id: 1, invoiceNumber: "OLD", period: "2026-09", invoiceDate: "2026-09-20",
+    kind: "fixed", amountKopecks: 5_500_000, allocationMode: "unlinked" };
+  const input = base({ kind: "mixed", entries: [entry(17, 2_000)], invoices: [previous],
+    amountKopecks: 800_000, fixedAmountKopecks: 400_000, variableAmountKopecks: 400_000 });
+  const result = propose(input);
+  assert.equal(result.coveredKopecks, 500_000);
+  assert.equal(result.ready, false);
+  assert.throws(() => validate(input, candidate([row(17, 800_000)])), /превышает оставшуюся/);
+  assert.throws(() => validateUnlinked(input), /превышает оставшуюся/);
+  const overVariable = { ...input, invoices: [], amountKopecks: 2_900_000,
+    fixedAmountKopecks: 1_000_000, variableAmountKopecks: 1_900_000 };
+  assert.throws(() => validateUnlinked(overVariable), /превышает оставшуюся/);
+});
+
+test("mixed fixed-floor supplements are bounded by the fixed component and the actual fixed remainder", () => {
+  const input = base({ kind: "mixed", entries: [entry(17, 100)], allowRentalSupplement: true,
+    amountKopecks: 3_000_000, fixedAmountKopecks: 2_000_000, variableAmountKopecks: 1_000_000 });
+  const result = propose(input);
+  assert.equal(result.rentalSupplementKopecks, 2_000_000);
+  assert.equal(result.uncoveredKopecks, 600_000);
+  assert.equal(result.ready, false, "A fixed-floor supplement cannot cover the variable component");
+  assert.throws(() => validate(input, candidate([row(17, 400_000)], 2_600_000)), /только в счёте постоянной части/);
+  const enough = { ...input, entries: [entry(17, 500)] };
+  const acceptedProposal = propose(enough);
+  assert.equal(acceptedProposal.rentalSupplementKopecks, 1_000_000);
+  assert.equal(acceptedProposal.ready, true);
+  validate(enough, accepted(acceptedProposal));
+});
+
+test("renumbering or explicitly unlinking an unchanged old face remains possible after the monthly target changes", () => {
+  const old = invoice(1, 1_230_000, [row(17, 580_000), row(18, 650_000)]);
+  const input = base({ invoices: [old], excludeInvoiceId: 1,
+    fixedTargetKopecks: 500_000, netRentKopecks: 500_000 });
+  const unchanged = structuredClone(input);
+  validateUnlinked(input);
+  validate(input, candidate(old.bottleAllocations));
+  assert.equal(propose(input).ready, true);
+  assert.throws(() => validateUnlinked({ ...input, amountKopecks: 1_230_001 }), /превышает оставшуюся/);
+  assert.throws(() => validateUnlinked({ ...input, kind: "variable" }), /превышает оставшуюся/);
+  assert.throws(() => validateUnlinked({ ...input, excludeInvoiceId: undefined }), /превышает оставшуюся/);
+  assert.deepEqual(input, unchanged);
+});
+
+test("mixed component metadata is exact, whole kopecks and requires both positive parts", () => {
+  assert.deepEqual(parts({ kind: "fixed", amountKopecks: 1_230_000 }),
+    { fixedAmountKopecks: 1_230_000, variableAmountKopecks: 0 });
+  assert.deepEqual(parts({ kind: "other", amountKopecks: 1_230_000 }),
+    { fixedAmountKopecks: 0, variableAmountKopecks: 0 });
+  const mixed = { kind: "mixed", amountKopecks: 2_950_000,
+    fixedAmountKopecks: 1_250_000, variableAmountKopecks: 1_700_000 };
+  assert.deepEqual(parts(mixed), { fixedAmountKopecks: 1_250_000, variableAmountKopecks: 1_700_000 });
+  for (const changes of [{ fixedAmountKopecks: undefined }, { variableAmountKopecks: 0 },
+    { fixedAmountKopecks: -1 }, { variableAmountKopecks: 1_700_000.5 }, { amountKopecks: 2_950_001 },
+    { fixedAmountKopecks: Number.MAX_SAFE_INTEGER, variableAmountKopecks: 1 }]) {
+    assert.throws(() => parts({ ...mixed, ...changes }), Error);
+  }
 });

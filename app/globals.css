@@ -4421,3 +4421,281 @@ html[data-theme="dark"] .motion-settings-row [data-slot="switch"]:focus-visible 
   [data-slot="alert-dialog-content"] { animation: none !important; }
   .month-day { transition: none; }
 }
+
+/* Liquid Glass в навигации; финансовые данные остаются на плотных поверхностях. */
+:root {
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --background: #f2f3f7;
+  --foreground: #192130;
+  --card: #fff;
+  --card-foreground: #192130;
+  --primary: #006fe6;
+  --primary-foreground: #fff;
+  --muted: #f2f4f8;
+  --muted-foreground: #657185;
+  --border: #e2e7ee;
+  --app-surface-shadow: 0 1px 2px rgba(24, 46, 70, .025), 0 7px 22px rgba(24, 46, 70, .035);
+  --app-selected-surface: #edf6ff;
+  --app-selected-border: #76afe1;
+  --app-selected-text: #155f9d;
+  --app-glass-solid: #fafcff;
+  --app-glass-fill: rgba(250, 252, 255, .84);
+  --app-glass-border: rgba(255, 255, 255, .92);
+  --app-glass-shadow: 0 8px 26px rgba(35, 57, 93, .12), inset 0 1px 0 rgba(255, 255, 255, .75);
+}
+
+.app-root {
+  padding-bottom: calc(6.5rem + env(safe-area-inset-bottom));
+  background:
+    radial-gradient(ellipse 30rem 20rem at 100% 0, rgba(91, 158, 245, .14), transparent 78%),
+    radial-gradient(ellipse 24rem 18rem at 0 9rem, rgba(140, 119, 213, .065), transparent 76%),
+    var(--background);
+}
+
+.app-header {
+  border-bottom-color: rgba(215, 226, 237, .8);
+  background: var(--app-glass-solid);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.app-header h1 { font-weight: 750; letter-spacing: -.025em; }
+
+.brand-mark {
+  border: 1px solid rgba(255, 255, 255, .3);
+  border-radius: .95rem;
+  background: linear-gradient(145deg, #3299fa, #0766d8);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .25), 0 3px 9px rgba(58, 131, 210, .11);
+}
+
+.month-bar,
+.settlement-hero,
+.app-root .panel,
+button.summary-calendar {
+  border: 1px solid var(--border);
+  border-radius: 1.4rem;
+  background: var(--card);
+  box-shadow: var(--app-surface-shadow);
+}
+
+.settlement-hero { border-color: #dce5f0; border-radius: 1.65rem; }
+.settlement-hero-heading { font-size: .78rem; letter-spacing: .015em; }
+.settlement-hero-result span { color: var(--muted-foreground); }
+.settlement-hero-result strong { font-size: clamp(2.15rem, 9vw, 3rem); }
+button.settlement-primary-action { border-color: var(--primary); border-radius: 999px; background: var(--primary); box-shadow: 0 4px 12px rgba(23, 111, 194, .12); }
+button.settlement-primary-action:disabled { box-shadow: none; }
+button.summary-calendar > svg:first-child { color: #4487bc; }
+.app-root [data-slot="button"] { min-height: 2.75rem; }
+.app-root :is(button, input, textarea, select):focus-visible { outline-offset: 3px; }
+button[data-slot="button"] { border-radius: 999px; font-weight: 650; }
+.month-picker { border-radius: 999px; background: var(--muted); }
+.header-actions :is(.settings-button, .export-button, .install-button) { border: 1px solid var(--border); border-radius: 999px; background: var(--card); }
+
+.app-root .invoice-card { border-color: var(--border); box-shadow: 0 2px 10px rgba(24, 46, 70, .025); }
+.invoice-card .invoice-amounts div { background: var(--muted); }
+.invoice-workspace-toolbar button[data-slot="button"] { border-radius: 999px; }
+
+.app-tabs {
+  right: auto;
+  bottom: calc(.65rem + env(safe-area-inset-bottom));
+  left: 50%;
+  width: min(38rem, calc(100% - 1.25rem)) !important;
+  min-height: 4.55rem;
+  padding: .38rem !important;
+  border: 1px solid var(--app-glass-border);
+  border-radius: 2rem;
+  background: var(--app-glass-solid) !important;
+  box-shadow: var(--app-glass-shadow);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  transform: translateX(-50%);
+}
+.app-tab { height: 3.65rem !important; border-radius: 1.6rem !important; color: #657185 !important; font-weight: 600 !important; }
+.app-tab::after { display: none; }
+.app-tab[data-state="active"] { color: #006bd9 !important; background: #e6f1ff !important; font-weight: 750 !important; }
+.app-tab[data-state="active"] svg { transform: none; }
+.app-quick-action { height: 3.65rem; justify-content: center; gap: .2rem; }
+.app-quick-action > span { width: 2.6rem; height: 2.6rem; margin-top: 0; border: 0; background: #0078ed; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .2), 0 3px 8px rgba(18, 112, 218, .18); }
+.app-quick-action small { color: #52647c; font-weight: 650; }
+
+.settings-dialog { background: var(--muted); }
+.settings-dialog .settings-section { padding: .95rem; border: 1px solid var(--border); border-radius: 1.2rem; background: var(--card); }
+.settings-dialog .settings-app-section { padding: .9rem; border: 1px solid var(--border); border-radius: 1.2rem; background: var(--card); }
+.settings-dialog .settings-section > strong,
+.settings-dialog .settings-section > div > strong { font-weight: 650; }
+.dialog-card { border: 1px solid var(--border); border-radius: 1.65rem; }
+.dialog-form :is(input, textarea),
+[data-slot="select-trigger"] { border-radius: .85rem; }
+.dialog-card [data-slot="dialog-title"] { font-weight: 750; letter-spacing: -.025em; }
+.app-root [data-slot="button"]:disabled,
+.dialog-card [data-slot="button"]:disabled { border-color: #dce2ea; color: #647084; background: #e8ecf2; opacity: 1; box-shadow: none; }
+
+/* Два режима привязки видны сразу, подробности раскрываются по необходимости. */
+.invoice-link-options {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .55rem;
+}
+
+.invoice-link-options :is(button, label) {
+  display: flex;
+  min-width: 0;
+  min-height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  gap: .45rem;
+  padding: .75rem .6rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--foreground);
+  background: var(--card);
+  font-size: .84rem;
+  line-height: 1.35;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.invoice-link-options :is(button, label):hover { background: var(--muted); }
+.invoice-link-options :is(button[aria-pressed="true"], button[data-state="checked"], label[data-selected="true"]) {
+  border-color: var(--app-selected-border);
+  color: var(--app-selected-text);
+  background: var(--app-selected-surface);
+  box-shadow: inset 0 0 0 1px var(--app-selected-border);
+  font-weight: 700;
+}
+.invoice-link-options :is(button, label) > svg { width: 1rem; height: 1rem; flex: 0 0 auto; }
+.invoice-link-options input[type="radio"] { width: 1rem; height: 1rem; min-height: 1rem; flex: 0 0 auto; accent-color: var(--primary); }
+.invoice-link-options :is(button, label):focus-visible,
+.invoice-link-options label:focus-within { outline: 3px solid var(--ring); outline-offset: 3px; }
+
+.invoice-components { display: grid; min-width: 0; gap: .7rem; }
+.invoice-components > label,
+.invoice-components > div:not(.invoice-component-total) {
+  display: grid;
+  min-width: 0;
+  gap: .4rem;
+  padding: .85rem;
+  border: 1px solid var(--border);
+  border-radius: .85rem;
+  background: var(--muted);
+}
+.invoice-components label { min-width: 0; }
+.invoice-components input { min-width: 0; width: 100%; background: var(--card); font-variant-numeric: tabular-nums; }
+.invoice-components :is(span, strong, small, p) { min-width: 0; overflow-wrap: anywhere; }
+.invoice-components :is(small, p) { margin: 0; color: var(--muted-foreground); font-size: .78rem; line-height: 1.45; }
+.invoice-component-total {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .4rem .8rem;
+  padding: .85rem .1rem .25rem;
+  border-top: 1px solid var(--border);
+  color: var(--foreground);
+  font-size: .9rem;
+  line-height: 1.4;
+}
+.invoice-component-total strong { font-size: 1.15rem; font-variant-numeric: tabular-nums; }
+.invoice-link-summary { min-width: 0; margin: 0; color: var(--muted-foreground); font-size: .82rem; line-height: 1.5; overflow-wrap: anywhere; }
+.invoice-link-summary strong { color: var(--foreground); font-variant-numeric: tabular-nums; }
+
+/* История раскрывается без движения длинных списков и сумм. */
+:is(.document-options, .entry-history, .document-archive) > summary {
+  min-height: 2.75rem;
+  align-content: center;
+  outline-offset: 3px;
+}
+:is(.document-options, .entry-history, .document-archive)[open] > :not(summary) { animation: app-fade-enter 160ms ease-out; }
+
+html[data-theme="dark"] {
+  --background: #10151f;
+  --foreground: #eef2f8;
+  --card: #1a222f;
+  --card-foreground: #eef2f8;
+  --muted: #232d3d;
+  --muted-foreground: #a4b1c4;
+  --primary: #69b0ff;
+  --primary-foreground: #0c2138;
+  --border: #303c50;
+  --app-surface-shadow: 0 2px 10px rgba(0, 0, 0, .1);
+  --app-selected-surface: #19354c;
+  --app-selected-border: #548db9;
+  --app-selected-text: #b7ddff;
+  --app-glass-solid: #1c2533;
+  --app-glass-fill: rgba(25, 35, 49, .86);
+  --app-glass-border: rgba(147, 169, 198, .23);
+  --app-glass-shadow: 0 8px 26px rgba(0, 0, 0, .22), inset 0 1px 0 rgba(194, 216, 244, .08);
+}
+html[data-theme="dark"] .app-root {
+  background:
+    radial-gradient(ellipse 30rem 20rem at 100% 0, rgba(69, 125, 217, .14), transparent 78%),
+    radial-gradient(ellipse 24rem 18rem at 0 9rem, rgba(120, 104, 202, .06), transparent 76%),
+    var(--background);
+}
+html[data-theme="dark"] .app-header { border-bottom-color: rgba(87, 108, 139, .25); background: var(--app-glass-solid); }
+html[data-theme="dark"] .month-bar,
+html[data-theme="dark"] .settlement-hero,
+html[data-theme="dark"] .app-root .panel,
+html[data-theme="dark"] button.summary-calendar { border-color: var(--border); background: var(--card); box-shadow: var(--app-surface-shadow); }
+html[data-theme="dark"] .settlement-hero { border-color: #304760; }
+html[data-theme="dark"] button.summary-calendar > svg:first-child { color: #8abae6; }
+html[data-theme="dark"] button.settlement-primary-action { border-color: var(--primary); color: var(--primary-foreground); background: var(--primary); box-shadow: none; }
+html[data-theme="dark"] .app-tabs { border-color: var(--app-glass-border); background: var(--app-glass-solid) !important; box-shadow: var(--app-glass-shadow); }
+html[data-theme="dark"] .app-tab { color: #afbdd0 !important; }
+html[data-theme="dark"] .app-tab[data-state="active"] { color: #abd3ff !important; background: #2c4665 !important; }
+html[data-theme="dark"] .app-quick-action > span { border: 0; color: #fff; background: #177de5; }
+html[data-theme="dark"] .app-quick-action small { color: #b4c2d5; }
+html[data-theme="dark"] .header-actions :is(.settings-button, .export-button, .install-button) { border-color: var(--border); background: var(--card); }
+html[data-theme="dark"] .settings-dialog { background: #111923; }
+html[data-theme="dark"] .field-label { color: var(--muted-foreground); }
+html[data-theme="dark"] .settings-dialog :is(.settings-section, .settings-app-section) { border-color: var(--border); background: var(--card); }
+html[data-theme="dark"] .app-root [data-slot="button"]:disabled,
+html[data-theme="dark"] .dialog-card [data-slot="button"]:disabled { border-color: #374459; color: #aebacf; background: #2a3444; opacity: 1; box-shadow: none; }
+
+/* Непрозрачные фоны выше остаются запасным вариантом для старого WebView. */
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .app-header,
+  html[data-theme="dark"] .app-header {
+    background: var(--app-glass-fill);
+    backdrop-filter: saturate(145%) blur(22px);
+    -webkit-backdrop-filter: saturate(145%) blur(22px);
+  }
+  .app-tabs,
+  html[data-theme="dark"] .app-tabs {
+    background: var(--app-glass-fill) !important;
+    backdrop-filter: saturate(155%) blur(26px);
+    -webkit-backdrop-filter: saturate(155%) blur(26px);
+  }
+  [data-slot="dialog-footer"],
+  [data-slot="alert-dialog-footer"],
+  html[data-theme="dark"] [data-slot="dialog-footer"],
+  html[data-theme="dark"] [data-slot="alert-dialog-footer"] {
+    border-top-color: var(--border);
+    background: var(--app-glass-fill);
+    backdrop-filter: saturate(145%) blur(20px);
+    -webkit-backdrop-filter: saturate(145%) blur(20px);
+  }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .app-header,
+  html[data-theme="dark"] .app-header,
+  [data-slot="dialog-footer"],
+  [data-slot="alert-dialog-footer"],
+  html[data-theme="dark"] [data-slot="dialog-footer"],
+  html[data-theme="dark"] [data-slot="alert-dialog-footer"] { background: var(--app-glass-solid); }
+  .app-tabs,
+  html[data-theme="dark"] .app-tabs { background: var(--app-glass-solid) !important; }
+}
+
+@media (max-width: 390px) {
+  .invoice-link-options { gap: .4rem; }
+  .invoice-link-options :is(button, label) { padding: .7rem .45rem; font-size: .8rem; }
+  .invoice-components > label,
+  .invoice-components > div:not(.invoice-component-total) { padding: .75rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  :is(.document-options, .entry-history, .document-archive)[open] > :not(summary) { animation: none; }
+}

@@ -42,6 +42,43 @@ const payment = (invoiceId, amountKopecks) => ({
   method: "bank", documentNumber: "ПП-1", note: "Поступивший платёж",
 });
 
+function historicalSeptember(overrides = {}) {
+  const store = fixture({
+    entries: [
+      { id: 1, entryDate: "2026-09-16", units: 2000, note: "" },
+      { id: 2, entryDate: "2026-09-17", units: 100, note: "" },
+      { id: 3, entryDate: "2026-09-18", units: 38, note: "" },
+    ],
+    invoices: [
+      { id: 8, period: PERIOD, invoiceNumber: "28", invoiceDate: "2026-09-26",
+        kind: "fixed", amountKopecks: 3_120_000, dueDate: null, note: "Часть постоянной аренды" },
+      { id: 9, period: PERIOD, invoiceNumber: "29", invoiceDate: "2026-10-02",
+        kind: "fixed", amountKopecks: 1_230_000, dueDate: null, note: "Часть постоянной аренды" },
+    ],
+    payments: [
+      { id: 8, invoiceId: 8, paymentDate: "2026-09-27", amountKopecks: 3_120_000,
+        method: "bank", documentNumber: "ПП-28", note: "" },
+      { id: 9, invoiceId: 9, paymentDate: "2026-10-03", amountKopecks: 1_230_000,
+        method: "bank", documentNumber: "ПП-29", note: "" },
+    ],
+    expenses: [{ id: 1, expenseDate: "2026-09-18", category: "fuel", payer: "customer",
+      amountKopecks: 1_250_000, method: "bank", documentNumber: "Т-1", note: "" }],
+    downtimes: [{ id: 1, kind: "technical", startDate: "2026-09-01", endDate: "2026-09-09",
+      reason: "Простой", basis: "Согласовано", note: "" }],
+    ...overrides,
+  });
+  store.closures = [{ period: PERIOD,
+    ...tools.calculateRental(PERIOD, store.entries, store.downtimes, store.settings),
+    closedAt: "2026-10-02T09:00:00Z" }];
+  return store;
+}
+
+const unlinked = (number, amountKopecks, kind = "fixed", extra = {}) => ({
+  action: "create_invoice", period: PERIOD, invoiceNumber: number,
+  invoiceDate: "2026-10-08", kind, amountKopecks,
+  allocationMode: "unlinked", dueDate: null, note: "", ...extra,
+});
+
 test("offline allocation metadata and no-trip actions preserve the phone ledger", async (t) => {
   const server = await createServer({ configFile: "offline/vite.config.ts", hmr: false,
     optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true }, appType: "custom" });
@@ -53,7 +90,7 @@ test("offline allocation metadata and no-trip actions preserve the phone ledger"
   const reset = (store = fixture()) => storage.set(KEY, JSON.stringify(store));
   const read = () => JSON.parse(storage.get(KEY));
   try {
-    const { saveOfflineAction: save, offlineDashboard } =
+    const { saveOfflineAction: save, offlineDashboard, normalizeOfflineStore } =
       await server.ssrLoadModule(path.resolve("app/rental-app.tsx"));
     const { proposeInvoiceAllocation } =
       await server.ssrLoadModule(path.resolve("app/invoice-allocation.ts"));
@@ -85,10 +122,291 @@ test("offline allocation metadata and no-trip actions preserve the phone ledger"
       assert.deepEqual(dashboard.invoices[0], oldInvoice);
       assert.deepEqual(dashboard.payments, [oldPayment]);
       assert.equal(dashboard.invoices[0].allocationVersion, undefined);
+      assert.equal(dashboard.invoices[0].allocationMode, undefined);
       save({ action: "save_entry", entryDate: "2026-09-20", units: 90, note: "Новая запись" });
       assert.deepEqual(read().invoices, [oldInvoice]);
       assert.deepEqual(read().payments, [oldPayment]);
       assert.equal(read().version, 6);
+    });
+
+    await t.test("backup import preserves new mixed and automatic fields while leaving every old face and receipt intact", () => {
+      const source = historicalSeptember();
+      const mixed = { ...unlinked("30", 2_950_000, "mixed", {
+        fixedAmountKopecks: 1_250_000, variableAmountKopecks: 1_700_000,
+      }), id: 10 };
+      delete mixed.action;
+      const automatic = { ...partial(), id: 11, invoiceNumber: "31", allocationMode: "auto" };
+      delete automatic.action;
+      source.invoices.push(mixed, automatic);
+      source.payments.push({ id: 10, invoiceId: 10, paymentDate: "2026-10-09", amountKopecks: 1_000_000,
+        method: "bank", documentNumber: "ПП-30", note: "Частичная оплата общего счёта" });
+      const original = structuredClone(source);
+      const normalized = normalizeOfflineStore(JSON.parse(JSON.stringify(source)));
+      assert.deepEqual(source, original, "Reading a backup must not mutate the supplied object");
+      assert.deepEqual(normalized.invoices, original.invoices);
+      assert.deepEqual(normalized.payments, original.payments);
+      assert.deepEqual(normalized.entries, original.entries);
+      assert.equal(normalized.invoices[0].allocationMode, undefined);
+      assert.equal(normalized.invoices[1].allocationMode, undefined);
+      reset(normalized);
+      const dashboard = offlineDashboard(PERIOD);
+      assert.deepEqual(dashboard.invoices.find((row) => row.id === mixed.id), mixed);
+      assert.deepEqual(dashboard.invoices.find((row) => row.id === automatic.id), automatic);
+      assert.deepEqual(dashboard.payments.sort((a, b) => a.id - b.id), original.payments);
+    });
+
+    await t.test("invalid new backup records are rejected before replacing the existing phone store", () => {
+      reset(historicalSeptember());
+      const original = storage.get(KEY);
+      const validMixed = { ...unlinked("30", 2_950_000, "mixed", {
+        fixedAmountKopecks: 1_250_000, variableAmountKopecks: 1_700_000,
+      }), id: 10 };
+      delete validMixed.action;
+      const validAuto = { ...partial(), id: 10, allocationMode: "auto" };
+      delete validAuto.action;
+      const invalid = [
+        { ...validMixed, fixedAmountKopecks: 1_250_001 },
+        { ...validMixed, variableAmountKopecks: 0 },
+        { ...validMixed, allocationMode: undefined },
+        { ...validMixed, allocationMode: "guess" },
+        { ...validMixed, invoiceDate: "2026-02-30" },
+        { ...validMixed, period: "2026-13" },
+        { ...validMixed, bottleStartDate: "2026-09-16" },
+        { ...validMixed, allocationVersion: 1, bottleAllocations: [], rentalSupplementKopecks: 0 },
+        { ...validAuto, allocationVersion: 2 },
+        { ...validAuto, bottleAllocations: undefined },
+        { ...validAuto, bottleAllocations: [{ date: "2026-09-31", amountKopecks: 1_230_000 }] },
+        { ...validAuto, bottleAllocations: [{ date: "2026-09-17", amountKopecks: 1.5 }] },
+        { ...validAuto, rentalSupplementKopecks: -1 },
+      ];
+      for (const invoice of invalid) {
+        const supplied = historicalSeptember();
+        supplied.invoices.push(invoice);
+        const unchanged = structuredClone(supplied);
+        assert.throws(() => {
+          // The importer normalizes completely before writing localStorage.
+          const normalized = normalizeOfflineStore(JSON.parse(JSON.stringify(supplied)));
+          storage.set(KEY, JSON.stringify(normalized));
+        });
+        assert.equal(storage.get(KEY), original);
+        assert.deepEqual(supplied, unchanged);
+      }
+    });
+
+    await t.test("a combined unlinked invoice closes both September balances without rewriting paid old invoices", () => {
+      reset(historicalSeptember());
+      const original = read();
+      const before = offlineDashboard(PERIOD);
+      assert.deepEqual(before.invoices.sort((a, b) => a.id - b.id), original.invoices);
+      save(unlinked("30", 2_950_000, "mixed", {
+        fixedAmountKopecks: 1_250_000, variableAmountKopecks: 1_700_000,
+      }));
+      const current = read();
+      const saved = current.invoices.find((row) => row.invoiceNumber === "30");
+      assert.equal(current.invoices.length, 3, "One bank invoice must stay one invoice with one ID");
+      assert.deepEqual(current.invoices.filter((row) => row.id !== saved.id), original.invoices);
+      assert.deepEqual(current.payments, original.payments);
+      assert.deepEqual(current.entries, original.entries);
+      assert.equal(saved.kind, "mixed");
+      assert.equal(saved.amountKopecks, 2_950_000);
+      assert.equal(saved.fixedAmountKopecks, 1_250_000);
+      assert.equal(saved.variableAmountKopecks, 1_700_000);
+      assert.equal(saved.allocationMode, "unlinked");
+      assert.equal(saved.bottleStartDate, undefined);
+      assert.equal(saved.allocationVersion, undefined);
+      const raw = tools.calculateRental(PERIOD, current.entries, current.downtimes, current.settings);
+      const settlement = tools.calculateSettlement(PERIOD, raw, current.invoices, current.expenses);
+      assert.equal(settlement.netRentKopecks, 7_300_000);
+      assert.equal(settlement.fixedRemainingKopecks, 0);
+      assert.equal(settlement.variableRemainingKopecks, 0);
+      assert.equal(settlement.remainingToInvoiceKopecks, 0);
+      save(payment(saved.id, saved.amountKopecks));
+      assert.equal(read().payments.filter((row) => row.invoiceId === saved.id).length, 1);
+      assert.equal(offlineDashboard(PERIOD).payments.reduce((sum, row) => sum + row.amountKopecks, 0), 7_300_000);
+      const roundTrip = JSON.parse(JSON.stringify(read()));
+      reset(roundTrip);
+      assert.deepEqual(offlineDashboard(PERIOD).invoices.find((row) => row.id === saved.id), saved);
+      assert.deepEqual(read().payments, roundTrip.payments);
+    });
+
+    await t.test("explicitly unlinking an automatic paid invoice releases dates and clears stale day metadata", () => {
+      reset();
+      save({ ...partial(), allocationMode: "auto" });
+      save(payment(1, 300_000));
+      const original = read();
+      const linked = original.invoices[0];
+      assert.equal(day18().days[0].alreadyAllocatedKopecks, 650_000);
+      save({ ...linked, action: "update_invoice", allocationMode: "unlinked" });
+      const saved = read().invoices[0];
+      assert.equal(saved.id, linked.id);
+      assert.equal(saved.amountKopecks, linked.amountKopecks);
+      assert.equal(saved.invoiceDate, linked.invoiceDate);
+      assert.equal(saved.allocationMode, "unlinked");
+      for (const key of ["bottleStartDate", "bottleEndDate", "allocationVersion",
+        "bottleAllocations", "rentalSupplementKopecks"]) {
+        assert.equal(saved[key], undefined, `Unlinked invoices must not retain ${key}`);
+      }
+      assert.deepEqual(read().payments, original.payments);
+      assert.deepEqual(read().entries, original.entries);
+      assert.equal(day18().needsReview, false);
+      assert.equal(day18().days[0].alreadyAllocatedKopecks, 0);
+      assert.equal(day18().availableKopecks, 1_020_000);
+    });
+
+    await t.test("unchanged old invoice money can be explicitly unlinked after reopening without changing receipts", () => {
+      reset(historicalSeptember());
+      const original = read();
+      save({ action: "reopen_month", period: PERIOD });
+      const old = original.invoices[0];
+      save({ ...old, action: "update_invoice", allocationMode: "unlinked" });
+      assert.equal(read().invoices.find((row) => row.id === old.id).amountKopecks, old.amountKopecks);
+      assert.equal(read().invoices.find((row) => row.id === old.id).invoiceDate, old.invoiceDate);
+      assert.deepEqual(read().payments, original.payments);
+      assert.deepEqual(read().invoices.find((row) => row.id !== old.id), original.invoices[1]);
+    });
+
+    await t.test("an old paid variable face survives reopening and unlinking after a changed monthly fuel calculation", () => {
+      const historical = historicalSeptember();
+      const oldVariable = { id: 10, period: PERIOD, invoiceNumber: "30", invoiceDate: "2026-10-02",
+        kind: "variable", amountKopecks: 2_952_000, bottleStartDate: "2026-09-17",
+        bottleEndDate: "2026-09-18", dueDate: null, note: "Старая переменная часть" };
+      historical.invoices.push(oldVariable);
+      historical.payments.push({ id: 10, invoiceId: 10, paymentDate: "2026-10-03", amountKopecks: 2_952_000,
+        method: "bank", documentNumber: "ПП-30", note: "" });
+      reset(historical);
+      save({ action: "reopen_month", period: PERIOD });
+      save({ ...oldVariable, action: "update_invoice", allocationMode: "unlinked" });
+      const saved = read().invoices.find((row) => row.id === oldVariable.id);
+      assert.equal(saved.kind, oldVariable.kind);
+      assert.equal(saved.amountKopecks, oldVariable.amountKopecks);
+      assert.equal(saved.invoiceDate, oldVariable.invoiceDate);
+      assert.equal(saved.allocationMode, "unlinked");
+      assert.equal(saved.bottleStartDate, undefined);
+      assert.deepEqual(read().payments, historical.payments);
+      assert.deepEqual(read().invoices.filter((row) => row.id !== oldVariable.id), historical.invoices.slice(0, 2));
+    });
+
+    await t.test("moving an unchanged variable face to a different month is still a new monthly financial decision", () => {
+      const historical = historicalSeptember();
+      const oldVariable = { id: 10, period: PERIOD, invoiceNumber: "30", invoiceDate: "2026-10-02",
+        kind: "variable", amountKopecks: 200_000, dueDate: null, note: "" };
+      historical.invoices.push(oldVariable);
+      historical.entries.push({ id: 4, entryDate: "2026-10-01", units: 2500, note: "" });
+      reset(historical);
+      rejectWithoutWrite({ ...oldVariable, action: "update_invoice", period: "2026-10",
+        invoiceDate: "2026-10-13", allocationMode: "unlinked" });
+    });
+
+    await t.test("a combined automatic invoice reserves its face once and keeps both parts through delete and undo", () => {
+      const historical = historicalSeptember();
+      historical.invoices = historical.invoices.map((row) => ({ ...row, allocationMode: "unlinked" }));
+      reset(historical);
+      const data = offlineDashboard(PERIOD);
+      const raw = tools.calculateRental(PERIOD, data.entries, data.downtimes, data.settings);
+      const settlement = tools.calculateSettlement(PERIOD, raw, data.invoices, data.expenses);
+      const proposal = proposeInvoiceAllocation({ period: PERIOD, invoiceDate: "2026-10-08",
+        kind: "mixed", amountKopecks: 2_950_000, fixedAmountKopecks: 1_250_000,
+        variableAmountKopecks: 1_700_000, entries: data.entries, invoices: data.invoices,
+        settings: data.settings, fixedTargetKopecks: settlement.fixedTargetKopecks,
+        netRentKopecks: settlement.netRentKopecks, allowRentalSupplement: true });
+      assert.equal(proposal.ready, true);
+      assert.equal(proposal.needsReview, false);
+      save(invoice("30", 2_950_000, proposal.bottleAllocations, "mixed", {
+        allocationMode: "auto", invoiceDate: "2026-10-08", fixedAmountKopecks: 1_250_000,
+        variableAmountKopecks: 1_700_000, rentalSupplementKopecks: proposal.rentalSupplementKopecks,
+      }));
+      const saved = read().invoices.find((row) => row.invoiceNumber === "30");
+      assert.equal(saved.bottleAllocations.reduce((sum, row) => sum + row.amountKopecks, 0)
+        + saved.rentalSupplementKopecks, saved.amountKopecks);
+      save(payment(saved.id, 800_000));
+      const receipts = read().payments.filter((row) => row.invoiceId === saved.id);
+      save({ action: "delete_invoice", id: saved.id });
+      assert.equal(read().payments.some((row) => row.invoiceId === saved.id), false);
+      save({ action: "restore_invoice", invoice: saved, payments: receipts });
+      const restored = read().invoices.find((row) => row.invoiceNumber === "30");
+      assert.deepEqual(restored, saved);
+      assert.deepEqual(read().payments.filter((row) => row.invoiceId === restored.id), receipts);
+      assert.deepEqual(read().entries, historical.entries);
+    });
+
+    await t.test("unlinked mode keeps financial and closing guards even though it needs no delivery days", () => {
+      reset(historicalSeptember());
+      rejectWithoutWrite(unlinked("30", 1_250_001));
+      rejectWithoutWrite(unlinked("30", 1_700_000, "variable"));
+      rejectWithoutWrite(unlinked("30", 2_950_000, "mixed", {
+        fixedAmountKopecks: 1_249_999, variableAmountKopecks: 1_700_001,
+      }));
+      save({ action: "reopen_month", period: PERIOD });
+      rejectWithoutWrite(unlinked("30", 2_950_000, "mixed", {
+        fixedAmountKopecks: 1_250_000, variableAmountKopecks: 1_700_000,
+      }));
+      save(unlinked("30", 1_250_000));
+      rejectWithoutWrite(unlinked("31", 1_700_000, "variable"));
+      save({ action: "close_month", period: PERIOD });
+      save(unlinked("31", 1_700_000, "variable"));
+      assert.equal(read().invoices.length, 4);
+    });
+
+    await t.test("new automatic invoices enforce the same part and closing limits as unlinked invoices", () => {
+      reset(historicalSeptember({ invoices: historicalSeptember().invoices.map((row) => ({
+        ...row, allocationMode: "unlinked",
+      })) }));
+      const automatic = (number, amountKopecks, kind = "fixed", extra = {}) => invoice(number,
+        amountKopecks, [{ date: "2026-09-16", amountKopecks }], kind,
+        { allocationMode: "auto", invoiceDate: "2026-10-08", ...extra });
+      rejectWithoutWrite(automatic("30", 1_250_001));
+      rejectWithoutWrite(automatic("30", 1_700_000, "variable"));
+      save({ action: "reopen_month", period: PERIOD });
+      rejectWithoutWrite(automatic("30", 2_950_000, "mixed", {
+        fixedAmountKopecks: 1_250_000, variableAmountKopecks: 1_700_000,
+      }));
+      save(automatic("30", 1_250_000));
+      rejectWithoutWrite(automatic("31", 1_700_000, "variable"));
+      save({ action: "close_month", period: PERIOD });
+      save(automatic("31", 1_700_000, "variable"));
+      assert.equal(read().invoices.length, 4);
+      assert.equal(read().invoices.filter((row) => row.allocationMode === "auto")
+        .reduce((sum, row) => sum + row.bottleAllocations.reduce((total, claim) => total + claim.amountKopecks, 0), 0), 2_950_000);
+    });
+
+    await t.test("undo of an unlinked invoice restores its mode and payment after another invoice reuses the ID", () => {
+      reset(historicalSeptember());
+      save(unlinked("30", 100_000));
+      const removed = read().invoices.find((row) => row.invoiceNumber === "30");
+      save(payment(removed.id, 75_000));
+      const receipts = read().payments.filter((row) => row.invoiceId === removed.id);
+      save({ action: "delete_invoice", id: removed.id });
+      save(unlinked("31", 100_000));
+      assert.equal(read().invoices.find((row) => row.invoiceNumber === "31").id, removed.id);
+      save(payment(removed.id, 50_000));
+      save({ action: "restore_invoice", invoice: removed, payments: receipts });
+      const restored = read().invoices.find((row) => row.invoiceNumber === "30");
+      assert.notEqual(restored.id, removed.id);
+      assert.equal(restored.allocationMode, "unlinked");
+      assert.equal(restored.allocationVersion, undefined);
+      assert.equal(restored.bottleAllocations, undefined);
+      assert.equal(restored.amountKopecks, removed.amountKopecks);
+      assert.equal(read().payments.find((row) => row.invoiceId === restored.id).amountKopecks, 75_000);
+      assert.equal(read().payments.find((row) => row.invoiceId === removed.id).amountKopecks, 50_000);
+      assert.equal(new Set(read().payments.map((row) => row.id)).size, read().payments.length);
+    });
+
+    await t.test("malformed mixed parts and unknown modes never change saved invoices or payments", () => {
+      reset(historicalSeptember());
+      for (const [fixedAmountKopecks, variableAmountKopecks] of [
+        [0, 2_950_000], [2_950_000, 0], [1_250_000, 1_700_001],
+        [-1, 2_950_001], [1_250_000.5, 1_699_999.5], [1_250_000, undefined],
+      ]) {
+        rejectWithoutWrite(unlinked("30", 2_950_000, "mixed", { fixedAmountKopecks, variableAmountKopecks }));
+      }
+      rejectWithoutWrite(unlinked("30", 1_250_000, "fixed", { allocationMode: "guess" }));
+      rejectWithoutWrite(unlinked("30", 1_250_000, "fixed", { period: "2026-13" }));
+      rejectWithoutWrite(unlinked("30", 1_250_000, "fixed", { invoiceDate: "2026-02-30" }));
+      rejectWithoutWrite(unlinked("30", 2_950_000, "mixed", {
+        fixedAmountKopecks: 1_250_000, variableAmountKopecks: 1_700_000, allocationMode: undefined,
+      }));
+      assert.deepEqual(read().invoices, historicalSeptember().invoices);
+      assert.deepEqual(read().payments, historicalSeptember().payments);
     });
 
     await t.test("a partial 17/18 invoice stores exact daily money and keeps receipts when reviewed", () => {

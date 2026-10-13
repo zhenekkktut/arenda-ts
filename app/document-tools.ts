@@ -72,6 +72,9 @@ type PaymentLike = {
   documentNumber: string;
 };
 type InvoiceLike = { id: number; invoiceNumber: string; invoiceDate?: string; period?: string; kind?: string; actNumber?: string; amountKopecks?: number; bottleStartDate?: string; bottleEndDate?: string; note?: string;
+  fixedAmountKopecks?: number;
+  variableAmountKopecks?: number;
+  allocationMode?: "auto" | "unlinked";
   allocationVersion?: number;
   bottleAllocations?: { date: string; amountKopecks: number }[];
   rentalSupplementKopecks?: number;
@@ -84,6 +87,14 @@ type ExpenseLike = {
   documentNumber: string;
   note: string;
 };
+
+function mixedInvoiceParts(invoice: InvoiceLike) {
+  const fixed = invoice.fixedAmountKopecks;
+  const variable = invoice.variableAmountKopecks;
+  return Number.isSafeInteger(fixed) && Number.isSafeInteger(variable) &&
+    (fixed ?? 0) > 0 && (variable ?? 0) > 0 && Number.isSafeInteger(fixed! + variable!) &&
+    fixed! + variable! === invoice.amountKopecks ? { fixed: fixed!, variable: variable! } : null;
+}
 
 export const DEFAULT_DOCUMENT_SETTINGS: DocumentSettings = {
   city: "Выборг",
@@ -416,17 +427,19 @@ function rentActBody(input: OfficialDocumentInput) {
 }
 
 export function sharedBottlePeriodParts(
-  first: Pick<InvoiceLike, "kind" | "bottleStartDate" | "bottleEndDate">,
-  second: Pick<InvoiceLike, "kind" | "bottleStartDate" | "bottleEndDate">,
+  first: Pick<InvoiceLike, "kind" | "bottleStartDate" | "bottleEndDate" | "allocationMode">,
+  second: Pick<InvoiceLike, "kind" | "bottleStartDate" | "bottleEndDate" | "allocationMode">,
 ) {
-  return Boolean(first.bottleStartDate && first.bottleEndDate && second.bottleStartDate && second.bottleEndDate &&
+  return Boolean(first.allocationMode !== "unlinked" && second.allocationMode !== "unlinked" &&
+    first.bottleStartDate && first.bottleEndDate && second.bottleStartDate && second.bottleEndDate &&
     first.bottleStartDate <= second.bottleEndDate && first.bottleEndDate >= second.bottleStartDate &&
     ((first.kind === "fixed" && second.kind === "variable") ||
       (first.kind === "variable" && second.kind === "fixed")));
 }
 
 export function fuelInvoiceForDate(invoices: InvoiceLike[], date: string) {
-  const matching = invoices.filter((invoice) => invoice.bottleStartDate && invoice.bottleEndDate &&
+  const matching = invoices.filter((invoice) => invoice.allocationMode !== "unlinked" &&
+    invoice.bottleStartDate && invoice.bottleEndDate &&
     invoice.bottleStartDate <= date && invoice.bottleEndDate >= date);
   if (matching.length === 1) return matching[0].id;
   if (matching.length === 2 && sharedBottlePeriodParts(matching[0], matching[1])) {
@@ -438,7 +451,7 @@ export function fuelInvoiceForDate(invoices: InvoiceLike[], date: string) {
 
 export function suggestInvoicePeriods(input: {
   period: string;
-  kind: "fixed" | "variable" | "other";
+  kind: "fixed" | "variable" | "mixed" | "other";
   invoiceDate: string;
   entries: EntryLike[];
   invoices: InvoiceLike[];
@@ -482,7 +495,8 @@ export function suggestInvoicePeriods(input: {
   result.hasRelevantDays = days.size > 0;
   const blockingRanges: { start: string; end: string }[] = [];
   for (const invoice of input.invoices) {
-    if (invoice.id === input.excludeInvoiceId || (invoice.period && invoice.period !== input.period)) continue;
+    if (invoice.id === input.excludeInvoiceId || invoice.allocationMode === "unlinked" ||
+        (invoice.period && invoice.period !== input.period)) continue;
     const sharesPart = (input.kind === "fixed" && invoice.kind === "variable") ||
       (input.kind === "variable" && invoice.kind === "fixed");
     if (sharesPart) continue;
@@ -562,10 +576,19 @@ export function calculateSettlement(
   const remainingToInvoiceKopecks = Math.max(0, netRentKopecks - totalInvoicedKopecks);
   const fixedTargetKopecks = fuel.calculation.baseKopecks;
   const variableTargetKopecks = fuel.calculation.variableKopecks;
-  const fixedInvoiced = periodInvoices.filter((invoice) => invoice.kind === "fixed")
-    .reduce((sum, invoice) => sum + (invoice.amountKopecks ?? 0), 0);
-  const variableInvoiced = periodInvoices.filter((invoice) => invoice.kind === "variable")
-    .reduce((sum, invoice) => sum + (invoice.amountKopecks ?? 0), 0);
+  let fixedInvoiced = 0;
+  let variableInvoiced = 0;
+  for (const invoice of periodInvoices) {
+    if (invoice.kind === "mixed") {
+      const parts = mixedInvoiceParts(invoice);
+      if (!parts) {
+        throw new Error("Проверьте постоянную и переменную части общего счёта: их сумма должна совпадать с суммой счёта");
+      }
+      fixedInvoiced += parts.fixed;
+      variableInvoiced += parts.variable;
+    } else if (invoice.kind === "fixed") fixedInvoiced += invoice.amountKopecks ?? 0;
+    else if (invoice.kind === "variable") variableInvoiced += invoice.amountKopecks ?? 0;
+  }
   return { ...fuel, totalInvoicedKopecks, netRentKopecks, remainingToInvoiceKopecks,
     fixedTargetKopecks, variableTargetKopecks,
     fixedRemainingKopecks: Math.min(remainingToInvoiceKopecks, Math.max(0, fixedTargetKopecks - fixedInvoiced)),
@@ -588,7 +611,8 @@ function reconciliationPages(input: OfficialDocumentInput) {
         expense.expenseDate < b.start || expense.expenseDate > b.end || expense.expenseDate > asOf) continue;
     fuelByDate.set(expense.expenseDate, (fuelByDate.get(expense.expenseDate) ?? 0) + expense.amountKopecks);
   }
-  const validRange = (invoice: InvoiceLike) => Boolean(invoice.bottleStartDate && invoice.bottleEndDate &&
+  const validRange = (invoice: InvoiceLike) => Boolean(invoice.allocationMode !== "unlinked" &&
+    invoice.bottleStartDate && invoice.bottleEndDate &&
     invoice.bottleStartDate >= b.start && invoice.bottleEndDate <= b.end &&
     invoice.bottleStartDate <= invoice.bottleEndDate);
   const entriesByDate = new Map<string, number>();
@@ -632,8 +656,11 @@ function reconciliationPages(input: OfficialDocumentInput) {
   const supplementCeiling = validMonthGross && Number.isSafeInteger(fixedTarget)
     ? Math.max(0, fixedTarget - rawMonthGross) : 0;
   for (const invoice of invoices) {
+    if (invoice.allocationMode === "unlinked") continue;
     if (!hasAllocationMetadata(invoice)) continue;
     invalidAllocations.add(invoice.id);
+    const mixedParts = invoice.kind === "mixed" ? mixedInvoiceParts(invoice) : null;
+    if (invoice.kind === "mixed" && !mixedParts) continue;
     if (invoice.allocationVersion !== 1 || !Array.isArray(invoice.bottleAllocations) ||
         !Number.isSafeInteger(invoice.amountKopecks) || (invoice.amountKopecks ?? 0) <= 0 ||
         !isValidDate(invoice.invoiceDate) || invoice.invoiceDate < b.start ||
@@ -642,7 +669,8 @@ function reconciliationPages(input: OfficialDocumentInput) {
     const dates = new Set<string>();
     let allocationTotal = supplement;
     const valid = Number.isSafeInteger(supplement) && supplement >= 0 &&
-      (supplement === 0 || (invoice.kind === "fixed" && supplement <= supplementCeiling)) &&
+      (supplement === 0 || ((invoice.kind === "fixed" ||
+        (mixedParts && supplement <= mixedParts.fixed)) && supplement <= supplementCeiling)) &&
       invoice.bottleAllocations.every((part) => {
       if (!part || !isValidDate(part.date) || part.date < b.start || part.date > b.end ||
           (s.rentalStart && part.date < s.rentalStart) || (s.rentalEnd && part.date > s.rentalEnd) ||
@@ -700,7 +728,7 @@ function reconciliationPages(input: OfficialDocumentInput) {
     const invoiceAmount = invoice.amountKopecks ?? 0;
     const paid = payments.filter((payment) => payment.invoiceId === invoice.id)
       .reduce((sum, payment) => sum + payment.amountKopecks, 0);
-    invoiceRows.push(`<tr><td>№ ${escapeHtml(invoice.invoiceNumber)}<br>${invoice.invoiceDate ? shortDate(invoice.invoiceDate) : ""}${invalidAllocations.has(invoice.id) ? "<br>Привязку суммы к датам нужно проверить" : ""}</td>
+    invoiceRows.push(`<tr><td>№ ${escapeHtml(invoice.invoiceNumber)}<br>${invoice.invoiceDate ? shortDate(invoice.invoiceDate) : ""}${invoice.allocationMode === "unlinked" ? "<br>Без привязки к дням" : invalidAllocations.has(invoice.id) ? "<br>Привязку суммы к датам нужно проверить" : ""}</td>
       <td class="value">${rubles(invoiceAmount)}</td>
       <td class="value">${rubles(paid)}</td><td class="value">${rubles(invoiceAmount - paid)}</td></tr>`);
     if (!range || invalidAllocations.has(invoice.id)) continue;

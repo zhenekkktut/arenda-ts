@@ -1,4 +1,6 @@
 export type InvoiceBottleAllocation = { date: string; amountKopecks: number };
+export type InvoiceAllocationMode = "auto" | "unlinked";
+export type InvoiceKind = "fixed" | "variable" | "mixed" | "other";
 
 export type AllocationInvoiceLike = {
   id: number;
@@ -7,6 +9,9 @@ export type AllocationInvoiceLike = {
   invoiceDate?: string;
   kind?: string;
   amountKopecks?: number;
+  fixedAmountKopecks?: number;
+  variableAmountKopecks?: number;
+  allocationMode?: InvoiceAllocationMode;
   bottleStartDate?: string;
   bottleEndDate?: string;
   allocationVersion?: number;
@@ -18,7 +23,9 @@ export type InvoiceAllocationInput = {
   period: string;
   invoiceDate: string;
   amountKopecks: number;
-  kind: "fixed" | "variable" | "other";
+  kind: InvoiceKind;
+  fixedAmountKopecks?: number;
+  variableAmountKopecks?: number;
   entries: { entryDate: string; units: number }[];
   invoices: AllocationInvoiceLike[];
   settings: { rentalStart: string; rentalEnd: string; rateKopecks: number };
@@ -68,6 +75,83 @@ const invoiceLabel = (invoice: AllocationInvoiceLike) => String(invoice.invoiceN
 const order = (first: AllocationInvoiceLike, second: AllocationInvoiceLike) =>
   String(first.invoiceDate ?? "").localeCompare(String(second.invoiceDate ?? "")) || first.id - second.id;
 
+// A combined invoice has one face and one payment ledger. Its two components
+// only identify which part of monthly rent has already been invoiced.
+export function normalizeInvoiceParts(invoice: Pick<AllocationInvoiceLike,
+  "kind" | "amountKopecks" | "fixedAmountKopecks" | "variableAmountKopecks">) {
+  const amount = invoice.amountKopecks;
+  if (!safeMoney(amount) || amount === 0) throw new Error("Укажите положительную сумму счёта в целых копейках");
+  if (invoice.kind === "mixed") {
+    const fixed = invoice.fixedAmountKopecks;
+    const variable = invoice.variableAmountKopecks;
+    if (!safeMoney(fixed) || !safeMoney(variable) || fixed === 0 || variable === 0 ||
+        checkedAdd(fixed, variable) !== amount) {
+      throw new Error("В общем счёте укажите обе части аренды: их сумма должна точно совпадать с суммой счёта");
+    }
+    return { fixedAmountKopecks: fixed, variableAmountKopecks: variable };
+  }
+  return { fixedAmountKopecks: invoice.kind === "fixed" ? amount : 0,
+    variableAmountKopecks: invoice.kind === "variable" ? amount : 0 };
+}
+
+function financialContext(input: InvoiceAllocationInput) {
+  let otherFaces = 0;
+  let fixedFaces = 0;
+  let variableFaces = 0;
+  for (const invoice of input.invoices) {
+    if (invoice.id === input.excludeInvoiceId || (invoice.period && invoice.period !== input.period)) continue;
+    if (!safeMoney(invoice.amountKopecks)) continue;
+    otherFaces = checkedAdd(otherFaces, invoice.amountKopecks);
+    if (invoice.amountKopecks === 0) continue;
+    const parts = normalizeInvoiceParts(invoice);
+    fixedFaces = checkedAdd(fixedFaces, parts.fixedAmountKopecks);
+    variableFaces = checkedAdd(variableFaces, parts.variableAmountKopecks);
+  }
+  const netAvailable = Math.max(0, input.netRentKopecks - otherFaces);
+  const fixedRemaining = Math.max(0, input.fixedTargetKopecks - fixedFaces);
+  const variableRemaining = Math.max(0, input.netRentKopecks - input.fixedTargetKopecks - variableFaces);
+  let componentAvailable = input.kind === "fixed" ? fixedRemaining
+    : input.kind === "variable" ? variableRemaining : input.netRentKopecks;
+  if (input.kind === "mixed") {
+    const parts = normalizeInvoiceParts(input);
+    componentAvailable = checkedAdd(Math.min(parts.fixedAmountKopecks, fixedRemaining),
+      Math.min(parts.variableAmountKopecks, variableRemaining));
+  }
+  const previous = input.invoices.find((invoice) => invoice.id === input.excludeInvoiceId &&
+    (!invoice.period || invoice.period === input.period));
+  const preservingSavedMoney = previous?.kind === input.kind && previous.amountKopecks === input.amountKopecks &&
+    (input.kind !== "mixed" || (previous.fixedAmountKopecks === input.fixedAmountKopecks &&
+      previous.variableAmountKopecks === input.variableAmountKopecks));
+  return { faceAvailable: preservingSavedMoney ? input.amountKopecks : Math.min(netAvailable, componentAvailable),
+    fixedRemaining, variableRemaining };
+}
+
+// Explicitly unlinked invoices still reduce financial balances. No existing
+// range or allocation needs to be repaired merely to save such an invoice.
+export function validateUnlinkedInvoice(input: InvoiceAllocationInput): { allocationMode: "unlinked" } {
+  if (!validDate(`${input.period}-01`) || !/^\d{4}-\d{2}$/.test(input.period) || !validDate(input.invoiceDate)) {
+    throw new Error("Укажите месяц и дату выставления счёта");
+  }
+  if (!validDate(input.settings.rentalStart) || !validDate(input.settings.rentalEnd) ||
+      input.settings.rentalStart > input.settings.rentalEnd ||
+      !safeMoney(input.fixedTargetKopecks) || !safeMoney(input.netRentKopecks)) {
+    throw new Error("Проверьте даты аренды и итоговый расчёт месяца");
+  }
+  const monthEnd = new Date(`${input.period}-01T12:00:00Z`);
+  monthEnd.setUTCMonth(monthEnd.getUTCMonth() + 1, 0);
+  const leaseStart = [input.settings.rentalStart, `${input.period}-01`].sort().at(-1)!;
+  const leaseEnd = [input.settings.rentalEnd, monthEnd.toISOString().slice(0, 10)].sort()[0];
+  if (leaseStart > leaseEnd || input.invoiceDate < leaseStart) {
+    throw new Error("Дата счёта должна быть не раньше начала выбранного периода аренды");
+  }
+  normalizeInvoiceParts(input);
+  const context = financialContext(input);
+  if (input.amountKopecks > context.faceAvailable) {
+    throw new Error("Сумма счёта превышает оставшуюся сумму этой части аренды или итог за месяц");
+  }
+  return { allocationMode: "unlinked" };
+}
+
 type AllocationContext = {
   start: string;
   end: string;
@@ -83,7 +167,7 @@ type AllocationContext = {
 };
 
 function normalizeCandidate(candidate: unknown, amountKopecks: number,
-  bounds: { start: string; end: string }, kind: string): NormalizedInvoiceAllocation {
+  bounds: { start: string; end: string }, kind: string, fixedAmountKopecks = amountKopecks): NormalizedInvoiceAllocation {
   if (bounds.start > bounds.end) throw new Error("Для этой даты счёта нет периода внутри выбранного месяца и срока аренды");
   if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
     throw new Error("Подтвердите распределение суммы счёта по датам");
@@ -93,7 +177,8 @@ function normalizeCandidate(candidate: unknown, amountKopecks: number,
     throw new Error("Неизвестный формат привязки счёта. Проверьте распределение заново");
   }
   const supplement = value.rentalSupplementKopecks ?? 0;
-  if (!safeMoney(supplement) || (supplement > 0 && kind !== "fixed")) {
+  if (!safeMoney(supplement) || (supplement > 0 && kind !== "fixed" && kind !== "mixed") ||
+      (kind === "mixed" && supplement > fixedAmountKopecks)) {
     throw new Error("Доплата до постоянной части допустима только в счёте постоянной части");
   }
   const dates = new Set<string>();
@@ -163,6 +248,7 @@ function allocationContext(input: InvoiceAllocationInput): AllocationContext {
   const invalid = new Set<number>();
   const legacy = new Set<number>();
   for (const invoice of relevant) {
+    if (invoice.allocationMode === "unlinked") continue;
     if (invoice.allocationVersion === undefined && invoice.bottleAllocations === undefined &&
         invoice.rentalSupplementKopecks === undefined) {
       if (!safeMoney(invoice.amountKopecks) || invoice.amountKopecks === 0) invalid.add(invoice.id);
@@ -172,7 +258,8 @@ function allocationContext(input: InvoiceAllocationInput): AllocationContext {
     try {
       if (!validDate(invoice.invoiceDate)) throw new Error("Неверная дата счёта");
       const allocation = normalizeCandidate(invoice, invoice.amountKopecks!,
-        { start: leaseStart, end: [leaseEnd, invoice.invoiceDate].sort()[0] }, invoice.kind ?? "");
+        { start: leaseStart, end: [leaseEnd, invoice.invoiceDate].sort()[0] }, invoice.kind ?? "",
+        normalizeInvoiceParts(invoice).fixedAmountKopecks);
       normalized.set(invoice.id, allocation);
     } catch {
       invalid.add(invoice.id);
@@ -207,15 +294,10 @@ function allocationContext(input: InvoiceAllocationInput): AllocationContext {
   const legacyInvoiceNumbers: string[] = [];
   const invalidInvoiceNumbers: string[] = [];
   let needsReview = false;
-  let otherFaces = 0;
-  let sameKindFaces = 0;
   let otherSupplements = 0;
   for (const invoice of relevant) {
     if (invoice.id === input.excludeInvoiceId) continue;
-    if (safeMoney(invoice.amountKopecks)) {
-      otherFaces = checkedAdd(otherFaces, invoice.amountKopecks);
-      if (invoice.kind === input.kind) sameKindFaces = checkedAdd(sameKindFaces, invoice.amountKopecks);
-    }
+    if (invoice.allocationMode === "unlinked") continue;
     const legacyRecord = legacy.has(invoice.id);
     const invalidRecord = invalid.has(invoice.id);
     if (legacyRecord || invalidRecord) {
@@ -233,13 +315,12 @@ function allocationContext(input: InvoiceAllocationInput): AllocationContext {
     }
     otherSupplements = checkedAdd(otherSupplements, allocation.rentalSupplementKopecks);
   }
-  const netAvailable = Math.max(0, input.netRentKopecks - otherFaces);
-  const componentTarget = input.kind === "fixed" ? input.fixedTargetKopecks
-    : input.kind === "variable" ? Math.max(0, input.netRentKopecks - input.fixedTargetKopecks) : input.netRentKopecks;
-  const faceAvailable = Math.min(netAvailable, Math.max(0, componentTarget - sameKindFaces));
-  return { start, end, leaseStart, leaseEnd, days, claims, faceAvailable,
-    supplementAvailable: input.kind === "fixed" && input.allowRentalSupplement
-      ? Math.max(0, supplementCeiling - otherSupplements) : 0,
+  const financial = financialContext(input);
+  const fixedInCurrent = input.kind === "mixed" ? normalizeInvoiceParts(input).fixedAmountKopecks
+    : safeMoney(input.amountKopecks) ? input.amountKopecks : 0;
+  return { start, end, leaseStart, leaseEnd, days, claims, faceAvailable: financial.faceAvailable,
+    supplementAvailable: (input.kind === "fixed" || input.kind === "mixed") && input.allowRentalSupplement
+      ? Math.min(financial.fixedRemaining, fixedInCurrent, Math.max(0, supplementCeiling - otherSupplements)) : 0,
     needsReview, legacyInvoiceNumbers, invalidInvoiceNumbers };
 }
 
@@ -299,7 +380,7 @@ export function validateInvoiceAllocation(input: InvoiceAllocationInput, candida
   }
   if (!safeMoney(input.amountKopecks) || input.amountKopecks === 0) throw new Error("Укажите положительную сумму счёта в целых копейках");
   const normalized = normalizeCandidate(candidate, input.amountKopecks,
-    { start: context.start, end: context.end }, input.kind);
+    { start: context.start, end: context.end }, input.kind, normalizeInvoiceParts(input).fixedAmountKopecks);
   if (input.amountKopecks > context.faceAvailable) {
     throw new Error("Сумма счёта превышает оставшуюся сумму этой части аренды или итог за месяц");
   }
