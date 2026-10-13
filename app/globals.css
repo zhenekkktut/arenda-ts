@@ -4799,6 +4799,10 @@ html[data-theme="dark"] [data-slot="select-trigger"] { border-color: #ffffff0c; 
 html[data-theme="dark"] .invoice-components > label { border-color: #ffffff0c; background: #1a2637; }
 html[data-theme="dark"] .invoice-components input { background: #121d2e; }
 html[data-theme="dark"] .invoice-link-options button[aria-pressed="true"] { color: #c1e0ff; border-color: #486487; background: #304c70; }
+html[data-theme="dark"] .settings-section > strong { color: var(--foreground); }
+html[data-theme="dark"] .backup-status { color: #83d8b2; }
+html[data-theme="dark"] .backup-status-due { color: #edbc79; }
+html[data-theme="dark"] .due-line { color: var(--muted-foreground); }
 @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .app-tabs { background: #f7faffb8 !important; backdrop-filter: blur(28px) saturate(180%); -webkit-backdrop-filter: blur(28px) saturate(180%); }
   html[data-theme="dark"] .app-tabs { background: #202c40b8 !important; }
