@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Banknote,
   CalendarDays,
@@ -18,7 +18,6 @@ import {
   History,
   LoaderCircle,
   LockKeyhole,
-  MonitorSmartphone,
   Plus,
   Pencil,
   CirclePause,
@@ -33,7 +32,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { toast } from "sonner";
-import { calculateTaxYear, type TaxAdjustment, type TaxYearOptions } from "@/app/tax-calculation";
+import type { TaxAdjustment, TaxYearOptions } from "@/app/tax-calculation";
 import { normalizeExpenseShortcuts, validateExpenseShortcuts, type ExpenseShortcut } from "@/app/expense-shortcuts";
 import { linkedAsOfDate, missingEntryDates, nextInvoiceNumber, deriveInvoiceNumberFloor } from "@/app/workflow-tools";
 import { Button } from "@/components/ui/button";
@@ -189,9 +188,6 @@ type DashboardData = {
   documentMeta?: DocumentMeta;
   documentArchive?: ArchivedDocument[];
   auditLog?: AuditEvent[];
-  taxPayments?: Payment[];
-  taxAdjustments?: TaxAdjustment[];
-  taxOptions?: TaxYearOptions[];
 };
 
 type ArchivedDocument = {
@@ -312,6 +308,7 @@ function normalizeExpenseCategories(value: unknown, allowEmpty = false): Expense
 const OFFLINE_STORAGE_KEY = "arenda-ts-offline-v1";
 const THEME_STORAGE_KEY = "arenda-ts-theme-v1";
 const MOTION_STORAGE_KEY = "arenda-ts-motion-v1";
+const GLASS_STORAGE_KEY = "arenda-ts-glass-v1";
 const LAST_BACKUP_STORAGE_KEY = "arenda-ts-last-backup-v1";
 const DOCUMENT_TEXT_FIELDS = [
   "city", "contractNumber", "rentalStart", "rentalEnd", "lessorFull", "lessorShort", "lessorSignerShort", "lessorDative", "lessorInn",
@@ -534,9 +531,6 @@ export function offlineDashboard(period: string): DashboardData {
     documentMeta,
     documentArchive: store.documentArchive.filter((document) => document.period === period).sort((a, b) => b.id - a.id),
     auditLog: store.auditLog.filter((event) => event.period === period).slice(0, 100),
-    taxPayments: store.payments,
-    taxAdjustments: store.taxAdjustments,
-    taxOptions: store.taxOptions,
   };
 }
 
@@ -1458,17 +1452,11 @@ export default function RentalApp() {
   const [dayDetailsOpen, setDayDetailsOpen] = useState(false);
   const [entrySavedMessage, setEntrySavedMessage] = useState("");
   const [pdfSavingId, setPdfSavingId] = useState<number | null>(null);
-  const [taxOpen, setTaxOpen] = useState(false);
-  const [taxKind, setTaxKind] = useState<TaxAdjustment["kind"]>("income");
-  const [taxDate, setTaxDate] = useState(today);
-  const [taxAmount, setTaxAmount] = useState("");
-  const [taxNote, setTaxNote] = useState("");
-  const [taxDeduction, setTaxDeduction] = useState("0");
-  const [taxHasWorkers, setTaxHasWorkers] = useState(false);
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [themeMode, setThemeMode] = useState<ThemeMode>("system");
   const [motionEnabled, setMotionEnabled] = useState(true);
+  const [glassIntensity, setGlassIntensity] = useState(60);
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
 
   const [entryDate, setEntryDate] = useState(today);
@@ -1604,12 +1592,22 @@ export default function RentalApp() {
     const nextMode: ThemeMode = savedTheme === "dark" || savedTheme === "light" ? savedTheme : "system";
     setThemeMode(nextMode);
     setMotionEnabled(window.localStorage.getItem(MOTION_STORAGE_KEY) !== "off");
+    const savedGlass = window.localStorage.getItem(GLASS_STORAGE_KEY)?.trim();
+    const parsedGlass = savedGlass ? Number(savedGlass) : Number.NaN;
+    setGlassIntensity(Number.isFinite(parsedGlass)
+      ? Math.round(Math.max(0, Math.min(100, parsedGlass)) / 5) * 5 : 60);
     setLastBackupAt(window.localStorage.getItem(LAST_BACKUP_STORAGE_KEY));
   }, []);
 
   useEffect(() => {
     document.documentElement.dataset.appMotion = motionEnabled ? "on" : "off";
   }, [motionEnabled]);
+
+  useEffect(() => {
+    const rootStyle = document.documentElement.style;
+    rootStyle.setProperty("--glass-opacity", String(0.96 - glassIntensity * 0.0045));
+    rootStyle.setProperty("--glass-blur", `${12 + glassIntensity * 0.18}px`);
+  }, [glassIntensity]);
 
   useEffect(() => {
     if (!entrySavedMessage) return;
@@ -1663,41 +1661,6 @@ export default function RentalApp() {
     };
     return () => { delete window.onArchivePdfSaved; delete window.onArchivePdfSaveEnded; };
   }, [loadData]);
-
-  const taxYear = Number(month.slice(0, 4));
-  const taxQuarter = Math.ceil(Number(month.slice(5, 7)) / 3);
-  const taxOptions = data?.taxOptions?.find((item) => item.year === taxYear)
-    ?? { year: taxYear, deductionKopecks: 0, hasWorkers: false };
-  const tax = calculateTaxYear(taxYear, taxQuarter, data?.taxPayments ?? [],
-    data?.taxAdjustments ?? [], taxOptions);
-
-  function openTax() {
-    setTaxDeduction(String(taxOptions.deductionKopecks / 100));
-    setTaxHasWorkers(taxOptions.hasWorkers);
-    setTaxDate(month === today.slice(0, 7) ? today : `${month}-01`);
-    setTaxKind("income");
-    setTaxAmount("");
-    setTaxNote("");
-    setTaxOpen(true);
-  }
-
-  async function saveTaxOptions(event: FormEvent) {
-    event.preventDefault();
-    const deductionKopecks = toSignedKopecks(taxDeduction);
-    if (deductionKopecks === null || deductionKopecks < 0) { toast.error("Проверьте сумму взносов"); return; }
-    await request({ action: "save_tax_options", year: taxYear, deductionKopecks, hasWorkers: taxHasWorkers }, "Расчёт налога обновлён");
-  }
-
-  async function saveTaxAdjustment(event: FormEvent) {
-    event.preventDefault();
-    const amountKopecks = toKopecks(taxAmount);
-    if (!amountKopecks || !validIsoDate(taxDate) || !taxDate.startsWith(String(taxYear))) {
-      toast.error("Проверьте сумму и дату в выбранном году"); return;
-    }
-    const ok = await request({ action: "save_tax_adjustment", date: taxDate,
-      amountKopecks, kind: taxKind, note: taxNote }, "Запись учтена");
-    if (ok) { setTaxAmount(""); setTaxNote(""); }
-  }
 
   useEffect(() => {
     if (!offlineMode || window.sessionStorage.getItem("arenda-ts-backup-reminder-shown")) return;
@@ -2008,6 +1971,13 @@ export default function RentalApp() {
   function changeMotion(enabled: boolean) {
     setMotionEnabled(enabled);
     window.localStorage.setItem(MOTION_STORAGE_KEY, enabled ? "on" : "off");
+  }
+
+  function changeGlassIntensity(value: number) {
+    if (!Number.isFinite(value)) return;
+    const nextValue = Math.round(Math.max(0, Math.min(100, value)) / 5) * 5;
+    setGlassIntensity(nextValue);
+    window.localStorage.setItem(GLASS_STORAGE_KEY, String(nextValue));
   }
 
   function moveEntryWeek(offset: -1 | 1) {
@@ -3379,7 +3349,6 @@ export default function RentalApp() {
                 <div className="invoice-workspace-toolbar">
                   {offlineMode && <Button type="button" variant="outline" aria-expanded={documentsOpen} onClick={() => documentsOpen ? setDocumentsOpen(false) : showDocuments()}><FileText />{documentsOpen ? "Свернуть акты" : "Акты за месяц"}</Button>}
                   <Button type="button" variant="outline" onClick={() => setMonthToolsOpen(true)}><SlidersHorizontal />Управление месяцем</Button>
-                  {offlineMode && <Button type="button" variant="outline" onClick={openTax}><Calculator />УСН 6%</Button>}
                 </div>
                 {offlineMode && documentsOpen && <section ref={documentWorkspaceRef} className="panel document-workspace">
                   <div className="flex items-center gap-3"><FileText className="size-6 text-primary" /><div>
@@ -3906,50 +3875,6 @@ export default function RentalApp() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={taxOpen} onOpenChange={setTaxOpen}>
-        <DialogContent className="dialog-card tax-dialog sm:max-w-lg">
-          <DialogHeader><DialogTitle>УСН 6% · {taxYear}</DialogTitle>
-            <DialogDescription>Оплаты учитываются по дате поступления денег, даже если счёт выставлен за другой месяц.</DialogDescription>
-          </DialogHeader>
-          <div className="tax-dialog-scroll">
-            <div className="tax-figures">
-              <div><span>Аренда с начала года</span><strong>{money(tax.rentalKopecks)}</strong></div>
-              <div><span>Прочие доходы ИП на УСН</span><strong>{money(tax.otherKopecks)}</strong></div>
-              <div><span>Резерв 6% с поступлений квартала</span><strong>{money(tax.reserveKopecks)}</strong></div>
-              <div><span>УСН 6% с начала года</span><strong>{money(tax.grossKopecks)}</strong></div>
-              <div><span>Вычет по взносам</span><strong>−{money(tax.deductionKopecks)}</strong></div>
-              <div><span>Отмечено уплаченным</span><strong>−{money(tax.paidKopecks)}</strong></div>
-              <div className="tax-due"><span>Ориентир к доплате за {taxQuarter} квартал</span><strong>{money(tax.outstandingKopecks)}</strong></div>
-            </div>
-            <p className="help-note">Расчёт накопительно с 1 января по конец квартала. Отдельно предполагаемый взнос 1% сверх 300 000 ₽ дохода: {money(tax.extraInsuranceKopecks)}. Это взнос ИП, не дополнительный налог 6%.</p>
-            <form onSubmit={(event) => void saveTaxOptions(event)} className="dialog-form tax-form">
-              <strong>Уменьшение налога</strong>
-              <label><FieldLabel>Взносы для вычета в {taxYear} году, ₽</FieldLabel>
-                <Input inputMode="decimal" value={taxDeduction} onChange={(event) => setTaxDeduction(event.target.value)} /></label>
-              <label className="tax-checkbox"><input type="checkbox" checked={taxHasWorkers} onChange={(event) => setTaxHasWorkers(event.target.checked)} /> Есть выплаты работникам или исполнителям на этом ИП</label>
-              <p className="help-note">Укажите только взносы, которые применяете к УСН и ещё не использовали для патента. При выплатах физлицам вычет ограничен половиной налога. Фиксированные взносы за полный 2026 год — 57 390 ₽; их уплату учитывайте отдельно.</p>
-              <Button type="submit" variant="outline" disabled={busy}>Сохранить вычет</Button>
-            </form>
-            <form onSubmit={(event) => void saveTaxAdjustment(event)} className="dialog-form tax-form">
-              <strong>Другой доход или перечисленный налог</strong>
-              <Select value={taxKind} onValueChange={(value) => setTaxKind(value as TaxAdjustment["kind"])}>
-                <SelectTrigger aria-label="Тип записи"><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="income">Другой доход ИП на УСН</SelectItem><SelectItem value="tax_paid">Уплатил УСН</SelectItem></SelectContent>
-              </Select>
-              <div className="grid grid-cols-2 gap-3"><label><FieldLabel>Дата</FieldLabel><Input type="date" value={taxDate} onChange={(event) => setTaxDate(event.target.value)} required /></label>
-                <label><FieldLabel>Сумма, ₽</FieldLabel><Input inputMode="decimal" value={taxAmount} onChange={(event) => setTaxAmount(event.target.value)} required /></label></div>
-              <label><FieldLabel>Примечание</FieldLabel><Input value={taxNote} onChange={(event) => setTaxNote(event.target.value)} /></label>
-              <Button type="submit" disabled={busy}>Добавить запись</Button>
-            </form>
-            <div className="tax-records">{(data?.taxAdjustments ?? []).filter((row) => row.date.startsWith(String(taxYear)))
-              .sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).map((row) =>
-                <div key={row.id}><span>{dateLabel(row.date)} · {row.kind === "income" ? "Доход" : "УСН уплачен"}{row.note ? ` · ${row.note}` : ""}</span>
-                  <strong>{money(row.amountKopecks)}</strong>
-                  <Button type="button" variant="ghost" size="icon" aria-label="Удалить налоговую запись" onClick={() => void request({ action: "delete_tax_adjustment", id: row.id }, "Запись удалена")}><Trash2 /></Button></div>)}</div>
-          </div>
-        </DialogContent>
-      </Dialog>
-
       <Dialog open={monthToolsOpen} onOpenChange={setMonthToolsOpen}>
         <DialogContent className="dialog-card sm:max-w-md">
           <DialogHeader><DialogTitle>Управление месяцем</DialogTitle><DialogDescription>{monthLabel(month)}. Проверьте записи и топливо перед итоговым расчётом.</DialogDescription></DialogHeader>
@@ -4372,23 +4297,32 @@ export default function RentalApp() {
                 <strong>Оформление</strong>
                 <p>Светлое, тёмное или как в настройках телефона.</p>
               </div>
-              <div className="theme-settings-control">
-                <MonitorSmartphone aria-hidden="true" />
-                <Select value={themeMode} onValueChange={(value) => changeTheme(value as ThemeMode)}>
-                  <SelectTrigger className="theme-mode-select" aria-label="Тема приложения"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="system">Как на телефоне</SelectItem>
-                    <SelectItem value="light">Светлая</SelectItem>
-                    <SelectItem value="dark">Тёмная</SelectItem>
-                  </SelectContent>
-                </Select>
+              <div className="appearance-segments" role="group" aria-label="Тема оформления">
+                {([
+                  { value: "system", label: "Авто" },
+                  { value: "light", label: "Светлая" },
+                  { value: "dark", label: "Тёмная" },
+                ] as const).map((option) => <button key={option.value} type="button"
+                  className="appearance-segment" aria-pressed={themeMode === option.value}
+                  onClick={() => changeTheme(option.value)}>{option.label}</button>)}
               </div>
             </div>
 
             <label className="settings-section motion-settings-row">
-              <span><strong>Плавные переходы</strong><small>Мягкое открытие окон и подтверждение записи. Настройка уменьшения движения на телефоне тоже учитывается.</small></span>
-              <input type="checkbox" checked={motionEnabled} onChange={(event) => changeMotion(event.target.checked)} />
+              <span><strong id="motion-setting-title">Плавные переходы</strong><small id="motion-setting-help">Мягкое открытие окон и подтверждение записи. Настройка уменьшения движения на телефоне тоже учитывается.</small></span>
+              <input type="checkbox" role="switch" className="ios-switch" aria-labelledby="motion-setting-title" aria-describedby="motion-setting-help" checked={motionEnabled} onChange={(event) => changeMotion(event.target.checked)} />
             </label>
+
+            <div className="settings-section glass-settings-row">
+              <div><strong id="glass-setting-title">Эффект стекла</strong><p id="glass-setting-help">Прозрачность и размытие панелей навигации.</p></div>
+              <div className="glass-range-control">
+                <input id="glass-intensity" type="range" className="glass-range" min="0" max="100" step="5"
+                  style={{ "--range-fill": `${glassIntensity}%` } as CSSProperties}
+                  aria-labelledby="glass-setting-title" aria-describedby="glass-setting-help"
+                  value={glassIntensity} onChange={(event) => changeGlassIntensity(event.currentTarget.valueAsNumber)} />
+                <output htmlFor="glass-intensity">{glassIntensity}%</output>
+              </div>
+            </div>
 
             <details className="settings-section expense-shortcuts-settings document-options">
               <summary>Быстрые кнопки расходов</summary>

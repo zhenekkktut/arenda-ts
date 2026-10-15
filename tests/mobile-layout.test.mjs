@@ -69,10 +69,17 @@ test("calendar details expose bottle, expense and explicit no-trip actions with 
 test("theme control lives in settings and destructive edits can be undone", () => {
   assert.doesNotMatch(app, /className="theme-button"/);
   assert.match(app, /className="settings-section theme-settings-row"/);
-  assert.match(app, /value=\{themeMode\}/);
-  assert.match(app, /value="system">Как на телефоне/);
+  assert.match(app, /className="appearance-segments" role="group" aria-label="Тема оформления"/);
+  assert.match(app, /aria-pressed=\{themeMode === option\.value\}/);
+  assert.match(app, /value: "system", label: "Авто"/);
   assert.match(app, /label:\s*"Отменить"/);
   assert.match(app, /duration:\s*8_000/);
+});
+
+test("settings keep an accessible motion switch while USN has no app interface", () => {
+  assert.match(app, /type="checkbox" role="switch" className="ios-switch"/);
+  assert.match(app, /aria-labelledby="motion-setting-title" aria-describedby="motion-setting-help"/);
+  assert.doesNotMatch(app, /УСН|calculateTaxYear|openTax|taxOpen|tax-dialog/);
 });
 
 test("invoice texts open in a separate compact dialog", () => {

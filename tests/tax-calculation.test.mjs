@@ -50,3 +50,30 @@ test("old phone data gains empty tax records without losing existing invoices", 
     assert.equal(result.taxAdjustments[0].amountKopecks, 100_000);
   } finally { delete globalThis.window; await server.close(); }
 });
+
+test("removing USN interface preserves old tax data during ordinary ledger changes and JSON round trips", async () => {
+  const server = await createServer({ configFile: "offline/vite.config.ts",
+    optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true }, appType: "custom", hmr: false });
+  const storage = new Map();
+  globalThis.window = { localStorage: { getItem: (key) => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value) } };
+  try {
+    const { saveOfflineAction, normalizeOfflineStore } = await server.ssrLoadModule(path.resolve("app/rental-app.tsx"));
+    const taxAdjustments = [
+      { id: 1, date: "2026-09-28", amountKopecks: 100_000, kind: "tax_paid", note: "Старая запись" },
+      { id: 2, date: "2026-09-29", amountKopecks: 250_000, kind: "income", note: "Другой доход" },
+    ];
+    const taxOptions = [{ year: 2026, deductionKopecks: 5_739_000, hasWorkers: false }];
+    const restored = normalizeOfflineStore({ version: 5, entries: [], invoices: [],
+      payments: [], expenses: [], closures: [], taxAdjustments, taxOptions });
+    storage.set("arenda-ts-offline-v1", JSON.stringify(restored));
+    saveOfflineAction({ action: "save_entry", entryDate: "2026-10-01", units: 145, note: "Развоз" });
+    const result = JSON.parse(storage.get("arenda-ts-offline-v1"));
+    assert.deepEqual(result.taxAdjustments, taxAdjustments);
+    assert.deepEqual(result.taxOptions, taxOptions);
+    assert.equal(result.entries[0].units, 145);
+    const roundTripped = normalizeOfflineStore(JSON.parse(JSON.stringify(result)));
+    assert.deepEqual(roundTripped.taxAdjustments, taxAdjustments);
+    assert.deepEqual(roundTripped.taxOptions, taxOptions);
+  } finally { delete globalThis.window; await server.close(); }
+});
