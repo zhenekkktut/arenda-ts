@@ -50,6 +50,19 @@ function isoDate(value: string): Date | null {
     ? null : parsed;
 }
 
+/** Optional calendar days off are separate from downtime and do not change rent. */
+export function normalizeRestDates(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((date): date is string =>
+    typeof date === "string" && isoDate(date) !== null))].sort();
+}
+
+/** Sundays stay days off; an additional date applies only when explicitly chosen. */
+export function isRestDate(value: string, restDates: readonly string[] = []): boolean {
+  const date = isoDate(value);
+  return date !== null && (date.getUTCDay() === 0 || restDates.includes(value));
+}
+
 /** Days which still need a record, within the lease and up to today. */
 export function missingEntryDates(
   period: string,
@@ -57,6 +70,7 @@ export function missingEntryDates(
   settings: RentalDates,
   entries: RecordedDay[],
   downtimes: DowntimeDates[],
+  restDates: readonly string[] = [],
 ): string[] {
   if (!/^\d{4}-\d{2}$/.test(period) || !isoDate(today) ||
       !isoDate(settings.rentalStart) || !isoDate(settings.rentalEnd) ||
@@ -70,6 +84,7 @@ export function missingEntryDates(
   const end = [monthEnd, settings.rentalEnd, today].sort()[0];
   if (start > end) return [];
   const recorded = new Set(entries.map((entry) => entry.entryDate));
+  const confirmedRestDates = new Set(normalizeRestDates(restDates));
   const confirmedDowntimes = downtimes.filter((downtime) =>
     isoDate(downtime.startDate) && isoDate(downtime.endDate) &&
     downtime.startDate <= downtime.endDate);
@@ -78,7 +93,7 @@ export function missingEntryDates(
   for (const date = isoDate(start)!; date.getTime() <= endTime;
        date.setUTCDate(date.getUTCDate() + 1)) {
     const value = date.toISOString().slice(0, 10);
-    if (date.getUTCDay() === 0 || recorded.has(value) ||
+    if (date.getUTCDay() === 0 || confirmedRestDates.has(value) || recorded.has(value) ||
         confirmedDowntimes.some((downtime) => downtime.startDate <= value && downtime.endDate >= value)) continue;
     missing.push(value);
   }

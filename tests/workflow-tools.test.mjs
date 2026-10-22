@@ -9,14 +9,16 @@ const compiled = ts.transpileModule(source, {
 }).outputText;
 const module = { exports: {} };
 new Function("exports", "module", compiled)(module.exports, module);
-const { nextInvoiceNumber, deriveInvoiceNumberFloor, missingEntryDates, linkedAsOfDate } = module.exports;
+const { nextInvoiceNumber, deriveInvoiceNumberFloor, missingEntryDates, linkedAsOfDate,
+  normalizeRestDates, isRestDate } = module.exports;
 
 const invoices = (...numbers) => numbers.map((invoiceNumber) => ({ invoiceNumber }));
 const fullLease = { rentalStart: "2026-01-01", rentalEnd: "2027-12-31" };
 const missing = (extra = {}) => {
   const values = { period: "2026-10", today: "2026-10-05", settings: fullLease,
-    entries: [], downtimes: [], ...extra };
-  return missingEntryDates(values.period, values.today, values.settings, values.entries, values.downtimes);
+    entries: [], downtimes: [], restDates: [], ...extra };
+  return missingEntryDates(values.period, values.today, values.settings, values.entries, values.downtimes,
+    values.restDates);
 };
 
 test("invoice numbers use the largest number across history, including padded numbers", () => {
@@ -111,6 +113,49 @@ test("missing records include today, skip Sundays and accept a saved zero quanti
   assert.deepEqual(missing({ entries: [{ entryDate: "2026-10-02", units: 0 }] }),
     ["2026-10-01", "2026-10-03", "2026-10-05"]);
   assert.deepEqual(missing({ today: "2026-10-04" }), ["2026-10-01", "2026-10-02", "2026-10-03"]);
+});
+
+test("a selected Saturday is a day off while other Saturdays still need a record", () => {
+  const restDates = ["2026-10-03"];
+  assert.equal(isRestDate("2026-10-03"), false);
+  assert.equal(isRestDate("2026-10-03", restDates), true);
+  assert.equal(isRestDate("2026-10-10", restDates), false);
+  assert.equal(isRestDate("2026-10-04"), true, "Sunday keeps its existing behaviour");
+  assert.deepEqual(missing({ restDates }), ["2026-10-01", "2026-10-02", "2026-10-05"]);
+  assert.equal(missing({ today: "2026-10-10", restDates }).includes("2026-10-10"), true);
+  assert.deepEqual(missing({ restDates: [] }),
+    ["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-05"],
+    "Removing the selection restores the record reminder");
+});
+
+test("calendar days off normalize backup values without mutating saved dates", () => {
+  const dates = ["2026-10-10", "2026-10-03", "2026-10-03", "2026-10-04",
+    "2026-02-30", "2026-2-03", "", null, 20261017, {}, "2028-02-29"];
+  const unchanged = structuredClone(dates);
+  assert.deepEqual(normalizeRestDates(dates),
+    ["2026-10-03", "2026-10-04", "2026-10-10", "2028-02-29"]);
+  assert.deepEqual(dates, unchanged);
+  for (const value of [undefined, null, "2026-10-03", {}, 20261003]) {
+    assert.deepEqual(normalizeRestDates(value), []);
+  }
+  for (const date of ["2026-02-30", "2026-13-03", "2026-2-03", ""]) {
+    assert.equal(isRestDate(date, [date]), false);
+  }
+});
+
+test("selected days off stay separate from recorded deliveries and confirmed rental downtime", () => {
+  const input = { restDates: ["2026-10-03", "2026-11-07", "2026-02-30"],
+    settings: { ...fullLease }, entries: [{ entryDate: "2026-10-02", units: 145 }],
+    downtimes: [{ startDate: "2026-10-05", endDate: "2026-10-05" }] };
+  const unchanged = structuredClone(input);
+  assert.deepEqual(missing(input), ["2026-10-01"]);
+  assert.deepEqual(input, unchanged, "A day off never writes or changes a delivery or rental downtime");
+  assert.deepEqual(missing({ ...input, settings: {
+    rentalStart: "2026-10-02", rentalEnd: "2026-10-03",
+  } }), [], "The lease bounds still apply");
+  assert.deepEqual(missingEntryDates("2026-10", "2026-10-05", fullLease, [], []),
+    ["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-05"],
+    "Old callers and old backups retain the default schedule");
 });
 
 test("missing records are clipped to the rental dates and confirmed overlapping downtime", () => {

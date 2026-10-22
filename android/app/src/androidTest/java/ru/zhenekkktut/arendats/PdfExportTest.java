@@ -49,6 +49,8 @@ public class PdfExportTest {
             html = new String(bytes.toByteArray(), StandardCharsets.UTF_8);
         }
         if (name.equals("reconciliation-mixed")) assertMixedFixture(html);
+        if (name.equals("rent")) assertSignedVariableRentFixture(html);
+        if (name.equals("reconciliation-compact")) assertSignedVariableReconciliationFixture(html);
         Method save = MainActivity.class.getDeclaredMethod("beginPdfSave", String.class, String.class, String.class);
         save.setAccessible(true);
         Field destination = MainActivity.class.getDeclaredField("pdfDestination");
@@ -148,6 +150,29 @@ public class PdfExportTest {
         assertTrue("The monthly rounded deduction must be 12,520 rubles", daily.contains("−12 520,00</td>"));
         assertTrue("The net monthly amount must remain 73,000 rubles", daily.contains("73 000,00</td>"));
         assertTrue("The physical monthly bottle count must remain unchanged", daily.contains(">2 138</td>"));
+    }
+
+    private void assertSignedVariableRentFixture(String html) {
+        String normalized = html.replace('\u00a0', ' ').replace('\u202f', ' ');
+        assertTrue("Fuel must never alter the fixed component or its contractual day formula", normalized.contains(
+            "Постоянная часть Ф = 80 000 × d / D</td><td class=\"value\">77 333,33 руб.</td>"));
+        assertTrue("The complete customer fuel deduction belongs to signed variable rent", normalized.contains(
+            "Переменная часть П</td><td class=\"value\">-5 000,00 руб.</td>"));
+        assertTrue("The signed components must sum to the final monthly rent", normalized.contains(
+            "Итого: Ф + П</td><td class=\"value\">72 333,33 руб.</td>"));
+        assertFalse("The act must not advertise a contradictory maximum formula", normalized.contains("Итого: большая из сумм"));
+        assertFalse("Customer fuel details belong only in reconciliation", normalized.toLowerCase(java.util.Locale.ROOT).contains("топлив"));
+    }
+
+    private void assertSignedVariableReconciliationFixture(String html) {
+        String normalized = html.replace('\u00a0', ' ').replace('\u202f', ' ');
+        String daily = tableContent(normalized, "reconciliation-daily");
+        assertTrue("The original monthly charge must retain fixed rent before customer fuel", daily.contains(
+            "5 000,00</td><td class=\"value\">77 333,33</td>"));
+        assertTrue("The complete fuel sum must be assigned to the variable component", daily.contains(
+            "Вычет топлива заказчика за месяц из переменной части: 125 бутылей × 40,00 руб.</td><td class=\"value\">−5 000,00</td>"));
+        assertTrue("The signed variable component must reduce the net monthly total once", daily.contains(
+            "Итого к оплате за месяц после вычета топлива</td><td class=\"value\">72 333,33</td>"));
     }
 
     private String tableContent(String html, String className) {

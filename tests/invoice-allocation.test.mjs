@@ -193,6 +193,33 @@ test("the last invoice net ceiling excludes month-end fuel without deducting it 
   validate(input, accepted(result));
 });
 
+test("negative variable rent limits new invoices to the signed monthly net while preserving saved faces", () => {
+  const input = base({ entries: [entry(17, 2_138)], kind: "fixed", amountKopecks: 8_000_000,
+    fixedTargetKopecks: 8_000_000, netRentKopecks: 7_300_000 });
+  const proposed = propose(input);
+  assert.equal(proposed.needsReview, false);
+  assert.equal(proposed.availableKopecks, 7_300_000);
+  assert.equal(proposed.uncoveredKopecks, 700_000);
+  assert.throws(() => validate(input, candidate([row(17, 8_000_000)])), /превышает оставшуюся/);
+  const variable = propose({ ...input, kind: "variable", amountKopecks: 1 });
+  assert.equal(variable.availableKopecks, 0);
+  assert.equal(variable.ready, false);
+  const credit = { ...input, netRentKopecks: -2_000_000, amountKopecks: 1 };
+  for (const kind of ["fixed", "variable", "other"]) {
+    const noNewInvoice = propose({ ...credit, kind });
+    assert.equal(noNewInvoice.needsReview, false);
+    assert.equal(noNewInvoice.availableKopecks, 0);
+    assert.equal(noNewInvoice.ready, false);
+    assert.throws(() => validate({ ...credit, kind }, candidate([row(17, 1)])), /превышает оставшуюся/);
+    assert.throws(() => validateUnlinked({ ...credit, kind }), /превышает оставшуюся/);
+  }
+  const old = invoice(1, 1_230_000, [row(17, 1_230_000)]);
+  const saved = { ...credit, amountKopecks: old.amountKopecks, invoices: [old], excludeInvoiceId: old.id };
+  assert.equal(propose(saved).ready, true);
+  assert.deepEqual(validate(saved, old), candidate(old.bottleAllocations));
+  assert.deepEqual(validateUnlinked(saved), { allocationMode: "unlinked" });
+});
+
 test("malformed, duplicate, unsafe and zero money allocations are rejected", () => {
   const input = base({ amountKopecks: 400_000 });
   for (const malformed of [null, {}, { ...candidate([row(17, 400_000)]), allocationVersion: 2 },

@@ -115,7 +115,9 @@ test("rent act deducts customer fuel through intensity and reconciliation uses t
   assert.match(act, /Постоянная часть Ф = 80[\s ]000 × d \/ D<\/td><td class="value">80[\s ]000,00/);
   assert.equal(input.calculation.actualUnits, 2_800);
   assert.equal(input.calculation.totalKopecks, 11_200_000);
-  assert.match(act, /Переменная часть: И - Ф, если результат положительный/);
+  assert.match(act, /Переменная часть П/);
+  assert.match(act, /Итого: Ф \+ П/);
+  assert.doesNotMatch(act, /Итого: большая из сумм Ф и И/);
   assert.match(act, /в лице генерального директора Иванова Ивана Ивановича/);
   assert.match(reconciliation, /АКТ СВЕРКИ ВЗАИМНЫХ РАСЧЁТОВ/);
   assert.equal((act.match(/class="signature-header"/g) ?? []).length, 2);
@@ -347,6 +349,37 @@ test("reconciliation uses period-linked payments received no later than the sele
   assert.equal(tools.reconciliationSummary(currentPeriod).balance, 9_200_000);
 });
 
+test("receipts for previous invoices increase an opening credit without counting current receipts twice", () => {
+  const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS };
+  const currentPayment = { invoiceId: 1, paymentDate: "2026-10-15", amountKopecks: 200_000 };
+  const input = { settings, meta: { ...tools.defaultDocumentMeta("2026-10", 1, "2026-11-02"),
+    asOfDate: "2026-11-02", openingBalanceKopecks: -2_448_000 },
+    calculation: tools.calculateRental("2026-10", [], [], settings), entries: [], downtimes: [], expenses: [],
+    invoices: [{ id: 1, invoiceNumber: "CURRENT", period: "2026-10", invoiceDate: "2026-10-01", amountKopecks: 8_000_000 }],
+    payments: [currentPayment], openingPayments: [
+      { invoiceId: 99, paymentDate: "2026-10-12", amountKopecks: 1_000_000 },
+      currentPayment,
+      { invoiceId: 98, paymentDate: "2026-09-30", amountKopecks: 500_000 },
+      { invoiceId: 97, paymentDate: "2026-11-03", amountKopecks: 700_000 },
+    ] };
+  const original = structuredClone(input);
+  const summary = tools.reconciliationSummary(input);
+  assert.equal(summary.opening, -2_448_000);
+  assert.equal(summary.openingPaidKopecks, 1_000_000);
+  assert.equal(summary.paidKopecks, 200_000);
+  assert.equal(summary.balance, 4_352_000,
+    "Opening credit grows from 24,480 to 34,480 before this month's charge and receipt");
+  assert.equal(summary.openingPayments.length, 1);
+  const html = tools.buildReconciliationHtml(input);
+  assert.match(html, /10[\s ]000,00 руб\. по счетам за предыдущие месяцы/);
+  assert.doesNotMatch(html, /в погашение задолженности за предыдущие месяцы/);
+  const manualZero = tools.reconciliationSummary({ ...input,
+    meta: { ...input.meta, openingBalanceKopecks: 0 } });
+  assert.equal(manualZero.openingPaidKopecks, 0, "An explicit zero opening keeps previous receipts outside this act");
+  assert.equal(manualZero.balance, 7_800_000);
+  assert.deepEqual(input, original);
+});
+
 test("user-entered document text is escaped", () => {
   const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS, city: "<Выборг>" };
   const calculation = tools.calculateRental("2026-08", [], [], settings);
@@ -517,7 +550,9 @@ test("full no-trip days reduce the fixed part and are described without a techni
   assert.match(act, /01\.09\.2026–01\.09\.2026: день без выезда; Выезда не было; основание: Запись календаря/);
   assert.doesNotMatch(act, /технического простоя|технический простой|поломк/i);
   assert.match(act, /Основание и период простоя/);
-  assert.match(act, /Постоянная часть Ф<\/td><td class="value">72[\s ]333,33/);
+  assert.match(act, /Постоянная часть Ф = 80[\s ]000 × d \/ D<\/td><td class="value">77[\s ]333,33/);
+  assert.match(act, /Переменная часть П<\/td><td class="value">-5[\s ]000,00/);
+  assert.match(act, /Итого: Ф \+ П<\/td><td class="value">72[\s ]333,33/);
   const technical = { ...input, downtimes: [{ ...input.downtimes[0], kind: "technical", reason: "Ремонт" }] };
   assert.match(tools.buildRentActHtml(technical), /технический простой; Ремонт/);
   const legacy = { ...input, downtimes: [{ ...input.downtimes[0], kind: undefined, reason: "Ремонт" }] };

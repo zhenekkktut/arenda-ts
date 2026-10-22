@@ -49,7 +49,9 @@ export function compactInput(tools = documentTools()) {
 }
 
 // Native export also exercises partial money from the same delivery date and a
-// full no-trip day. Counts remain whole, actual bottles in both invoices.
+// full no-trip day. With no gross variable rent, customer fuel must result in a
+// negative variable component while the fixed component retains its day formula.
+// Counts remain whole, actual bottles in both invoices.
 export function allocationInput(tools = documentTools()) {
   const { settings } = sampleInput(tools);
   const entries = [{ entryDate: "2026-09-10", units: 400 },

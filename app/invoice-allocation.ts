@@ -111,7 +111,7 @@ function financialContext(input: InvoiceAllocationInput) {
   const fixedRemaining = Math.max(0, input.fixedTargetKopecks - fixedFaces);
   const variableRemaining = Math.max(0, input.netRentKopecks - input.fixedTargetKopecks - variableFaces);
   let componentAvailable = input.kind === "fixed" ? fixedRemaining
-    : input.kind === "variable" ? variableRemaining : input.netRentKopecks;
+    : input.kind === "variable" ? variableRemaining : Math.max(0, input.netRentKopecks);
   if (input.kind === "mixed") {
     const parts = normalizeInvoiceParts(input);
     componentAvailable = checkedAdd(Math.min(parts.fixedAmountKopecks, fixedRemaining),
@@ -134,7 +134,7 @@ export function validateUnlinkedInvoice(input: InvoiceAllocationInput): { alloca
   }
   if (!validDate(input.settings.rentalStart) || !validDate(input.settings.rentalEnd) ||
       input.settings.rentalStart > input.settings.rentalEnd ||
-      !safeMoney(input.fixedTargetKopecks) || !safeMoney(input.netRentKopecks)) {
+      !safeMoney(input.fixedTargetKopecks) || !Number.isSafeInteger(input.netRentKopecks)) {
     throw new Error("Проверьте даты аренды и итоговый расчёт месяца");
   }
   const monthEnd = new Date(`${input.period}-01T12:00:00Z`);
@@ -209,7 +209,7 @@ function allocationContext(input: InvoiceAllocationInput): AllocationContext {
   if (!validDate(`${input.period}-01`) || !/^\d{4}-\d{2}$/.test(input.period) || !validDate(input.invoiceDate)) {
     throw new Error("Укажите месяц и дату выставления счёта");
   }
-  if (!safeMoney(input.settings.rateKopecks) || !safeMoney(input.fixedTargetKopecks) || !safeMoney(input.netRentKopecks)) {
+  if (!safeMoney(input.settings.rateKopecks) || !safeMoney(input.fixedTargetKopecks) || !Number.isSafeInteger(input.netRentKopecks)) {
     throw new Error("Проверьте ставку и итоговый расчёт аренды");
   }
   const monthStart = `${input.period}-01`;
