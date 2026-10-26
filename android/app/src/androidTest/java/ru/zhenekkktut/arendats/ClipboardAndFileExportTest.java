@@ -12,6 +12,8 @@ import android.os.SystemClock;
 import android.text.InputType;
 import android.util.Base64;
 import android.webkit.WebView;
+import android.webkit.WebChromeClient;
+import android.webkit.ConsoleMessage;
 import android.widget.EditText;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -27,6 +29,9 @@ import java.nio.file.Files;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import static org.junit.Assert.*;
 
 @RunWith(AndroidJUnit4.class)
@@ -109,8 +114,10 @@ public class ClipboardAndFileExportTest {
         MainActivity activity = start();
         try {
             WebView page = page(activity);
+            saveScreenshot(activity, "app-startup.png");
             evaluate(page, "document.querySelector('[aria-label=\"Настройки приложения\"]').click();true");
             waitFor(page, "!!document.querySelector('[role=\"dialog\"][data-state=\"open\"]')");
+            saveScreenshot(activity, "app-settings.png");
             instrumentation.runOnMainSync(activity::onBackPressed);
             waitFor(page, "!document.querySelector('[role=\"dialog\"][data-state=\"open\"]')");
             assertFalse("Back must dismiss settings, not finish the app", activity.isFinishing());
@@ -119,6 +126,7 @@ public class ClipboardAndFileExportTest {
             waitFor(page, "Array.from(document.querySelectorAll('button')).some(el=>el.textContent.trim()==='Добавить расход')");
             evaluate(page, "Array.from(document.querySelectorAll('button')).find(el=>el.textContent.trim()==='Добавить расход').click();true");
             waitFor(page, "!!document.querySelector('[role=\"dialog\"][data-state=\"open\"] [role=\"combobox\"]')");
+            saveScreenshot(activity, "app-expense.png");
             evaluate(page, "document.querySelector('[role=\"dialog\"][data-state=\"open\"] [role=\"combobox\"]').click();true");
             waitFor(page, "!!document.querySelector('[role=\"listbox\"][data-state=\"open\"]')");
             instrumentation.runOnMainSync(activity::onBackPressed);
@@ -173,6 +181,16 @@ public class ClipboardAndFileExportTest {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         MainActivity activity = (MainActivity) instrumentation.startActivitySync(intent);
         WebView page = page(activity);
+        List<String> console = Collections.synchronizedList(new ArrayList<>());
+        instrumentation.runOnMainSync(() -> {
+            page.setWebChromeClient(new WebChromeClient() {
+                @Override public boolean onConsoleMessage(ConsoleMessage message) {
+                    console.add(message.messageLevel() + ": " + message.message() + " @ " + message.sourceId() + ":" + message.lineNumber());
+                    return true;
+                }
+            });
+            page.reload();
+        });
         long deadline = SystemClock.uptimeMillis() + 20_000;
         while (SystemClock.uptimeMillis() < deadline) {
             if ("true".equals(evaluate(page, "document.readyState === 'complete' && !!document.querySelector('.app-root') && typeof AndroidApp.copyTextChecked === 'function'"))) {
@@ -182,14 +200,31 @@ public class ClipboardAndFileExportTest {
             }
             SystemClock.sleep(100);
         }
+        String details = evaluate(page, "JSON.stringify({url:location.href,ua:navigator.userAgent,state:document.readyState,app:!!document.querySelector('.app-root'),bridge:typeof AndroidApp,copy:typeof AndroidApp.copyTextChecked,body:document.body.innerText.slice(0,1200)})");
         instrumentation.runOnMainSync(activity::finish);
-        throw new AssertionError("The offline application did not become ready");
+        throw new AssertionError("The offline application did not become ready: " + details + " console=" + console);
     }
 
     private WebView page(MainActivity activity) throws Exception {
         Field field = MainActivity.class.getDeclaredField("webView");
         field.setAccessible(true);
         return (WebView) field.get(activity);
+    }
+
+    private void saveScreenshot(MainActivity activity, String name) throws Exception {
+        android.graphics.Bitmap screenshot = instrumentation.getUiAutomation().takeScreenshot();
+        assertNotNull("Android must provide the application screenshot", screenshot);
+        android.content.ContentValues values = new android.content.ContentValues();
+        values.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name);
+        values.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/png");
+        values.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
+            android.os.Environment.DIRECTORY_DOWNLOADS + "/arenda-pdf-test-output");
+        Uri output = activity.getContentResolver().insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+        assertNotNull(output);
+        try (java.io.OutputStream stream = activity.getContentResolver().openOutputStream(output, "w")) {
+            assertNotNull(stream);
+            assertTrue(screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, stream));
+        } finally { screenshot.recycle(); }
     }
 
     private String evaluate(WebView page, String script) throws Exception {

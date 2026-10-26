@@ -76,10 +76,10 @@
 
 1. Установить зависимости через `npm ci` (Node.js 22).
 2. Проверить расчёт, подбор периодов, архив и совместимость старых данных:
-   `node --test --test-concurrency=1 tests/document-tools.test.mjs tests/fuel-deduction.test.mjs tests/invoice-periods.test.mjs tests/invoice-allocation.test.mjs tests/offline-allocation.test.mjs tests/invoice-texts.test.mjs tests/workflow-tools.test.mjs tests/offline-archive.test.mjs tests/offline-documents.test.mjs tests/offline-undo.test.mjs tests/mobile-layout.test.mjs tests/tax-calculation.test.mjs tests/expense-shortcuts.test.mjs tests/offline-shortcuts.test.mjs`.
+   `node --test --test-concurrency=1 tests/document-tools.test.mjs tests/fuel-deduction.test.mjs tests/invoice-periods.test.mjs tests/invoice-allocation.test.mjs tests/offline-allocation.test.mjs tests/invoice-texts.test.mjs tests/clipboard-tools.test.mjs tests/offline-category-history.test.mjs tests/workflow-tools.test.mjs tests/offline-rest-days.test.mjs tests/offline-fuel-variable.test.mjs tests/offline-archive.test.mjs tests/offline-documents.test.mjs tests/offline-undo.test.mjs tests/mobile-layout.test.mjs tests/tax-calculation.test.mjs tests/expense-shortcuts.test.mjs tests/offline-shortcuts.test.mjs tests/offline-compat.test.mjs`.
 3. Собрать автономный интерфейс: `node node_modules/vite/bin/vite.js build --config offline/vite.config.ts`. Результат помещается в `android/app/src/main/assets`.
 4. Собрать APK с Java 17 и Gradle 8.11.1: `gradle -p android :app:assembleDebug --no-daemon`.
-5. В GitHub Actions проверить сохранение одностраничного и двухстраничного акта сверки и акта-расчёта на эмуляторе Android. PDF и изображения страниц входят в отчёт `android-pdf-test-report`.
+5. В GitHub Actions проверить запуск автономного интерфейса, копирование и вставку, результаты сохранения JSON/Excel, системную кнопку «Назад» и сохранение обоих PDF на эмуляторе Android. PDF, изображения страниц и снимки интерфейса входят в отчёт `android-pdf-test-report`. Сборка интерфейса учитывает синтаксис Chromium 74 и добавляет локальную поддержку недостающих методов старого WebView.
 6. После успешной проверки скачать `arenda-ts-apk`. Автономное приложение хранит записи на телефоне; перед переустановкой сохранить JSON-копию и затем восстановить её.
 
 APK из PR имеет тестовую подпись: подпись может отличаться между сборками. Публикация постоянной ссылки в Releases выполняется workflow только после сборки ветки `main`.
