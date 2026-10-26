@@ -32,6 +32,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { toast } from "sonner";
+import { bankAmountText, copyPlainText, plainClipboardText } from "@/app/clipboard-tools";
 import type { TaxAdjustment, TaxYearOptions } from "@/app/tax-calculation";
 import { normalizeExpenseShortcuts, validateExpenseShortcuts, type ExpenseShortcut } from "@/app/expense-shortcuts";
 import { linkedAsOfDate, missingEntryDates, nextInvoiceNumber, deriveInvoiceNumberFloor, normalizeRestDates, isRestDate } from "@/app/workflow-tools";
@@ -225,7 +226,9 @@ type OfflineStore = {
 
 type AndroidAppBridge = {
   copyText: (text: string) => void;
+  copyTextChecked?: (text: string) => boolean;
   saveBase64File: (base64: string, fileName: string, mimeType: string) => void;
+  saveBase64FileWithResult?: (base64: string, fileName: string, mimeType: string, requestId: string) => boolean;
   saveHtmlAsPdf: (html: string, fileName: string) => void;
   saveArchivedHtmlAsPdf?: (html: string, fileName: string, archiveId: string) => void;
   openArchivedPdf?: (uri: string) => void;
@@ -238,6 +241,7 @@ declare global {
     AndroidApp?: AndroidAppBridge;
     onArchivePdfSaved?: (id: string, uri: string) => void;
     onArchivePdfSaveEnded?: (id: string, status: string) => void;
+    onFileExportEnded?: (id: string, status: string) => void;
   }
 }
 
@@ -302,6 +306,9 @@ function normalizeExpenseCategories(value: unknown, allowEmpty = false): Expense
     seen.add(category.id);
     if (!category.builtIn) customCount += 1;
     unique.push(category);
+  }
+  if (!allowEmpty && unique.length > 0 && !seen.has("fuel")) {
+    unique.unshift({ ...DEFAULT_EXPENSE_CATEGORIES[0] });
   }
   if (unique.length > 0 || allowEmpty) return unique;
   return DEFAULT_EXPENSE_CATEGORIES.map((category) => ({ ...category }));
@@ -932,6 +939,9 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
     const categories = normalizeExpenseCategories(payload.categories, true);
     if (categories.length === 0) throw new Error("Оставьте хотя бы одну категорию");
     const categoryIds = new Set(categories.map((category) => category.id));
+    if (!categoryIds.has("fuel")) {
+      throw new Error("Топливо нужно для расчёта аренды; название можно изменить");
+    }
     const fallbackCategory = categories.find((category) => category.id === "other") ?? categories[0];
     store.expenses = store.expenses.map((expense) => (
       categoryIds.has(expense.category)
@@ -1262,11 +1272,48 @@ function documentPeriod(value: string) {
   return `${monthNamesGenitive[Number(month) - 1]} ${year} года`;
 }
 
+function copyField(value: unknown): string {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+}
+
+export function invoiceTextIssue(invoice: Invoice, settings: DocumentSettings): string {
+  if (!["fixed", "variable", "mixed", "other"].includes(invoice.kind)) return "Проверьте вид начисления счёта";
+  if (!copyField(invoice.invoiceNumber)) return "Укажите номер счёта перед копированием";
+  if (!validIsoDate(invoice.invoiceDate) || !validIsoDate(`${invoice.period}-01`)) return "Проверьте дату счёта и расчётный месяц";
+  if (!validIsoDate(settings.contractDate)) return "Проверьте дату договора для текста счёта";
+  if (![settings.contractNumber, settings.vehicleModel, settings.vehicleVin, settings.vatLabel]
+    .every((value) => copyField(value) && !copyField(value).includes("["))) return "Не хватает реквизитов для текста счёта";
+  try { normalizeInvoiceParts(invoice); bankAmountText(invoice.amountKopecks); }
+  catch { return "Проверьте сумму и части счёта перед копированием"; }
+  return "";
+}
+
+function requireInvoiceText(invoice: Invoice, settings: DocumentSettings) {
+  const issue = invoiceTextIssue(invoice, settings);
+  if (issue) throw new Error(issue);
+}
+
+function invoiceMoney(kopecks: number): string {
+  const [rubles, cents] = bankAmountText(kopecks).split(",");
+  return `${new Intl.NumberFormat("ru-RU").format(Number(rubles))},${cents} ₽`;
+}
+
+export function invoiceBankPositions(invoice: Invoice, settings: DocumentSettings) {
+  requireInvoiceText(invoice, settings);
+  const parts = invoice.kind === "mixed"
+    ? [{ kind: "fixed" as const, title: "Позиция 1 · Постоянная часть", amountKopecks: invoice.fixedAmountKopecks! },
+      { kind: "variable" as const, title: "Позиция 2 · Переменная часть", amountKopecks: invoice.variableAmountKopecks! }]
+    : [{ kind: invoice.kind, title: "Позиция счёта в банке", amountKopecks: invoice.amountKopecks }];
+  return parts.map((part) => ({ ...part, text: invoiceLine({ ...invoice, kind: part.kind, amountKopecks: part.amountKopecks }, settings),
+    amountText: bankAmountText(part.amountKopecks) }));
+}
+
 export function invoiceLine(invoice: Invoice, settings: DocumentSettings): string {
+  requireInvoiceText(invoice, settings);
   if (invoice.kind === "mixed") {
     return [
-      `${invoiceLine({ ...invoice, kind: "fixed" }, settings)} Сумма: ${money(invoice.fixedAmountKopecks ?? 0)}.`,
-      `${invoiceLine({ ...invoice, kind: "variable" }, settings)} Сумма: ${money(invoice.variableAmountKopecks ?? 0)}.`,
+      `${invoiceLine({ ...invoice, kind: "fixed" }, settings)} Сумма: ${invoiceMoney(invoice.fixedAmountKopecks!)}.`,
+      `${invoiceLine({ ...invoice, kind: "variable" }, settings)} Сумма: ${invoiceMoney(invoice.variableAmountKopecks!)}.`,
     ].join("\n\n");
   }
   const part =
@@ -1277,10 +1324,11 @@ export function invoiceLine(invoice: Invoice, settings: DocumentSettings): strin
         : "Арендная плата";
   const days = invoice.allocationMode !== "unlinked" && invoice.bottleStartDate && invoice.bottleEndDate
     ? `, бутыли за ${dateLabel(invoice.bottleStartDate)}–${dateLabel(invoice.bottleEndDate)}` : "";
-  return `${part} за ${documentPeriod(invoice.period)}${days} по договору аренды транспортного средства без экипажа № ${settings.contractNumber} от ${dateLabel(settings.contractDate)}, автомобиль ${settings.vehicleModel}, VIN ${settings.vehicleVin}.`;
+  return `${part} за ${documentPeriod(invoice.period)}${days} по договору аренды транспортного средства без экипажа № ${copyField(settings.contractNumber)} от ${dateLabel(settings.contractDate)}, автомобиль ${copyField(settings.vehicleModel)}, VIN ${copyField(settings.vehicleVin)}.`;
 }
 
 export function paymentPurpose(invoice: Invoice, settings: DocumentSettings) {
+  requireInvoiceText(invoice, settings);
   const part =
     invoice.kind === "fixed"
       ? "часть постоянной арендной платы"
@@ -1289,14 +1337,16 @@ export function paymentPurpose(invoice: Invoice, settings: DocumentSettings) {
         : invoice.kind === "mixed"
           ? "постоянную и переменную части арендной платы"
         : "арендную плату";
-  return `Оплата по счёту № ${invoice.invoiceNumber} от ${dateLabel(invoice.invoiceDate)} за ${part} за ${documentPeriod(invoice.period)} по договору № ${settings.contractNumber} от ${dateLabel(settings.contractDate)}. ${settings.vatLabel}.`;
+  return `Оплата по счёту № ${copyField(invoice.invoiceNumber)} от ${dateLabel(invoice.invoiceDate)} за ${part} за ${documentPeriod(invoice.period)} по договору № ${copyField(settings.contractNumber)} от ${dateLabel(settings.contractDate)}. ${copyField(settings.vatLabel).replace(/\.+$/, "")}.`;
 }
 
-function emailSubject(invoice: Invoice, settings: DocumentSettings) {
-  return `Счёт № ${invoice.invoiceNumber} — аренда ${settings.vehicleModel} за ${documentPeriod(invoice.period)}`;
+export function emailSubject(invoice: Invoice, settings: DocumentSettings) {
+  requireInvoiceText(invoice, settings);
+  return `Счёт № ${copyField(invoice.invoiceNumber)} от ${dateLabel(invoice.invoiceDate)} — аренда ${copyField(settings.vehicleModel)} за ${documentPeriod(invoice.period)}`;
 }
 
 export function emailText(invoice: Invoice, settings: DocumentSettings) {
+  requireInvoiceText(invoice, settings);
   const action =
     invoice.kind === "fixed"
       ? "на частичную оплату постоянной арендной платы"
@@ -1305,8 +1355,9 @@ export function emailText(invoice: Invoice, settings: DocumentSettings) {
         : "на оплату арендной платы";
 
   const components = invoice.kind === "mixed"
-    ? `\nПостоянная часть: ${money(invoice.fixedAmountKopecks ?? 0)}.\nПеременная часть: ${money(invoice.variableAmountKopecks ?? 0)}.` : "";
-  return `Добрый день!\n\nНаправляю счёт № ${invoice.invoiceNumber} ${action} за ${settings.vehicleModel} за ${documentPeriod(invoice.period)} по договору № ${settings.contractNumber} от ${dateLabel(settings.contractDate)}.\n\nСумма к оплате: ${money(invoice.amountKopecks)}. ${settings.vatLabel}.${components}\n\nПрошу оплатить по реквизитам, указанным в счёте.\n\nСпасибо!`;
+    ? `\nПостоянная часть: ${invoiceMoney(invoice.fixedAmountKopecks!)}.\nПеременная часть: ${invoiceMoney(invoice.variableAmountKopecks!)}.` : "";
+  const due = validIsoDate(invoice.dueDate) ? `\nСрок оплаты: до ${dateLabel(invoice.dueDate)}.` : "";
+  return `Добрый день!\n\nНаправляю счёт № ${copyField(invoice.invoiceNumber)} от ${dateLabel(invoice.invoiceDate)} ${action} за ${copyField(settings.vehicleModel)} за ${documentPeriod(invoice.period)} по договору № ${copyField(settings.contractNumber)} от ${dateLabel(settings.contractDate)}.\n\nСумма к оплате: ${invoiceMoney(invoice.amountKopecks)}. ${copyField(settings.vatLabel).replace(/\.+$/, "")}.${components}${due}\n\nПрошу оплатить по реквизитам, указанным в счёте.\n\nСпасибо!`;
 }
 
 function toKopecks(value: string) {
@@ -1432,22 +1483,40 @@ function CopyBlock({
   text,
   copied,
   onCopy,
+  amountText,
+  amountCopied = false,
+  onCopyAmount,
+  disabled = false,
 }: {
   title: string;
   text: string;
   copied: boolean;
   onCopy: () => void;
+  amountText?: string;
+  amountCopied?: boolean;
+  onCopyAmount?: () => void;
+  disabled?: boolean;
 }) {
+  const plainText = plainClipboardText(text);
   return (
     <div className="copy-block">
       <div className="copy-block-heading">
         <span>{title}</span>
-        <Button type="button" variant="outline" size="sm" onClick={onCopy}>
+        <Button type="button" variant="outline" size="sm" onClick={onCopy} disabled={disabled} aria-label={`Копировать текст: ${title}`}>
           {copied ? <CheckCircle2 /> : <Copy />}
-          {copied ? "Скопировано" : "Копировать"}
+          {copied ? "Скопировано" : "Копировать текст"}
         </Button>
       </div>
-      <p>{text}</p>
+      <Textarea className="copy-block-text" aria-label={title} readOnly value={plainText}
+        rows={Math.min(10, Math.max(2, plainText.split("\n").length))}
+        onFocus={(event) => event.currentTarget.select()} onClick={(event) => event.currentTarget.select()} />
+      {amountText && onCopyAmount && <div className="copy-amount-row">
+        <label><span>Сумма, ₽</span><Input className="copy-amount-value" aria-label={`${title} — сумма, ₽`}
+          readOnly value={amountText} onFocus={(event) => event.currentTarget.select()} onClick={(event) => event.currentTarget.select()} /></label>
+        <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={onCopyAmount} aria-label={`Копировать сумму: ${title}`}>
+          {amountCopied ? <CheckCircle2 /> : <Copy />}{amountCopied ? "Скопировано" : "Копировать сумму"}
+        </Button>
+      </div>}
     </div>
   );
 }
@@ -1463,7 +1532,12 @@ export default function RentalApp() {
   const [loadError, setLoadError] = useState("");
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [copiedKey, setCopiedKey] = useState("");
+  const [copyingKey, setCopyingKey] = useState("");
+  const copiedTimerRef = useRef<number | null>(null);
   const [textInvoice, setTextInvoice] = useState<Invoice | null>(null);
+  useEffect(() => () => {
+    if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
+  }, []);
   const [settlementOpen, setSettlementOpen] = useState(false);
   const [quickEntryOpen, setQuickEntryOpen] = useState(false);
   const [closeMonthOpen, setCloseMonthOpen] = useState(false);
@@ -1473,6 +1547,9 @@ export default function RentalApp() {
   const [dayDetailsOpen, setDayDetailsOpen] = useState(false);
   const [entrySavedMessage, setEntrySavedMessage] = useState("");
   const [pdfSavingId, setPdfSavingId] = useState<number | null>(null);
+  const [fileExportBusy, setFileExportBusy] = useState(false);
+  const fileExportPending = useRef<{ id: string; kind: "backup" | "excel" } | null>(null);
+  const fileExportSequence = useRef(0);
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [themeMode, setThemeMode] = useState<ThemeMode>("system");
@@ -1635,6 +1712,31 @@ export default function RentalApp() {
     const timer = window.setTimeout(() => setEntrySavedMessage(""), 2400);
     return () => window.clearTimeout(timer);
   }, [entrySavedMessage]);
+
+  const recordBackupSaved = useCallback(() => {
+    const savedAt = new Date().toISOString();
+    window.localStorage.setItem(LAST_BACKUP_STORAGE_KEY, savedAt);
+    setLastBackupAt(savedAt);
+    navigator.vibrate?.(12);
+  }, []);
+
+  useEffect(() => {
+    window.onFileExportEnded = (id, status) => {
+      const pending = fileExportPending.current;
+      if (!pending || pending.id !== id || !["saved", "cancelled", "error"].includes(status)) return;
+      fileExportPending.current = null;
+      setFileExportBusy(false);
+      if (status === "saved") {
+        if (pending.kind === "backup") recordBackupSaved();
+        toast.success(pending.kind === "backup" ? "Резервная копия сохранена" : "Excel-файл сохранён");
+      } else if (status === "cancelled") {
+        toast.info("Сохранение файла отменено");
+      } else {
+        toast.error("Не удалось сохранить файл. Повторите сохранение");
+      }
+    };
+    return () => { delete window.onFileExportEnded; };
+  }, [recordBackupSaved]);
 
   useEffect(() => {
     const media = window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -2159,28 +2261,26 @@ export default function RentalApp() {
   }
 
   async function copyText(text: string, key: string) {
+    if (copyingKey) return;
+    setCopiedKey("");
+    setCopyingKey(key);
+    if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
     try {
-      if (window.AndroidApp) {
-        window.AndroidApp.copyText(text);
-      } else if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        const textarea = document.createElement("textarea");
-        textarea.value = text;
-        textarea.style.position = "fixed";
-        textarea.style.opacity = "0";
-        document.body.appendChild(textarea);
-        textarea.focus();
-        textarea.select();
-        const copied = document.execCommand("copy");
-        textarea.remove();
-        if (!copied) throw new Error("copy failed");
+      const result = await copyPlainText(text, {
+        native: window.AndroidApp,
+        clipboard: window.isSecureContext ? navigator.clipboard : undefined,
+        document,
+      });
+      if (result === "legacy") {
+        toast.info("Команда копирования отправлена. Если текст не вставляется, нажмите на него и скопируйте вручную.", { id: "clipboard-status" });
+        return;
       }
       setCopiedKey(key);
-      toast.success("Текст скопирован");
-    } catch {
-      toast.error("Не получилось скопировать текст");
-    }
+      copiedTimerRef.current = window.setTimeout(() => setCopiedKey(""), 3_000);
+      toast.success("Текст скопирован", { id: "clipboard-status" });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Не удалось скопировать текст. Выделите его и скопируйте вручную", { id: "clipboard-status" });
+    } finally { setCopyingKey(""); }
   }
 
   function openInvoice(requestedKind?: Invoice["kind"]) {
@@ -2918,7 +3018,9 @@ export default function RentalApp() {
         }),
         ["ИТОГО", "", "", "", "", totalInvoiced / 100, totalPaid / 100,
           Math.max(0, totalInvoiced - totalPaid) / 100,
-          "", "", "", "", "", "", "", "", ""],
+          "", "", "", "", "", "", "", "", "",
+          data.invoices.reduce((sum, invoice) => sum + normalizeInvoiceParts(invoice).fixedAmountKopecks, 0) / 100,
+          data.invoices.reduce((sum, invoice) => sum + normalizeInvoiceParts(invoice).variableAmountKopecks, 0) / 100, ""],
       ];
       const invoicesSheet = XLSX.utils.aoa_to_sheet(invoiceRows);
       invoicesSheet["!cols"] = [
@@ -2926,11 +3028,12 @@ export default function RentalApp() {
         { wch: 26 }, { wch: 15 }, { wch: 15 },
         { wch: 15 }, { wch: 15 }, { wch: 20 }, { wch: 24 }, { wch: 38 },
         { wch: 48 }, { wch: 62 }, { wch: 46 }, { wch: 70 },
+        { wch: 22 }, { wch: 22 }, { wch: 24 },
       ];
       XLSX.utils.book_append_sheet(workbook, invoicesSheet, "Счета и оплаты");
 
       const expenseRows: (string | number)[][] = [
-        ["Дата", "Категория", "Сумма, ₽", "Способ оплаты", "Документ", "Примечание", "Кто оплатил", "Вычет из аренды, ₽"],
+        ["Дата", "Категория", "Сумма, ₽", "Способ оплаты", "Документ", "Примечание", "Кто оплатил", "Топливо заказчика, ₽"],
         ...data.expenses.map((expense) => [
           dateLabel(expense.expenseDate),
           expenseCategoryName(expense.category),
@@ -2941,7 +3044,7 @@ export default function RentalApp() {
           expense.payer === "customer" ? "Заказчик" : "Я",
           expense.category === "fuel" && expense.payer === "customer" ? expense.amountKopecks / 100 : 0,
         ]),
-        ["ИТОГО", "", totalExpenses / 100, "", "", ""],
+        ["ИТОГО", "", totalExpenses / 100, "", "", "", "", customerFuel / 100],
       ];
       const expensesSheet = XLSX.utils.aoa_to_sheet(expenseRows);
       expensesSheet["!cols"] = [{ wch: 15 }, { wch: 24 }, { wch: 15 }, { wch: 20 }, { wch: 22 }, { wch: 38 }, { wch: 20 }, { wch: 24 }];
@@ -2966,6 +3069,7 @@ export default function RentalApp() {
           type: "base64",
           compression: true,
         });
+        if (beginNativeFileExport(base64, fileName, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "excel")) return;
         window.AndroidApp.saveBase64File(
           base64,
           fileName,
@@ -2974,10 +3078,33 @@ export default function RentalApp() {
       } else {
         XLSX.writeFile(workbook, fileName, { compression: true });
       }
-      toast.success("Excel-файл сформирован");
+      toast.success("Excel-файл подготовлен к сохранению");
     } catch {
       toast.error("Не удалось сформировать Excel");
     }
+  }
+
+  function beginNativeFileExport(base64: string, fileName: string, mimeType: string, kind: "backup" | "excel") {
+    const bridge = window.AndroidApp;
+    if (!bridge?.saveBase64FileWithResult) return false;
+    if (fileExportPending.current) {
+      toast.info("Завершите сохранение предыдущего файла");
+      return true;
+    }
+    const id = `${kind}-${Date.now()}-${++fileExportSequence.current}`;
+    fileExportPending.current = { id, kind };
+    setFileExportBusy(true);
+    try {
+      if (bridge.saveBase64FileWithResult(base64, fileName, mimeType, id) !== true) {
+        throw new Error("Сохранение файла не началось");
+      }
+      if (fileExportPending.current?.id === id) toast.info("Выберите место и подтвердите сохранение файла");
+    } catch {
+      if (fileExportPending.current?.id === id) fileExportPending.current = null;
+      setFileExportBusy(false);
+      toast.error("Не удалось начать сохранение файла. Повторите попытку");
+    }
+    return true;
   }
 
   function exportBackup() {
@@ -2985,6 +3112,7 @@ export default function RentalApp() {
       const fileName = `arenda_ts_backup_${localIsoDate()}.json`;
       const json = JSON.stringify(readOfflineStore(), null, 2);
       if (window.AndroidApp) {
+        if (beginNativeFileExport(utf8Base64(json), fileName, "application/json", "backup")) return;
         window.AndroidApp.saveBase64File(
           utf8Base64(json),
           fileName,
@@ -2993,11 +3121,7 @@ export default function RentalApp() {
       } else {
         saveBrowserFile(new Blob([json], { type: "application/json;charset=utf-8" }), fileName);
       }
-      const savedAt = new Date().toISOString();
-      window.localStorage.setItem(LAST_BACKUP_STORAGE_KEY, savedAt);
-      setLastBackupAt(savedAt);
-      navigator.vibrate?.(12);
-      toast.success("Резервная копия подготовлена");
+      toast.success("Резервная копия подготовлена к сохранению");
     } catch {
       toast.error("Не удалось создать резервную копию");
     }
@@ -3492,9 +3616,10 @@ export default function RentalApp() {
                             variant="outline"
                             className="invoice-copy-button"
                             onClick={() => {
-                              if (!invoiceTextReady) {
-                                toast.error("Не хватает реквизитов для текста счёта");
-                                openRequisites();
+                              const issue = invoiceTextIssue(invoice, documentSettings);
+                              if (issue) {
+                                toast.error(issue);
+                                if (!invoiceTextReady) openRequisites();
                                 return;
                               }
                               setCopiedKey("");
@@ -3925,40 +4050,38 @@ export default function RentalApp() {
         <DialogContent className="dialog-card copy-dialog max-h-[92vh] overflow-y-auto sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>Тексты для счёта № {textInvoice?.invoiceNumber ?? ""}</DialogTitle>
-            <DialogDescription>Скопируйте нужный текст и вставьте его в банк или письмо.</DialogDescription>
+            <DialogDescription>В банк вставьте текст позиции и сумму отдельно. Для письма скопируйте тему и текст. Нажатие на поле выделяет его для ручного копирования.</DialogDescription>
           </DialogHeader>
           {textInvoice && (
             <div className="copy-stack copy-dialog-stack">
-              {textInvoice.kind === "mixed" ? <>
-                {(["fixed", "variable"] as const).map((kind) => <CopyBlock key={kind}
-                  title={`Строка ${kind === "fixed" ? "постоянной" : "переменной"} части · ${money(kind === "fixed" ? textInvoice.fixedAmountKopecks ?? 0 : textInvoice.variableAmountKopecks ?? 0)}`}
-                  text={invoiceLine({ ...textInvoice, kind }, documentSettings)}
-                  copied={copiedKey === `line-${kind}-${textInvoice.id}`}
-                  onCopy={() => void copyText(invoiceLine({ ...textInvoice, kind }, documentSettings), `line-${kind}-${textInvoice.id}`)}
-                />)}
-                <p className="help-note">В банке добавьте две позиции по указанным суммам. Номер счёта один, общая сумма — {money(textInvoice.amountKopecks)}.</p>
-              </> : <CopyBlock
-                title="Строка счёта в банке"
-                text={invoiceLine(textInvoice, documentSettings)}
-                copied={copiedKey === `line-${textInvoice.id}`}
-                onCopy={() => void copyText(invoiceLine(textInvoice, documentSettings), `line-${textInvoice.id}`)}
-              />}
+              {invoiceBankPositions(textInvoice, documentSettings).map((position) => <CopyBlock key={position.kind}
+                title={position.title} text={position.text} amountText={position.amountText}
+                copied={copiedKey === `line-${position.kind}-${textInvoice.id}`}
+                amountCopied={copiedKey === `amount-${position.kind}-${textInvoice.id}`}
+                disabled={Boolean(copyingKey)}
+                onCopy={() => void copyText(position.text, `line-${position.kind}-${textInvoice.id}`)}
+                onCopyAmount={() => void copyText(position.amountText, `amount-${position.kind}-${textInvoice.id}`)}
+              />)}
+              <p className="help-note">{textInvoice.kind === "mixed" ? "В банке добавьте две позиции. Номер счёта один." : "В банке добавьте одну позицию."} Общая сумма — {invoiceMoney(textInvoice.amountKopecks)}. {copyField(documentSettings.vatLabel).replace(/\.+$/, "")}.</p>
               <CopyBlock
                 title="Назначение платежа"
                 text={paymentPurpose(textInvoice, documentSettings)}
                 copied={copiedKey === `purpose-${textInvoice.id}`}
+                disabled={Boolean(copyingKey)}
                 onCopy={() => void copyText(paymentPurpose(textInvoice, documentSettings), `purpose-${textInvoice.id}`)}
               />
               <CopyBlock
                 title="Тема письма"
                 text={emailSubject(textInvoice, documentSettings)}
                 copied={copiedKey === `subject-${textInvoice.id}`}
+                disabled={Boolean(copyingKey)}
                 onCopy={() => void copyText(emailSubject(textInvoice, documentSettings), `subject-${textInvoice.id}`)}
               />
               <CopyBlock
                 title="Текст письма"
                 text={emailText(textInvoice, documentSettings)}
                 copied={copiedKey === `email-${textInvoice.id}`}
+                disabled={Boolean(copyingKey)}
                 onCopy={() => void copyText(emailText(textInvoice, documentSettings), `email-${textInvoice.id}`)}
               />
             </div>
@@ -4277,8 +4400,9 @@ export default function RentalApp() {
                     variant="ghost"
                     size="icon"
                     onClick={() => removeExpenseCategory(category)}
-                    disabled={expenseCategoriesDraft.length <= 1}
+                    disabled={category.id === "fuel" || expenseCategoriesDraft.length <= 1}
                     aria-label={`Удалить категорию ${category.name}`}
+                    title={category.id === "fuel" ? "Топливо нужно для расчёта аренды; название можно изменить" : undefined}
                   >
                     <Trash2 />
                   </Button>
@@ -4289,6 +4413,7 @@ export default function RentalApp() {
               <Plus />Добавить свою категорию
             </Button>
             <p className="help-note">
+              Топливо нужно для расчёта аренды; название можно изменить. {" "}
               Удалённая категория исчезнет из фильтра. Если в ней есть расходы, они сохранятся и перейдут в категорию «{expenseCategoriesDraft.find((category) => category.id === "other")?.name ?? expenseCategoriesDraft[0]?.name ?? "оставшаяся"}».
             </p>
             <DialogFooter>
@@ -4310,10 +4435,11 @@ export default function RentalApp() {
               <strong>Копии и выгрузка</strong>
               <p className={backupDue ? "backup-status backup-status-due" : "backup-status"}>{lastBackupLabel}</p>
               <div className="settings-data-actions">
-                <Button type="button" variant="outline" onClick={exportBackup}><Download />Сохранить копию</Button>
-                <Button type="button" variant="outline" onClick={() => { setSettingsOpen(false); window.setTimeout(() => backupInputRef.current?.click(), 100); }}><Upload />Восстановить копию</Button>
-                <Button type="button" variant="outline" disabled={!data || loading} onClick={exportExcel}><FileSpreadsheet />Скачать Excel</Button>
+                <Button type="button" variant="outline" disabled={fileExportBusy} onClick={exportBackup}><Download />Сохранить копию</Button>
+                <Button type="button" variant="outline" disabled={fileExportBusy} onClick={() => { setSettingsOpen(false); window.setTimeout(() => backupInputRef.current?.click(), 100); }}><Upload />Восстановить копию</Button>
+                <Button type="button" variant="outline" disabled={!data || loading || fileExportBusy} onClick={exportExcel}><FileSpreadsheet />Скачать Excel</Button>
               </div>
+              {fileExportBusy && <p className="help-note" role="status">Файл сохраняется. Подтвердите выбор в системном окне.</p>}
               <p className="help-note">JSON-копия сохраняет все записи и реквизиты. Excel — отчёт за выбранный месяц.</p>
               {missingDocumentFields.length > 0 && <Button type="button" variant="outline" onClick={openRequisites}>Заполнить недостающие реквизиты</Button>}
             </div>

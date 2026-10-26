@@ -51,9 +51,8 @@ public class MainActivity extends Activity {
     private FrameLayout rootView;
     private WebViewAssetLoader assetLoader;
     private ValueCallback<Uri[]> fileChooserCallback;
-    private byte[] pendingFileBytes;
-    private String pendingFileName;
-    private String pendingMimeType;
+    private final Object fileExportLock = new Object();
+    private FileExportRequest pendingFileExport;
     private String pendingPdfHtml;
     private String pendingPdfFileName;
     private WebView pdfWebView;
@@ -63,6 +62,23 @@ public class MainActivity extends Activity {
     private boolean pdfMediaStoreDestination;
     private boolean pdfInProgress;
     private String activeArchiveId;
+    private boolean backDecisionPending;
+    private long backDecisionSerial;
+    private Runnable backDecisionTimeout;
+
+    private static final class FileExportRequest {
+        final byte[] bytes;
+        final String fileName;
+        final String mimeType;
+        final String requestId;
+
+        FileExportRequest(byte[] bytes, String fileName, String mimeType, String requestId) {
+            this.bytes = bytes;
+            this.fileName = fileName;
+            this.mimeType = mimeType;
+            this.requestId = requestId;
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -221,19 +237,23 @@ public class MainActivity extends Activity {
         }
 
         if (requestCode == REQUEST_SAVE_FILE) {
-            if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null && pendingFileBytes != null) {
+            FileExportRequest request;
+            synchronized (fileExportLock) { request = pendingFileExport; }
+            if (request == null) return;
+            String status = resultCode == Activity.RESULT_CANCELED ? "cancelled" : "error";
+            if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
                 try (OutputStream output = getContentResolver().openOutputStream(data.getData(), "w")) {
                     if (output == null) throw new IllegalStateException("Файл недоступен");
-                    output.write(pendingFileBytes);
+                    output.write(request.bytes);
                     output.flush();
-                    Toast.makeText(this, R.string.file_saved, Toast.LENGTH_SHORT).show();
                 } catch (Exception error) {
-                    Toast.makeText(this, R.string.file_save_error, Toast.LENGTH_LONG).show();
+                    finishFileExport(request, "error");
+                    return;
                 }
+                // The try-with-resources close has completed before success is reported.
+                status = "saved";
             }
-            pendingFileBytes = null;
-            pendingFileName = null;
-            pendingMimeType = null;
+            finishFileExport(request, status);
             return;
         }
 
@@ -280,6 +300,35 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        if (backDecisionPending) return;
+        if (webView == null) {
+            super.onBackPressed();
+            return;
+        }
+        backDecisionPending = true;
+        final long decision = ++backDecisionSerial;
+        backDecisionTimeout = () -> {
+            if (!backDecisionPending || decision != backDecisionSerial) return;
+            backDecisionPending = false;
+            backDecisionTimeout = null;
+            if (!isFinishing() && !isDestroyed()) performDefaultBack();
+        };
+        pdfHandler.postDelayed(backDecisionTimeout, 1000);
+        webView.evaluateJavascript(
+            "(function(){const open=document.querySelector('[role=\"listbox\"][data-state=\"open\"],"
+                + "[role=\"dialog\"][data-state=\"open\"],[role=\"alertdialog\"][data-state=\"open\"]');"
+                + "if(!open)return false;document.dispatchEvent(new KeyboardEvent('keydown',"
+                + "{key:'Escape',code:'Escape',bubbles:true,cancelable:true}));return true;})()",
+            consumed -> {
+                if (!backDecisionPending || decision != backDecisionSerial) return;
+                backDecisionPending = false;
+                if (backDecisionTimeout != null) pdfHandler.removeCallbacks(backDecisionTimeout);
+                backDecisionTimeout = null;
+                if (!"true".equals(consumed) && !isFinishing() && !isDestroyed()) performDefaultBack();
+            });
+    }
+
+    private void performDefaultBack() {
         if (webView != null && webView.canGoBack()) {
             webView.goBack();
         } else {
@@ -289,6 +338,12 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        backDecisionPending = false;
+        if (backDecisionTimeout != null) pdfHandler.removeCallbacks(backDecisionTimeout);
+        backDecisionTimeout = null;
+        FileExportRequest fileRequest;
+        synchronized (fileExportLock) { fileRequest = pendingFileExport; }
+        if (fileRequest != null) finishFileExport(fileRequest, "cancelled");
         if (pdfDestination != null) finishPdfSave(pdfDestination, "", pdfMediaStoreDestination, false);
         else if (pdfInProgress) finishPendingPdfSave("cancelled");
         if (webView != null) {
@@ -322,34 +377,34 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void copyText(String text) {
-            ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-            clipboard.setPrimaryClip(ClipData.newPlainText("Текст", text));
+            copyTextChecked(text);
+        }
+
+        @JavascriptInterface
+        public boolean copyTextChecked(String text) {
+            if (text == null || text.trim().isEmpty() || isFinishing() || isDestroyed()) return false;
+            try {
+                ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                if (clipboard == null) return false;
+                clipboard.setPrimaryClip(ClipData.newPlainText("Текст", text));
+                return true;
+            } catch (RuntimeException error) {
+                android.util.Log.w("ArendaCopy", "Could not write to the clipboard", error);
+                return false;
+            }
         }
 
         @JavascriptInterface
         public void saveBase64File(String base64, String fileName, String mimeType) {
-            try {
-                pendingFileBytes = Base64.decode(base64, Base64.DEFAULT);
-                pendingFileName = safeFileName(fileName);
-                pendingMimeType = mimeType == null || mimeType.isEmpty()
-                    ? "application/octet-stream"
-                    : mimeType;
-                runOnUiThread(() -> {
-                    Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
-                    intent.addCategory(Intent.CATEGORY_OPENABLE);
-                    intent.setType(pendingMimeType);
-                    intent.putExtra(Intent.EXTRA_TITLE, pendingFileName);
-                    try {
-                        startActivityForResult(intent, REQUEST_SAVE_FILE);
-                    } catch (Exception error) {
-                        pendingFileBytes = null;
-                        Toast.makeText(MainActivity.this, R.string.file_save_error, Toast.LENGTH_LONG).show();
-                    }
-                });
-            } catch (Exception error) {
-                pendingFileBytes = null;
+            if (!beginFileExport(base64, fileName, mimeType, null)) {
                 runOnUiThread(() -> Toast.makeText(MainActivity.this, R.string.file_save_error, Toast.LENGTH_LONG).show());
             }
+        }
+
+        @JavascriptInterface
+        public boolean saveBase64FileWithResult(String base64, String fileName, String mimeType, String requestId) {
+            if (requestId == null || requestId.trim().isEmpty() || requestId.length() > 128) return false;
+            return beginFileExport(base64, fileName, mimeType, requestId);
         }
 
         @JavascriptInterface
@@ -385,6 +440,56 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void shareArchivedPdf(String uri) {
             runOnUiThread(() -> { if (isLocalDocumentUri(uri)) sharePdf(Uri.parse(uri)); });
+        }
+    }
+
+    private FileExportRequest reserveFileExport(String base64, String fileName, String mimeType, String requestId) {
+        if (base64 == null || base64.trim().isEmpty() || !base64.matches("[A-Za-z0-9+/=\\r\\n\\t ]+")) return null;
+        final byte[] bytes;
+        try { bytes = Base64.decode(base64, Base64.DEFAULT); }
+        catch (IllegalArgumentException error) { return null; }
+        if (bytes.length == 0) return null;
+        FileExportRequest request = new FileExportRequest(bytes, safeFileName(fileName),
+            mimeType == null || mimeType.trim().isEmpty() ? "application/octet-stream" : mimeType, requestId);
+        synchronized (fileExportLock) {
+            if (pendingFileExport != null || isFinishing() || isDestroyed()) return null;
+            pendingFileExport = request;
+        }
+        return request;
+    }
+
+    private boolean beginFileExport(String base64, String fileName, String mimeType, String requestId) {
+        FileExportRequest request = reserveFileExport(base64, fileName, mimeType, requestId);
+        if (request == null) return false;
+        runOnUiThread(() -> {
+            synchronized (fileExportLock) { if (pendingFileExport != request) return; }
+            try {
+                Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType(request.mimeType);
+                intent.putExtra(Intent.EXTRA_TITLE, request.fileName);
+                startActivityForResult(intent, REQUEST_SAVE_FILE);
+            } catch (Exception error) {
+                finishFileExport(request, "error");
+            }
+        });
+        return true;
+    }
+
+    private void finishFileExport(FileExportRequest request, String status) {
+        synchronized (fileExportLock) {
+            if (pendingFileExport != request) return;
+            pendingFileExport = null;
+        }
+        // Release the slot before notifying JavaScript, so an immediate retry is safe.
+        if (request.requestId != null) {
+            if (webView != null && !isDestroyed()) {
+                webView.evaluateJavascript("window.onFileExportEnded?.(" + JSONObject.quote(request.requestId)
+                    + "," + JSONObject.quote(status) + ")", null);
+            }
+        } else if (!isFinishing() && !isDestroyed() && !"cancelled".equals(status)) {
+            Toast.makeText(this, "saved".equals(status) ? R.string.file_saved : R.string.file_save_error,
+                "saved".equals(status) ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show();
         }
     }
 

@@ -4751,3 +4751,14 @@ html[data-app-motion="off"] .app-tabs::before, html[data-app-motion="off"] .ios-
 .month-day.calendar-day-rest .month-day-amount { color: inherit; font-size: .58rem; }
 html[data-theme="dark"] .week-day.calendar-day-rest:not(.week-day-selected),
 html[data-theme="dark"] .month-day.calendar-day-rest:not(.month-day-selected) { border-color: #355441; color: #b8ddc4; background: #1b3025; }
+.copy-block { border-color: var(--border); border-radius: 1.2rem; background: var(--card); }
+.copy-block-heading { flex-wrap: wrap; align-items: flex-start; }
+.copy-block-heading > span { min-width: 0; flex: 1 1 8rem; color: var(--muted-foreground); font-weight: 600; letter-spacing: 0; line-height: 1.45; overflow-wrap: anywhere; }
+.copy-block-heading button[data-slot="button"] { min-width: 0; flex: 0 1 auto; font-size: .8rem; }
+textarea.copy-block-text, html[data-theme="dark"] textarea.copy-block-text { display: block; width: 100%; min-width: 0; min-height: 5.8rem; max-height: 20rem; margin-top: .8rem; padding: .8rem; border: 1px solid var(--border); border-radius: .9rem; color: var(--foreground); background: var(--control-bg); font-family: var(--font-sans); font-size: .88rem; line-height: 1.55; resize: vertical; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+.copy-amount-row { display: flex; min-width: 0; flex-wrap: wrap; align-items: flex-end; gap: .6rem; margin-top: .85rem; }
+.copy-amount-row > label { min-width: 0; flex: 1 1 7rem; }
+.copy-amount-row > label > span { display: block; margin-bottom: .35rem; color: var(--muted-foreground); font-size: .78rem; }
+input.copy-amount-value, html[data-theme="dark"] input.copy-amount-value { min-width: 0; width: 100%; min-height: 2.75rem; padding: .65rem .8rem; border: 1px solid var(--border); border-radius: .85rem; color: var(--foreground); background: var(--control-bg); font-size: 1rem; font-variant-numeric: tabular-nums; user-select: text; -webkit-user-select: text; }
+.copy-amount-row button[data-slot="button"] { min-width: 0; flex: 1 1 8rem; padding-inline: .65rem; font-size: .8rem; }
+.copy-field-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
