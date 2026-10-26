@@ -484,8 +484,8 @@ public class MainActivity extends Activity {
         // Release the slot before notifying JavaScript, so an immediate retry is safe.
         if (request.requestId != null) {
             if (webView != null && !isDestroyed()) {
-                webView.evaluateJavascript("window.onFileExportEnded?.(" + JSONObject.quote(request.requestId)
-                    + "," + JSONObject.quote(status) + ")", null);
+                webView.evaluateJavascript("if(typeof window.onFileExportEnded==='function'){window.onFileExportEnded("
+                    + JSONObject.quote(request.requestId) + "," + JSONObject.quote(status) + ");}", null);
             }
         } else if (!isFinishing() && !isDestroyed() && !"cancelled".equals(status)) {
             Toast.makeText(this, "saved".equals(status) ? R.string.file_saved : R.string.file_save_error,
@@ -544,8 +544,8 @@ public class MainActivity extends Activity {
     private void notifyArchivePdfSaveEnded(String archiveId, String status) {
         if (archiveId == null || webView == null || isDestroyed()) return;
         webView.evaluateJavascript(
-            "window.onArchivePdfSaveEnded?.(" + JSONObject.quote(archiveId) + "," +
-                JSONObject.quote(status) + ")", null
+            "if(typeof window.onArchivePdfSaveEnded==='function'){window.onArchivePdfSaveEnded("
+                + JSONObject.quote(archiveId) + "," + JSONObject.quote(status) + ");}", null
         );
     }
 
@@ -726,8 +726,8 @@ public class MainActivity extends Activity {
 
         if (success && archiveId != null && webView != null && !isDestroyed()) {
             webView.evaluateJavascript(
-                "window.onArchivePdfSaved?.(" + JSONObject.quote(archiveId) + "," +
-                    JSONObject.quote(destination.toString()) + ")", null
+                "if(typeof window.onArchivePdfSaved==='function'){window.onArchivePdfSaved("
+                    + JSONObject.quote(archiveId) + "," + JSONObject.quote(destination.toString()) + ");}", null
             );
         }
         notifyArchivePdfSaveEnded(archiveId, success ? "saved" : "error");

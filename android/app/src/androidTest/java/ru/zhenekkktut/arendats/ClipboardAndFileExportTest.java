@@ -14,6 +14,7 @@ import android.util.Base64;
 import android.webkit.WebView;
 import android.webkit.WebChromeClient;
 import android.webkit.ConsoleMessage;
+import android.view.MotionEvent;
 import android.widget.EditText;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -115,19 +116,23 @@ public class ClipboardAndFileExportTest {
         try {
             WebView page = page(activity);
             saveScreenshot(activity, "app-startup.png");
-            evaluate(page, "document.querySelector('[aria-label=\"Настройки приложения\"]').click();true");
+            assertFitsViewport(page, "[aria-label=\"Настройки приложения\"]");
+            tapElement(page, "document.querySelector('[aria-label=\"Настройки приложения\"]')");
             waitFor(page, "!!document.querySelector('[role=\"dialog\"][data-state=\"open\"]')");
             saveScreenshot(activity, "app-settings.png");
+            assertFitsViewport(page, "[role=\"dialog\"][data-state=\"open\"]");
             instrumentation.runOnMainSync(activity::onBackPressed);
             waitFor(page, "!document.querySelector('[role=\"dialog\"][data-state=\"open\"]')");
             assertFalse("Back must dismiss settings, not finish the app", activity.isFinishing());
 
-            evaluate(page, "Array.from(document.querySelectorAll('[role=\"tab\"]')).find(el=>el.textContent.trim()==='Расходы').click();true");
+            tapElement(page, "Array.from(document.querySelectorAll('[role=\"tab\"]')).find(el=>el.textContent.trim()==='Расходы')");
             waitFor(page, "Array.from(document.querySelectorAll('button')).some(el=>el.textContent.trim()==='Добавить расход')");
-            evaluate(page, "Array.from(document.querySelectorAll('button')).find(el=>el.textContent.trim()==='Добавить расход').click();true");
+            tapElement(page, "Array.from(document.querySelectorAll('button')).find(el=>el.textContent.trim()==='Добавить расход')");
             waitFor(page, "!!document.querySelector('[role=\"dialog\"][data-state=\"open\"] [role=\"combobox\"]')");
             saveScreenshot(activity, "app-expense.png");
-            evaluate(page, "document.querySelector('[role=\"dialog\"][data-state=\"open\"] [role=\"combobox\"]').click();true");
+            assertFitsViewport(page, "[role=\"dialog\"][data-state=\"open\"]");
+            assertFitsViewport(page, "[role=\"dialog\"][data-state=\"open\"] [role=\"combobox\"]");
+            tapElement(page, "document.querySelector('[role=\"dialog\"][data-state=\"open\"] [role=\"combobox\"]')");
             waitFor(page, "!!document.querySelector('[role=\"listbox\"][data-state=\"open\"]')");
             instrumentation.runOnMainSync(activity::onBackPressed);
             waitFor(page, "!document.querySelector('[role=\"listbox\"][data-state=\"open\"]')");
@@ -212,6 +217,8 @@ public class ClipboardAndFileExportTest {
     }
 
     private void saveScreenshot(MainActivity activity, String name) throws Exception {
+        instrumentation.waitForIdleSync();
+        SystemClock.sleep(300);
         android.graphics.Bitmap screenshot = instrumentation.getUiAutomation().takeScreenshot();
         assertNotNull("Android must provide the application screenshot", screenshot);
         android.content.ContentValues values = new android.content.ContentValues();
@@ -249,6 +256,38 @@ public class ClipboardAndFileExportTest {
             SystemClock.sleep(50);
         }
         fail("The expected UI state did not appear: " + condition);
+    }
+
+    private void assertFitsViewport(WebView page, String selector) throws Exception {
+        String condition = "(function(){var element=document.querySelector(" + JSONObject.quote(selector)
+            + ");if(!element)return false;var rect=element.getBoundingClientRect();"
+            + "return rect.width>0&&rect.height>0&&rect.left>=-1&&rect.top>=-1"
+            + "&&rect.right<=innerWidth+1&&rect.bottom<=innerHeight+1;})()";
+        waitFor(page, condition);
+    }
+
+    private void tapElement(WebView page, String expression) throws Exception {
+        evaluate(page, "(function(){var element=" + expression
+            + ";if(!element)throw new Error('Tap target is missing');element.scrollIntoView({block:'center',inline:'center'});return true;})()");
+        SystemClock.sleep(250);
+        JSONArray point = new JSONArray(evaluate(page, "(function(){var rect=(" + expression
+            + ").getBoundingClientRect();return [rect.left+rect.width/2,rect.top+rect.height/2,innerWidth,innerHeight];})()"));
+        assertTrue("The tap target must be visible horizontally", point.getDouble(0) >= 0 && point.getDouble(0) < point.getDouble(2));
+        assertTrue("The tap target must be visible vertically", point.getDouble(1) >= 0 && point.getDouble(1) < point.getDouble(3));
+        int[] origin = new int[2];
+        AtomicReference<Integer> width = new AtomicReference<>();
+        instrumentation.runOnMainSync(() -> { page.getLocationOnScreen(origin); width.set(page.getWidth()); });
+        double scale = width.get() / point.getDouble(2);
+        float x = (float) (origin[0] + point.getDouble(0) * scale);
+        float y = (float) (origin[1] + point.getDouble(1) * scale);
+        long downTime = SystemClock.uptimeMillis();
+        MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, x, y, 0);
+        MotionEvent up = MotionEvent.obtain(downTime, downTime + 80, MotionEvent.ACTION_UP, x, y, 0);
+        try {
+            instrumentation.sendPointerSync(down);
+            instrumentation.sendPointerSync(up);
+            instrumentation.waitForIdleSync();
+        } finally { down.recycle(); up.recycle(); }
     }
 
     private String export(WebView page, String encoded, String requestId) throws Exception {

@@ -8,6 +8,7 @@ on:
       - "offline/**"
       - "tests/**"
       - "app/rental-app.tsx"
+      - "app/clipboard-tools.ts"
       - "app/document-tools.ts"
       - "app/tax-calculation.ts"
       - "app/expense-shortcuts.ts"
@@ -28,6 +29,7 @@ on:
       - "offline/**"
       - "tests/**"
       - "app/rental-app.tsx"
+      - "app/clipboard-tools.ts"
       - "app/document-tools.ts"
       - "app/tax-calculation.ts"
       - "app/expense-shortcuts.ts"
@@ -92,7 +94,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Проверить сохранение обоих PDF на Android
+      - name: Проверить интерфейс, буфер, файлы и PDF на Android
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 29
