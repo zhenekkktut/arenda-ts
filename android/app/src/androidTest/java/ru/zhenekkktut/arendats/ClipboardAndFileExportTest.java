@@ -15,6 +15,7 @@ import android.webkit.WebView;
 import android.webkit.WebChromeClient;
 import android.webkit.ConsoleMessage;
 import android.view.MotionEvent;
+import android.view.InputDevice;
 import android.widget.EditText;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -38,6 +39,7 @@ import static org.junit.Assert.*;
 @RunWith(AndroidJUnit4.class)
 public class ClipboardAndFileExportTest {
     private final Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+    private final List<String> browserConsole = Collections.synchronizedList(new ArrayList<>());
 
     @Test
     public void checkedClipboardPreservesInvoiceTextWhenPastedIntoAnEditableField() throws Exception {
@@ -186,28 +188,28 @@ public class ClipboardAndFileExportTest {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         MainActivity activity = (MainActivity) instrumentation.startActivitySync(intent);
         WebView page = page(activity);
-        List<String> console = Collections.synchronizedList(new ArrayList<>());
         instrumentation.runOnMainSync(() -> {
             page.setWebChromeClient(new WebChromeClient() {
                 @Override public boolean onConsoleMessage(ConsoleMessage message) {
-                    console.add(message.messageLevel() + ": " + message.message() + " @ " + message.sourceId() + ":" + message.lineNumber());
+                    String detail = message.messageLevel() + ": " + message.message() + " @ " + message.sourceId() + ":" + message.lineNumber();
+                    browserConsole.add(detail);
+                    android.util.Log.i("ArendaUi", detail);
                     return true;
                 }
             });
-            page.reload();
         });
         long deadline = SystemClock.uptimeMillis() + 20_000;
         while (SystemClock.uptimeMillis() < deadline) {
-            if ("true".equals(evaluate(page, "document.readyState === 'complete' && !!document.querySelector('.app-root') && typeof AndroidApp.copyTextChecked === 'function'"))) {
-                // Let startup effects install their own optional callback before wrapping it.
-                SystemClock.sleep(300);
+            if ("true".equals(evaluate(page, "document.readyState === 'complete' && !!document.querySelector('.settlement-hero-result strong') && !!document.querySelector('.settlement-hero-result strong').textContent.trim() && typeof AndroidApp.copyTextChecked === 'function'"))) {
+                awaitVisualState(page);
+                android.util.Log.i("ArendaUi", evaluate(page, "JSON.stringify({ua:navigator.userAgent,width:innerWidth,height:innerHeight,ready:document.readyState,focus:document.hasFocus(),scale:window.visualViewport?window.visualViewport.scale:null,spacing:getComputedStyle(document.documentElement).getPropertyValue('--spacing')})"));
                 return activity;
             }
             SystemClock.sleep(100);
         }
         String details = evaluate(page, "JSON.stringify({url:location.href,ua:navigator.userAgent,state:document.readyState,app:!!document.querySelector('.app-root'),bridge:typeof AndroidApp,copy:typeof AndroidApp.copyTextChecked,body:document.body.innerText.slice(0,1200)})");
         instrumentation.runOnMainSync(activity::finish);
-        throw new AssertionError("The offline application did not become ready: " + details + " console=" + console);
+        throw new AssertionError("The offline application did not become ready: " + details + " console=" + browserConsole);
     }
 
     private WebView page(MainActivity activity) throws Exception {
@@ -217,8 +219,8 @@ public class ClipboardAndFileExportTest {
     }
 
     private void saveScreenshot(MainActivity activity, String name) throws Exception {
+        awaitVisualState(page(activity));
         instrumentation.waitForIdleSync();
-        SystemClock.sleep(300);
         android.graphics.Bitmap screenshot = instrumentation.getUiAutomation().takeScreenshot();
         assertNotNull("Android must provide the application screenshot", screenshot);
         android.content.ContentValues values = new android.content.ContentValues();
@@ -245,6 +247,18 @@ public class ClipboardAndFileExportTest {
         return value.get();
     }
 
+    private void awaitVisualState(WebView page) throws Exception {
+        CountDownLatch drawn = new CountDownLatch(1);
+        instrumentation.runOnMainSync(() -> page.postVisualStateCallback(SystemClock.uptimeMillis(), new WebView.VisualStateCallback() {
+            @Override public void onComplete(long requestId) {
+                // The callback guarantees the next draw contains the DOM update.
+                page.postOnAnimation(() -> page.postOnAnimation(drawn::countDown));
+            }
+        }));
+        assertTrue("WebView did not commit the current page for drawing", drawn.await(10, TimeUnit.SECONDS));
+        instrumentation.waitForIdleSync();
+    }
+
     private void installCapture(WebView page) throws Exception {
         evaluate(page, "window.__nativeFileEvents=[];window.onFileExportEnded=(id,status)=>window.__nativeFileEvents.push([id,status]);true");
     }
@@ -255,7 +269,17 @@ public class ClipboardAndFileExportTest {
             if ("true".equals(evaluate(page, condition))) return;
             SystemClock.sleep(50);
         }
-        fail("The expected UI state did not appear: " + condition);
+        String details = evaluate(page, "(function(){var root=getComputedStyle(document.documentElement);"
+            + "var selectors=['.app-main','.settlement-hero','.app-tab','[aria-label=\"Настройки приложения\"]','[role=\"dialog\"]'];"
+            + "var rows=selectors.map(function(selector){var el=document.querySelector(selector);if(!el)return{selector:selector,missing:true};"
+            + "var style=getComputedStyle(el),rect=el.getBoundingClientRect();return{selector:selector,text:el.textContent.slice(0,150),"
+            + "left:rect.left,top:rect.top,width:rect.width,height:rect.height,color:style.color,background:style.backgroundColor,"
+            + "opacity:style.opacity,fontSize:style.fontSize,display:style.display,visibility:style.visibility,position:style.position,"
+            + "transform:style.transform,zIndex:style.zIndex,pointerEvents:style.pointerEvents};});"
+            + "return JSON.stringify({ua:navigator.userAgent,body:document.body.innerText.slice(0,1600),rows:rows,"
+            + "spacing:root.getPropertyValue('--spacing'),foreground:root.getPropertyValue('--foreground'),lastTap:window.__lastNativeTap});})()");
+        android.util.Log.e("ArendaUi", details);
+        fail("The expected UI state did not appear: " + condition + " state=" + details + " console=" + browserConsole);
     }
 
     private void assertFitsViewport(WebView page, String selector) throws Exception {
@@ -271,23 +295,35 @@ public class ClipboardAndFileExportTest {
             + ";if(!element)throw new Error('Tap target is missing');element.scrollIntoView({block:'center',inline:'center'});return true;})()");
         SystemClock.sleep(250);
         JSONArray point = new JSONArray(evaluate(page, "(function(){var rect=(" + expression
-            + ").getBoundingClientRect();return [rect.left+rect.width/2,rect.top+rect.height/2,innerWidth,innerHeight];})()"));
+            + ").getBoundingClientRect();var x=rect.left+rect.width/2,y=rect.top+rect.height/2;"
+            + "var hit=document.elementFromPoint(x,y);window.__lastNativeTap={x:x,y:y,hit:hit?hit.outerHTML.slice(0,700):null};"
+            + "return [x,y,innerWidth,innerHeight];})()"));
         assertTrue("The tap target must be visible horizontally", point.getDouble(0) >= 0 && point.getDouble(0) < point.getDouble(2));
         assertTrue("The tap target must be visible vertically", point.getDouble(1) >= 0 && point.getDouble(1) < point.getDouble(3));
         int[] origin = new int[2];
         AtomicReference<Integer> width = new AtomicReference<>();
-        instrumentation.runOnMainSync(() -> { page.getLocationOnScreen(origin); width.set(page.getWidth()); });
+        awaitVisualState(page);
+        instrumentation.runOnMainSync(() -> {
+            page.getLocationOnScreen(origin);
+            width.set(page.getWidth());
+            android.util.Log.i("ArendaUi", "Native tap origin=" + origin[0] + "," + origin[1]
+                + " width=" + page.getWidth() + " scale=" + page.getScale() + " focus=" + page.hasWindowFocus());
+        });
         double scale = width.get() / point.getDouble(2);
         float x = (float) (origin[0] + point.getDouble(0) * scale);
         float y = (float) (origin[1] + point.getDouble(1) * scale);
         long downTime = SystemClock.uptimeMillis();
         MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, x, y, 0);
-        MotionEvent up = MotionEvent.obtain(downTime, downTime + 80, MotionEvent.ACTION_UP, x, y, 0);
+        down.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        MotionEvent up = null;
         try {
             instrumentation.sendPointerSync(down);
+            SystemClock.sleep(80);
+            up = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, x, y, 0);
+            up.setSource(InputDevice.SOURCE_TOUCHSCREEN);
             instrumentation.sendPointerSync(up);
             instrumentation.waitForIdleSync();
-        } finally { down.recycle(); up.recycle(); }
+        } finally { down.recycle(); if (up != null) up.recycle(); }
     }
 
     private String export(WebView page, String encoded, String requestId) throws Exception {
