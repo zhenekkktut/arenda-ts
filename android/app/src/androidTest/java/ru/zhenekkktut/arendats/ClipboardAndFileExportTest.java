@@ -137,7 +137,10 @@ public class ClipboardAndFileExportTest {
             tapElement(page, "document.querySelector('[role=\"dialog\"][data-state=\"open\"] [role=\"combobox\"]')");
             waitFor(page, "!!document.querySelector('[role=\"listbox\"][data-state=\"open\"]')");
             instrumentation.runOnMainSync(activity::onBackPressed);
-            waitFor(page, "!document.querySelector('[role=\"listbox\"][data-state=\"open\"]')");
+            // Radix retains the closing list until its exit animation finishes.
+            // A second gesture belongs to the parent form only after that layer leaves.
+            waitFor(page, "!document.querySelector('[role=\"listbox\"]')");
+            awaitVisualState(page);
             assertEquals("The expense form must remain open after dismissing its selector", "true",
                 evaluate(page, "!!document.querySelector('[role=\"dialog\"][data-state=\"open\"]')"));
             assertFalse(activity.isFinishing());
