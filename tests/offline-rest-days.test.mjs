@@ -37,7 +37,7 @@ function fixture(overrides = {}) {
   return store;
 }
 
-test("optional Saturday days off persist without changing the phone ledger or rental calculation", async (t) => {
+test("individual days off persist without changing the phone ledger or rental calculation", async (t) => {
   const server = await createServer({ configFile: "offline/vite.config.ts", hmr: false,
     optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true }, appType: "custom" });
   const storage = new Map();
@@ -116,13 +116,63 @@ test("optional Saturday days off persist without changing the phone ledger or re
 
     await t.test("invalid selections are rejected atomically, including Sunday and dates outside the lease", () => {
       reset();
-      for (const date of ["2026-10-04", "2026-10-05", "2026-08-29", "2026-11-07",
+      for (const date of ["2026-10-04", "2026-08-29", "2026-11-07",
         "2026-02-30", "2026-10-32", "2026-2-03", "", undefined, null]) {
         rejectWithoutWrite({ action: "set_rest_day", date, rest: true });
       }
       for (const rest of [undefined, null, 0, 1, "true", "false", [], {}]) {
         rejectWithoutWrite({ action: "set_rest_day", date: "2026-10-03", rest });
       }
+    });
+
+    for (const date of ["2026-10-05", "2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16"]) {
+      await t.test(`weekday ${date} can be selected individually and removed without changing money or documents`, () => {
+        const original = fixture();
+        reset(original);
+        const rental = tools.calculateRental("2026-10", original.entries, original.downtimes, original.settings);
+        const settlement = tools.calculateSettlement("2026-10", rental, original.invoices, original.expenses);
+        assert.equal(missing("2026-10", "2026-10-31").includes(date), true);
+        save({ action: "set_rest_day", date, rest: true });
+        reset(normalizeOfflineStore(JSON.parse(JSON.stringify(read()))));
+        assert.deepEqual(offlineDashboard("2026-10").restDates, [date]);
+        assert.equal(missing("2026-10", "2026-10-31").includes(date), false);
+        const selected = read();
+        for (const key of ledgerKeys) assert.deepEqual(selected[key], original[key], key);
+        const selectedRental = tools.calculateRental("2026-10", selected.entries, selected.downtimes, selected.settings);
+        assert.deepEqual(selectedRental, rental);
+        assert.deepEqual(tools.calculateSettlement("2026-10", selectedRental, selected.invoices, selected.expenses), settlement);
+        save({ action: "set_rest_day", date, rest: false });
+        assert.deepEqual(read().restDates, []);
+        assert.equal(missing("2026-10", "2026-10-31").includes(date), true);
+        for (const key of ledgerKeys) assert.deepEqual(read()[key], original[key], key);
+      });
+    }
+
+    await t.test("a Monday with deliveries cannot be selected, while a zero-quantity Monday can", () => {
+      const original = fixture({ entries: [
+        { id: 1, entryDate: "2026-10-05", units: 145, note: "Фактический выезд" },
+        { id: 2, entryDate: "2026-10-12", units: 0, note: "Нулевая запись" },
+      ] });
+      reset(original);
+      rejectWithoutWrite({ action: "set_rest_day", date: "2026-10-05", rest: true });
+      save({ action: "set_rest_day", date: "2026-10-12", rest: true });
+      assert.deepEqual(read().restDates, ["2026-10-12"]);
+      assert.deepEqual(read().entries, original.entries);
+      save({ action: "save_entry", entryDate: "2026-10-12", units: 155, note: "Выезд состоялся" });
+      const beforeRemoval = read();
+      save({ action: "set_rest_day", date: "2026-10-12", rest: false });
+      assert.deepEqual(read().restDates, []);
+      for (const key of ledgerKeys) assert.deepEqual(read()[key], beforeRemoval[key], key);
+    });
+
+    await t.test("a day-off selection never removes an existing downtime or cancels its rent reduction", () => {
+      const original = fixture();
+      reset(original);
+      const before = tools.calculateRental("2026-10", original.entries, original.downtimes, original.settings);
+      save({ action: "set_rest_day", date: "2026-10-06", rest: true });
+      assert.deepEqual(read().restDates, ["2026-10-06"]);
+      for (const key of ledgerKeys) assert.deepEqual(read()[key], original[key], key);
+      assert.deepEqual(tools.calculateRental("2026-10", read().entries, read().downtimes, read().settings), before);
     });
 
     await t.test("a Saturday with actual deliveries cannot be marked as a day off, but a zero record can", () => {
@@ -154,21 +204,21 @@ test("optional Saturday days off persist without changing the phone ledger or re
     });
 
     await t.test("backup normalization removes malformed duplicates and a JSON restore retains valid dates across months", () => {
-      const source = fixture({ restDates: ["2026-10-10", "2026-09-26", "2026-10-03",
+      const source = fixture({ restDates: ["2026-10-10", "2026-09-26", "2026-10-03", "2026-10-05",
         "2026-10-03", "2026-02-30", "2026-13-01", "2026-2-03", "", null, 20261017, {}] });
       const unchanged = structuredClone(source);
       const normalized = normalizeOfflineStore(JSON.parse(JSON.stringify(source)));
       assert.deepEqual(source, unchanged);
-      assert.deepEqual(normalized.restDates, ["2026-09-26", "2026-10-03", "2026-10-10"]);
+      assert.deepEqual(normalized.restDates, ["2026-09-26", "2026-10-03", "2026-10-05", "2026-10-10"]);
       for (const key of ledgerKeys) assert.deepEqual(normalized[key], source[key], key);
       reset(normalized);
       assert.deepEqual(offlineDashboard("2026-09").restDates, ["2026-09-26"]);
-      assert.deepEqual(offlineDashboard("2026-10").restDates, ["2026-10-03", "2026-10-10"]);
+      assert.deepEqual(offlineDashboard("2026-10").restDates, ["2026-10-03", "2026-10-05", "2026-10-10"]);
       assert.deepEqual(offlineDashboard("2026-11").restDates, []);
       const backup = JSON.stringify(read());
       reset(normalizeOfflineStore(JSON.parse(backup)));
       save({ action: "set_rest_day", date: "2026-10-10", rest: false });
-      assert.deepEqual(read().restDates, ["2026-09-26", "2026-10-03"]);
+      assert.deepEqual(read().restDates, ["2026-09-26", "2026-10-03", "2026-10-05"]);
       for (const key of ledgerKeys) assert.deepEqual(read()[key], source[key], key);
     });
   } finally {

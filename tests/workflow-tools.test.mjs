@@ -128,6 +128,16 @@ test("a selected Saturday is a day off while other Saturdays still need a record
     "Removing the selection restores the record reminder");
 });
 
+test("a selected Monday is optional without making other Mondays days off", () => {
+  const restDates = ["2026-10-05"];
+  assert.equal(isRestDate("2026-10-05"), false);
+  assert.equal(isRestDate("2026-10-05", restDates), true);
+  assert.equal(isRestDate("2026-10-12", restDates), false);
+  assert.equal(missing({ restDates }).includes("2026-10-05"), false);
+  assert.equal(missing({ restDates, today: "2026-10-12" }).includes("2026-10-12"), true);
+  assert.equal(missing({ restDates: [] }).includes("2026-10-05"), true);
+});
+
 test("calendar days off normalize backup values without mutating saved dates", () => {
   const dates = ["2026-10-10", "2026-10-03", "2026-10-03", "2026-10-04",
     "2026-02-30", "2026-2-03", "", null, 20261017, {}, "2028-02-29"];

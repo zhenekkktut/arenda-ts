@@ -552,10 +552,11 @@ export function saveOfflineAction(payload: Record<string, unknown>) {
 
   if (action === "set_rest_day") {
     const date = payload.date;
-    if (!validIsoDate(date) || new Date(`${date}T12:00:00Z`).getUTCDay() !== 6 ||
+    if (!validIsoDate(date) ||
         typeof payload.rest !== "boolean" || date < store.settings.rentalStart || date > store.settings.rentalEnd) {
-      throw new Error("Выберите субботу в пределах срока аренды");
+      throw new Error("Выберите дату в пределах срока аренды");
     }
+    if (new Date(`${date}T12:00:00Z`).getUTCDay() === 0) throw new Error("Воскресенье уже учитывается как выходной");
     if (payload.rest && store.entries.some((entry) => entry.entryDate === date && entry.units > 0)) {
       throw new Error("За этот день есть развезённые бутыли. Сначала проверьте запись");
     }
@@ -1995,7 +1996,7 @@ export default function RentalApp() {
   const selectedEntry = data?.entries.find((entry) => entry.entryDate === entryDate);
   const selectedDowntimes = data?.downtimes?.filter((day) => day.startDate <= entryDate && day.endDate >= entryDate) ?? [];
   const selectedDowntime = selectedDowntimes.find((day) => day.kind === "no_trip") ?? selectedDowntimes[0];
-  const selectedIsSaturday = new Date(`${entryDate}T12:00:00Z`).getUTCDay() === 6;
+  const selectedIsSunday = new Date(`${entryDate}T12:00:00Z`).getUTCDay() === 0;
   const selectedRestDate = isRestDate(entryDate, data?.restDates);
   const selectedRestVisible = selectedRestDate && (selectedEntry?.units ?? 0) === 0 && !selectedDowntime;
   const selectedDayClaims = (data?.invoices ?? []).flatMap((invoice) =>
@@ -3961,14 +3962,15 @@ export default function RentalApp() {
           {selectedEntry && <p className="help-note">{selectedDayLegacy.length ? "Часть старых счетов ещё требует проверки привязки. Остаток дня уточнится после подтверждения." : `Не включено в счета: ${money(Math.max(0, selectedEntry.units * documentSettings.rateKopecks - selectedDayAllocated))}.`}</p>}
           <div className="calendar-day-actions">
             <Button type="button" disabled={selectedDowntime?.kind === "no_trip"} onClick={() => { setDayDetailsOpen(false); openEntryForDate(entryDate); }}><Pencil />{selectedEntry ? "Изменить бутыли" : "Записать бутыли"}</Button>
-            {selectedIsSaturday && <Button type="button" variant="outline" disabled={busy || entryDate < documentSettings.rentalStart || entryDate > documentSettings.rentalEnd || (!selectedRestDate && (selectedEntry?.units ?? 0) > 0)} onClick={async () => { await request({ action: "set_rest_day", date: entryDate, rest: !selectedRestDate }, selectedRestDate ? "Отметка выходного снята" : "Суббота отмечена выходным"); }}><CalendarDays />{selectedRestDate ? "Снять отметку выходного" : "Отметить субботу выходным"}</Button>}
+            {!selectedIsSunday && <Button type="button" variant="outline" disabled={busy || entryDate < documentSettings.rentalStart || entryDate > documentSettings.rentalEnd || (!selectedRestDate && (selectedEntry?.units ?? 0) > 0)} onClick={async () => { await request({ action: "set_rest_day", date: entryDate, rest: !selectedRestDate }, selectedRestDate ? "Отметка выходного снята" : "День отмечен выходным"); }}><CalendarDays />{selectedRestDate ? "Снять отметку выходного" : "Отметить выходным"}</Button>}
             <Button type="button" variant="outline" disabled={entryDate > today || entryDate < documentSettings.rentalStart || entryDate > documentSettings.rentalEnd || (!selectedDowntime && (selectedEntry?.units ?? 0) > 0)} onClick={() => { setDayDetailsOpen(false); openDowntime(selectedDowntime, entryDate); }}><CirclePause />{selectedDowntime ? "Изменить простой" : "Без выезда — простой"}</Button>
             {selectedDowntimes.some((day) => day.kind === "no_trip") && <Button type="button" variant="outline" disabled={busy} onClick={async () => { await request({ action: "delete_downtime_day", date: entryDate }, "Простой за этот день снят"); }}><UnlockKeyhole />Снять простой за этот день</Button>}
             <Button type="button" variant="outline" onClick={() => { setDayDetailsOpen(false); openExpense(entryDate); }}><WalletCards />Добавить расход за день</Button>
           </div>
           {(selectedEntry?.units ?? 0) > 0 && !selectedDowntime && <p className="help-note">Есть развезённые бутыли. Если машина не выезжала, сначала проверьте количество в записи.</p>}
           {selectedDowntime?.kind === "no_trip" && <p className="help-note">Чтобы внести бутыли, сначала снимите простой за этот день.</p>}
-          {selectedIsSaturday && <p className="help-note">Выходной убирает напоминание о записи за этот день и не меняет аренду. Для уменьшения аренды отметьте полный день без выезда как простой.</p>}
+          <p className="help-note">{selectedIsSunday ? "Воскресенье уже учитывается как выходной. " : ""}Выходной убирает напоминание о записи за этот день и не меняет аренду. Для уменьшения аренды отметьте полный день без выезда как простой.</p>
+          {selectedDowntime && <p className="help-note">На этот день уже указан простой, который уменьшает аренду. Отметка выходного его не снимает. При необходимости измените или удалите простой отдельно.</p>}
         </DialogContent>
       </Dialog>
 
