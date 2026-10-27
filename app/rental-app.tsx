@@ -1792,7 +1792,9 @@ export default function RentalApp() {
     if (!backupDue) return;
     window.sessionStorage.setItem("arenda-ts-backup-reminder-shown", "1");
     const timer = window.setTimeout(() => {
+      if (document.querySelector('[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]')) return;
       toast.info(last ? "Резервная копия старше недели" : "Создайте первую резервную копию", {
+        id: "backup-reminder",
         duration: 7_000,
         action: { label: "Сохранить", onClick: exportBackup },
       });
@@ -2556,6 +2558,7 @@ export default function RentalApp() {
   }
 
   function openSettings() {
+    toast.dismiss("backup-reminder");
     setSettingsDraft({ ...documentSettings });
     setExpenseShortcutsDraft(expenseShortcuts.map((shortcut) => ({ ...shortcut })));
     setSettingsOpen(true);
@@ -3225,7 +3228,7 @@ export default function RentalApp() {
 
   return (
     <div className="app-root min-h-screen">
-      <Toaster position="top-center" richColors theme={theme} />
+      <Toaster position="top-center" offset={{ top: "calc(env(safe-area-inset-top, 0px) + 6rem)" }} mobileOffset={{ top: "calc(env(safe-area-inset-top, 0px) + 6rem)" }} richColors theme={theme} />
 
       <header className="app-header">
         <div className="app-shell flex items-center justify-between gap-3 py-3">

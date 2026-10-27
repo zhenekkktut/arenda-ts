@@ -296,7 +296,20 @@ public class ClipboardAndFileExportTest {
     private void tapElement(WebView page, String expression) throws Exception {
         evaluate(page, "(function(){var element=" + expression
             + ";if(!element)throw new Error('Tap target is missing');element.scrollIntoView({block:'center',inline:'center'});return true;})()");
-        SystemClock.sleep(250);
+        awaitVisualState(page);
+        // Notifications and closing overlays can cover a visible element briefly.
+        // Use the same receives-events condition as a real browser interaction.
+        long deadline = SystemClock.uptimeMillis() + 12_000;
+        boolean receivesEvents = false;
+        while (SystemClock.uptimeMillis() < deadline) {
+            receivesEvents = "true".equals(evaluate(page, "(function(){var element=" + expression
+                + ";if(!element)return false;var rect=element.getBoundingClientRect();"
+                + "var hit=document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);"
+                + "return !!hit&&(hit===element||element.contains(hit));})()"));
+            if (receivesEvents) break;
+            SystemClock.sleep(100);
+        }
+        assertTrue("Another element kept covering the tap target: " + expression, receivesEvents);
         JSONArray point = new JSONArray(evaluate(page, "(function(){var rect=(" + expression
             + ").getBoundingClientRect();var x=rect.left+rect.width/2,y=rect.top+rect.height/2;"
             + "var hit=document.elementFromPoint(x,y);window.__lastNativeTap={x:x,y:y,hit:hit?hit.outerHTML.slice(0,700):null};"
@@ -305,7 +318,6 @@ public class ClipboardAndFileExportTest {
         assertTrue("The tap target must be visible vertically", point.getDouble(1) >= 0 && point.getDouble(1) < point.getDouble(3));
         int[] origin = new int[2];
         AtomicReference<Integer> width = new AtomicReference<>();
-        awaitVisualState(page);
         instrumentation.runOnMainSync(() -> {
             page.getLocationOnScreen(origin);
             width.set(page.getWidth());
