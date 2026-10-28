@@ -2033,7 +2033,14 @@ export default function RentalApp() {
     }).join(", ")})`
     : "conic-gradient(#e7ecf2 0 100%)";
   const monthBounds = periodBounds(month);
-  const documentDateIssue = reconciliationDateError({ period: month, documentDate, asOfDate });
+  const documentDateIssue = reconciliationDateError({ period: month, documentDate, asOfDate }) ||
+    (asOfDate > today ? "Дата сверки не может быть позже сегодняшнего дня" : null);
+  const reconciliationPreview = data && !documentDateIssue ? reconciliationSummary({
+    settings: documentSettings, meta: { ...(data.documentMeta ?? defaultDocumentMeta(month, 1, documentDate)), period: month, documentDate, asOfDate,
+      openingBalanceKopecks: toSignedKopecks(documentOpeningBalance) ?? 0 }, calculation,
+    entries: data.entries, downtimes: data.downtimes ?? [], invoices: data.invoices,
+    payments: data.payments, openingPayments: data.openingPayments, expenses: data.expenses,
+  }) : null;
   const missingMonthDays = useMemo(() => missingEntryDates(month, today, documentSettings,
     data?.entries ?? [], data?.downtimes ?? [], data?.restDates ?? []),
   [month, today, documentSettings, data?.entries, data?.downtimes, data?.restDates]);
@@ -2676,6 +2683,7 @@ export default function RentalApp() {
 
   function documentInputSnapshot(kind: ArchivedDocument["kind"], meta: DocumentMeta) {
     return JSON.stringify({ kind, meta, settings: documentSettings, calculation, fuelCalculation: "whole-bottles-signed-variable-v3",
+      ...(kind === "reconciliation" ? { reconciliationCalculation: "as-of-days-month-end-fuel-v1" } : {}),
       entries: data?.entries ?? [], downtimes: data?.downtimes ?? [],
       ...(kind === "act" ? { expenses: (data?.expenses ?? []).filter((expense) => expense.category === "fuel" && expense.payer === "customer") } : {}),
       ...(kind === "reconciliation" || kind === "ledger"
@@ -2737,6 +2745,7 @@ export default function RentalApp() {
     }
     const meta = currentDocumentMeta();
     if (!meta) return;
+    if (kind === "reconciliation" && documentDateIssue) { toast.error(documentDateIssue); return; }
     if (isOfflineRuntime()) {
       const number = kind === "act" ? meta.actNumber : meta.reconciliationNumber;
       const previous = readOfflineStore().documentArchive.filter((item) => item.kind === kind && item.number === number);
@@ -3512,37 +3521,38 @@ export default function RentalApp() {
                     <div><span>Номер обоих актов</span><strong>№{actNumber || "—"}</strong></div>
                     <div><span>Дата составления</span><strong>{validIsoDate(documentDate) ? dateLabel(documentDate) : "Выберите дату"}</strong></div>
                     <div><span>Сверка на дату</span><strong>{validIsoDate(asOfDate) ? dateLabel(asOfDate) : "Выберите дату"}</strong></div>
-                    <div><span>Итого за месяц</span><strong>{money(netRent)}</strong></div>
+                    <div><span>Начислено для сверки</span><strong>{reconciliationPreview ? money(reconciliationPreview.netRentKopecks) : "Проверьте дату"}</strong></div>
                   </div>
+                  <label><FieldLabel>Сверка по состоянию на</FieldLabel><Input type="date" min={monthBounds.start} max={documentDate < today ? documentDate : today} value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} /></label>
+                  <p className="help-note">Сверка доступна без закрытия месяца. {reconciliationPreview?.isInterim ? "Дни учитываются по выбранную дату; постоянная часть — пропорционально дням. Топливо пока справочно, вычет — в конце месяца." : "На конец месяца учитывается полный месячный расчёт с вычетом топлива."}</p>
                   <details className="document-options" key={editingArchivedId ?? "new"} open={editingArchivedId !== null || undefined}>
                     <summary>Изменить номер, даты и начальный долг</summary>
                     <div className="document-fields">
                     <label className="col-span-2"><FieldLabel>№ обоих актов</FieldLabel><Input value={actNumber} onChange={(e) => setActNumber(e.target.value)} /></label>
                     <label><FieldLabel>Дата составления</FieldLabel><Input type="date" value={documentDate} onChange={(e) => { setAsOfDate(linkedAsOfDate(e.target.value, documentDate, asOfDate)); setDocumentDate(e.target.value); }} /></label>
-                    <label><FieldLabel>Сверка по состоянию на</FieldLabel><Input type="date" min={monthBounds.end} value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} /></label>
                     <label className="col-span-2"><FieldLabel>Долг на начало периода, ₽</FieldLabel><Input type="number" step="0.01" inputMode="decimal" value={documentOpeningBalance} onChange={(e) => setDocumentOpeningBalance(e.target.value)} /></label>
                     </div>
                     <label className="document-note"><FieldLabel>Замечания и согласованные корректировки</FieldLabel><Input value={documentAdjustments} onChange={(e) => setDocumentAdjustments(e.target.value)} placeholder="Если нет — останется «отсутствуют»" /></label>
                     <p className="help-note">Номер общий для двух актов. Даты и начальный долг можно изменить; сохранённые значения не заменяются автоматически. При нулевом начальном долге оплаты прошлых месяцев в этот акт не входят.</p>
                   </details>
-                  <Button type="button" variant="outline" className={documentDateIssue ? "action-attention" : ""} disabled={monthBounds.end > today} onClick={() => { setDocumentDate(today); setAsOfDate(today); }}>Обновить даты на сегодня</Button>
-                  {monthBounds.end > today && <p className="help-note">Итоговая сверка за месяц доступна после {dateLabel(monthBounds.end)}. Пока можно проверять записи и предпросмотр акта-расчёта.</p>}
-                  {documentDateIssue && monthBounds.end <= today && <p className="document-readiness" role="alert">{documentDateIssue}</p>}
-                  {!documentDateIssue && (data.invoices.some((invoice) => invoice.invoiceDate > asOfDate) ||
+                  <Button type="button" variant="outline" className={documentDateIssue ? "action-attention" : ""} disabled={monthBounds.start > today} onClick={() => { setDocumentDate(today); setAsOfDate(today); }}>Обновить даты на сегодня</Button>
+                  {documentDateIssue && <p className="document-readiness" role="alert">{documentDateIssue}</p>}
+                  {!documentDateIssue && !reconciliationPreview?.isInterim && (data.invoices.some((invoice) => invoice.invoiceDate > asOfDate) ||
                     [...data.payments, ...((toSignedKopecks(documentOpeningBalance) ?? 0) > 0 ? data.openingPayments ?? [] : [])].some((payment) => payment.paymentDate > asOfDate)) &&
-                    <p className="document-readiness">В сверку на {dateLabel(asOfDate)} не войдут более поздние счета и оплаты. Для полного расчёта выберите нужную дату или обновите даты на сегодня.</p>}
-                  <details className="document-options"><summary>Как получилась сумма акта</summary>
+                    <p className="document-readiness">В сверку на {dateLabel(asOfDate)} не войдут более поздние счета и оплаты. Записи бутылей и топливо учитываются по выбранную дату.</p>}
+                  <details className="document-options"><summary>Как получилась сумма акта-расчёта за месяц</summary>
                     <div className="calculation-list"><div><span>Бутылей по записям</span><strong>{number(calculation.actualUnits)}</strong></div><div><span>Бутылей в акте-расчёте</span><strong>{number(actCalculation.actualUnits)}</strong></div><div><span>Постоянная часть</span><strong>{money(actCalculation.baseKopecks)}</strong></div><div><span>Переменная часть</span><strong>{money(actCalculation.variableKopecks)}</strong></div><div><span>Итого в акте</span><strong>{money(actCalculation.totalKopecks)}</strong></div></div>
                     <p className="help-note">Оплачиваемых дней: {actCalculation.payableDays}; простой: {actCalculation.downtimeDays}. Топливо полностью вычитается из переменной части, которая может быть отрицательной. Постоянная часть определяется договором и днями простоя. Даты топлива и общий вычет показаны в акте сверки.</p>
                   </details>
-                  {missingMonthDays.length > 0 && <div className="document-readiness"><p>Дни без записи: {number(missingMonthDays.length)}. Проверьте календарь до подписания акта.</p><Button type="button" variant="outline" onClick={showMissingDays}>Проверить дни</Button></div>}
-                  {unpaidInvoices.length > 0 &&
+                  {missingMonthDays.some((date) => date <= (reconciliationPreview?.periodEnd ?? today)) && <div className="document-readiness"><p>Дни без записи по {dateLabel(reconciliationPreview?.periodEnd ?? today)}: {number(missingMonthDays.filter((date) => date <= (reconciliationPreview?.periodEnd ?? today)).length)}. Проверьте календарь до подписания акта.</p><Button type="button" variant="outline" onClick={showMissingDays}>Проверить дни</Button></div>}
+                  {reconciliationPreview && data.invoices.some((invoice) => invoice.invoiceDate <= asOfDate && invoice.amountKopecks >
+                    reconciliationPreview.payments.filter((payment) => payment.invoiceId === invoice.id).reduce((sum, payment) => sum + payment.amountKopecks, 0)) &&
                     <div className="document-readiness"><p>Есть неоплаченные или частично оплаченные счета. Остатки будут указаны в сверке.</p><Button type="button" variant="outline" onClick={showInvoices}>Проверить счета и оплаты</Button></div>}
-                  {data.payments.reduce((sum, payment) => sum + payment.amountKopecks, 0) > netRent &&
-                    <p className="help-note text-amber-700">Оплаты превышают сумму после вычета топлива: переплата {money(data.payments.reduce((sum, payment) => sum + payment.amountKopecks, 0) - netRent)}.</p>}
+                  {reconciliationPreview && reconciliationPreview.balance < 0 &&
+                    <p className="help-note text-amber-700">Переплата на {dateLabel(asOfDate)}: {money(-reconciliationPreview.balance)}.</p>}
                   <div className="document-actions">
                     <Button type="button" onClick={() => prepareDocument("act")}>Предпросмотр акта-расчёта</Button>
-                    <Button type="button" variant="outline" disabled={monthBounds.end > today} onClick={() => prepareDocument("reconciliation")}>Предпросмотр акта сверки</Button>
+                    <Button type="button" variant="outline" disabled={Boolean(documentDateIssue)} onClick={() => prepareDocument("reconciliation")}>Предпросмотр акта сверки</Button>
                   </div>
                   <details className="document-archive"><summary>Архив документов · {(data.documentArchive ?? []).filter((item) => item.kind === "act" || item.kind === "reconciliation").length}</summary>
                     {(data.documentArchive ?? []).filter((item) => item.kind === "act" || item.kind === "reconciliation").map((item) => {

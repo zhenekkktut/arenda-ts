@@ -150,7 +150,7 @@ test("old net invoices deduct fuel before invoicing and later payments settle th
   } finally { delete globalThis.window; await server.close(); }
 });
 
-test("saved mid-month dates cannot mix a full month with partial settlements after an unpaid invoice is removed", async () => {
+test("saved mid-month dates produce an immutable partial reconciliation after an unpaid invoice is removed", async () => {
   const server = await createServer({ configFile: "offline/vite.config.ts", hmr: false,
     optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true }, appType: "custom" });
   const tools = documentTools();
@@ -171,7 +171,9 @@ test("saved mid-month dates cannot mix a full month with partial settlements aft
       { id: 1, invoiceId: 1, paymentDate: "2026-09-26", amountKopecks: 3120000 },
       { id: 2, invoiceId: 2, paymentDate: "2026-10-02", amountKopecks: 1230000 }],
     downtimes: [{ id: 1, startDate: "2026-09-01", endDate: "2026-09-09", reason: "Простой", note: "" }],
-    closures: [], documents: [{ ...tools.defaultDocumentMeta("2026-09", 2, "2026-09-16"), asOfDate: "2026-09-16" }] };
+    closures: [], documents: [{ ...tools.defaultDocumentMeta("2026-09", 2, "2026-09-16"), asOfDate: "2026-09-16" }],
+    documentArchive: [{ id: 17, period: "2026-09", kind: "reconciliation", number: "2", version: 1,
+      generatedAt: "2026-09-16T00:00:00Z", inputSnapshot: "{}", html: "<!doctype html><html>Старый акт</html>" }] };
   let stored = JSON.stringify(store);
   globalThis.window = { localStorage: { getItem: (key) => key === "arenda-ts-offline-v1" ? stored : null,
     setItem: (key, value) => { if (key === "arenda-ts-offline-v1") stored = value; } } };
@@ -188,9 +190,24 @@ test("saved mid-month dates cannot mix a full month with partial settlements aft
     assert.equal(calculation.actualUnits, 2138);
     assert.equal(calculation.totalKopecks, 8552000);
     const staleInput = { ...data, calculation, meta: data.documentMeta };
-    const beforeReject = stored;
-    assert.throws(() => tools.buildReconciliationHtml(staleInput));
-    assert.equal(stored, beforeReject, "Rejecting an inconsistent date must not rewrite old phone records");
+    const beforeInterim = stored;
+    const interim = tools.reconciliationSummary(staleInput);
+    assert.equal(interim.isInterim, true);
+    assert.equal(interim.periodEnd, "2026-09-16");
+    assert.equal(interim.calculation.actualUnits, 780);
+    assert.equal(interim.calculation.payableDays, 7);
+    assert.equal(interim.calculation.baseKopecks, 1_866_667);
+    assert.equal(interim.netRentKopecks, 3_120_000);
+    assert.equal(interim.customerFuelKopecks, 277_000);
+    assert.equal(interim.fuelDeductionKopecks, 0);
+    assert.equal(interim.paidKopecks, 0);
+    assert.equal(interim.balance, 3_120_000);
+    const interimHtml = tools.buildReconciliationHtml(staleInput);
+    assert.match(interimHtml, /01\.09\.2026–16\.09\.2026/);
+    assert.doesNotMatch(interimHtml, /№ S1|№ S2|№ S3|<td>18\.09\.2026<\/td>|<td>30\.09\.2026<\/td>/);
+    assert.equal(stored, beforeInterim, "An interim act must not rewrite phone records or archived documents");
+    assert.deepEqual(JSON.parse(stored).documentArchive, store.documentArchive);
+    assert.deepEqual(calculation, staleInput.calculation, "The monthly rental calculation remains intact");
     const input = { ...staleInput, meta: { ...data.documentMeta, documentDate: "2026-10-03", asOfDate: "2026-10-03" } };
     const summary = tools.reconciliationSummary(input);
     const settlement = tools.calculateSettlement("2026-09", calculation, data.invoices, data.expenses);

@@ -19,7 +19,7 @@ adb logcat -d -s ArendaPdf:I '*:S' > android-pdf-test-output/native-render.log |
 adb logcat -d > android-pdf-test-output/android-logcat.log || true
 adb shell cat /data/local/tmp/webview-command-line > android-pdf-test-output/webview-render-flags.txt || true
 if [ "$test_status" -eq 0 ]; then
-  for name in rent reconciliation reconciliation-compact reconciliation-mixed; do
+  for name in rent reconciliation reconciliation-compact reconciliation-mixed reconciliation-interim; do
     if [ ! -s "android-pdf-test-output/$name.pdf" ] || [ ! -s "android-pdf-test-output/$name-1.png" ]; then
       echo "Missing native PDF report output: $name" >&2
       test_status=1

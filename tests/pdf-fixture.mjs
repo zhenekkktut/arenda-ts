@@ -114,6 +114,46 @@ export function mixedInvoiceInput(tools = documentTools()) {
     meta: tools.defaultDocumentMeta(period, 4, "2026-10-13") };
 }
 
+// A dated reconciliation remains available while the month is open. Later
+// deliveries, fuel and receipts must not leak into it, and fuel is informational
+// until month end. A receipt before a later-issued invoice remains an advance.
+export function interimInput(tools = documentTools()) {
+  const { settings } = sampleInput(tools);
+  const period = "2026-09";
+  const entries = [
+    { entryDate: `${period}-01`, units: 100 },
+    { entryDate: `${period}-09`, units: 200 },
+    { entryDate: `${period}-15`, units: 0 },
+    { entryDate: `${period}-21`, units: 999 },
+  ];
+  const downtimes = [
+    { id: 1, kind: "no_trip", startDate: `${period}-10`, endDate: `${period}-20`,
+      reason: "Выезда не было", basis: "Запись календаря", note: "" },
+    { id: 2, kind: "no_trip", startDate: `${period}-23`, endDate: `${period}-25`,
+      reason: "Будущий простой", basis: "Запись календаря", note: "" },
+  ];
+  const expenses = [
+    { expenseDate: `${period}-05`, amountKopecks: 1250000, category: "fuel", payer: "customer" },
+    { expenseDate: `${period}-20`, amountKopecks: 111100, category: "fuel", payer: "customer" },
+  ];
+  const invoices = [
+    { id: 301, invoiceNumber: "301", period, invoiceDate: `${period}-05`, kind: "fixed",
+      amountKopecks: 400000, allocationMode: "auto", allocationVersion: 1,
+      bottleStartDate: `${period}-01`, bottleEndDate: `${period}-01`,
+      bottleAllocations: [{ date: `${period}-01`, amountKopecks: 400000 }], rentalSupplementKopecks: 0 },
+    { id: 302, invoiceNumber: "302", period, invoiceDate: `${period}-16`, kind: "fixed",
+      amountKopecks: 777700, allocationMode: "unlinked" },
+  ];
+  const payments = [
+    { invoiceId: 301, paymentDate: `${period}-06`, amountKopecks: 200000, method: "bank", documentNumber: "П-1" },
+    { invoiceId: 302, paymentDate: `${period}-14`, amountKopecks: 100000, method: "bank", documentNumber: "А-1" },
+    { invoiceId: 301, paymentDate: `${period}-16`, amountKopecks: 700000, method: "bank", documentNumber: "П-2" },
+  ];
+  return { settings, entries, downtimes, expenses, invoices, payments,
+    calculation: tools.calculateRental(period, entries, downtimes, settings),
+    meta: { ...tools.defaultDocumentMeta(period, 5, `${period}-16`), asOfDate: `${period}-15` } };
+}
+
 if (process.argv[2]) {
   const target = process.argv[2];
   fs.mkdirSync(target, { recursive: true });
@@ -124,4 +164,5 @@ if (process.argv[2]) {
   fs.writeFileSync(`${target}/reconciliation-compact.html`, tools.buildReconciliationHtml(allocated));
   fs.writeFileSync(`${target}/rent.html`, tools.buildRentActHtml(allocated));
   fs.writeFileSync(`${target}/reconciliation-mixed.html`, tools.buildReconciliationHtml(mixedInvoiceInput(tools)));
+  fs.writeFileSync(`${target}/reconciliation-interim.html`, tools.buildReconciliationHtml(interimInput(tools)));
 }

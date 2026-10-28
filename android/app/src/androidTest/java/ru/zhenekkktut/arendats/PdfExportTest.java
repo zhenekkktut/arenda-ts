@@ -36,6 +36,7 @@ public class PdfExportTest {
             exportAndCheck(instrumentation, activity, "reconciliation-compact", 1);
             exportAndCheck(instrumentation, activity, "rent", 1);
             exportAndCheck(instrumentation, activity, "reconciliation-mixed", 2);
+            exportAndCheck(instrumentation, activity, "reconciliation-interim", 1);
         } finally { instrumentation.runOnMainSync(activity::finish); }
     }
 
@@ -51,6 +52,7 @@ public class PdfExportTest {
         if (name.equals("reconciliation-mixed")) assertMixedFixture(html);
         if (name.equals("rent")) assertSignedVariableRentFixture(html);
         if (name.equals("reconciliation-compact")) assertSignedVariableReconciliationFixture(html);
+        if (name.equals("reconciliation-interim")) assertInterimFixture(html);
         Method save = MainActivity.class.getDeclaredMethod("beginPdfSave", String.class, String.class, String.class);
         save.setAccessible(true);
         Field destination = MainActivity.class.getDeclaredField("pdfDestination");
@@ -173,6 +175,42 @@ public class PdfExportTest {
             "Вычет топлива заказчика за месяц из переменной части: 125 бутылей × 40,00 руб.</td><td class=\"value\">−5 000,00</td>"));
         assertTrue("The signed variable component must reduce the net monthly total once", daily.contains(
             "Итого к оплате за месяц после вычета топлива</td><td class=\"value\">72 333,33</td>"));
+    }
+
+    private void assertInterimFixture(String html) {
+        String normalized = html.replace('\u00a0', ' ').replace('\u202f', ' ');
+        String summary = tableContent(normalized, "reconciliation");
+        String invoices = tableContent(normalized, "reconciliation-invoices");
+        String daily = tableContent(normalized, "reconciliation-daily");
+        assertTrue("The reconciliation must stop on the selected day",
+            normalized.contains("Сверка за период 01.09.2026–15.09.2026"));
+        assertTrue("The monthly minimum must be prorated to nine payable days in a 30-day month",
+            summary.contains("Начислено за 01.09.2026–15.09.2026, без НДС</td><td class=\"value\">24 000,00</td>"));
+        assertTrue("Only receipts on or before the selected day may reduce the balance",
+            summary.contains("Поступившие платежи</td><td class=\"value\">−3 000,00</td>"));
+        assertTrue("The resulting interim balance must include the pre-invoice advance",
+            summary.contains("Задолженность Арендатора на 15.09.2026</td><td class=\"value\">21 000,00</td>"));
+        assertEquals("The issued invoice must appear once", 1, occurrences(invoices, "№ 301<br>"));
+        assertFalse("The later-issued invoice must remain hidden", invoices.contains("№ 302"));
+        assertTrue("An early payment for a later-issued invoice must remain an advance",
+            invoices.contains("Аванс до даты выставления счёта"));
+        assertTrue("Uninvoiced rent must use the partial charge and visible invoice faces",
+            Pattern.compile("Осталось выставить</td>\\s*<td class=\"value\">20 000,00</td>").matcher(invoices).find());
+        assertTrue("Actual fuel must remain visible on its real date",
+            Pattern.compile("05\\.09\\.2026</td>\\s*<td class=\"value\">0</td>\\s*<td class=\"value\">12 500,00</td>")
+                .matcher(daily).find());
+        assertTrue("Only the actual deliveries through the selected date belong in the total",
+            daily.contains("Начислено за 01.09.2026–15.09.2026</td><td class=\"value\">300</td>"));
+        assertFalse("Future fuel dates must not appear", daily.contains("<td>20.09.2026</td>"));
+        assertFalse("Future deliveries must not appear", daily.contains("<td>21.09.2026</td>"));
+        assertTrue("Fuel must be explicitly deferred to month end",
+            daily.contains("Топливо заказчика за указанные даты: 12 500,00 руб. Вычет из переменной части будет учтён в конце месяца."));
+        assertFalse("An interim act must not apply the monthly fuel deduction",
+            daily.contains("Вычет топлива заказчика за месяц"));
+        assertTrue("The interim total must remain before the fuel deduction",
+            daily.contains("Начислено по состоянию на 15.09.2026, до вычета топлива</td><td class=\"value\">24 000,00</td>"));
+        assertFalse("An interim reconciliation must not claim a final monthly rent act",
+            normalized.contains("Основание начисления — акт-расчёт"));
     }
 
     private String tableContent(String html, String className) {

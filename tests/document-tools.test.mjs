@@ -287,18 +287,29 @@ test("daily detail omits absent days, retains the saved invoice range and adds o
   assert.equal(tools.reconciliationSummary(input).balance, 7_900_000);
 });
 
-test("monthly reconciliation rejects dates before month end and permits historical month-end dates", () => {
+test("reconciliation permits interim dates and rejects invalid or reversed date ranges", () => {
   const input = compactInput(tools);
   const cases = [
     { documentDate: "2026-09-16", asOfDate: "2026-10-03" },
-    { documentDate: "2026-10-03", asOfDate: "2026-09-16" },
-    { documentDate: "2026-09-16", asOfDate: undefined },
+    { documentDate: "2026-10-03", asOfDate: "2026-08-31" },
+    { documentDate: "2026-09-31", asOfDate: "2026-09-15" },
+    { documentDate: "2026-10-03", asOfDate: "2026-09-31" },
+    { period: "2026-13", documentDate: "2026-12-31", asOfDate: "2026-12-31" },
   ];
   for (const dates of cases) {
     const meta = { ...input.meta, ...dates };
     const error = tools.reconciliationDateError(meta);
     assert.equal(typeof error, "string");
     assert.throws(() => tools.buildReconciliationHtml({ ...input, meta }), { message: error });
+  }
+  for (const dates of [
+    { documentDate: "2026-09-16", asOfDate: "2026-09-16" },
+    { documentDate: "2026-10-03", asOfDate: "2026-09-16" },
+    { documentDate: "2026-09-16", asOfDate: undefined },
+  ]) {
+    const meta = { ...input.meta, ...dates };
+    assert.equal(tools.reconciliationDateError(meta), null);
+    assert.doesNotThrow(() => tools.buildReconciliationHtml({ ...input, meta }));
   }
   const monthEnd = { ...input.meta, documentDate: "2026-09-30", asOfDate: "2026-09-30" };
   assert.equal(tools.reconciliationDateError(monthEnd), null);
@@ -309,9 +320,100 @@ test("monthly reconciliation rejects dates before month end and permits historic
   for (const [period, lastDay] of [["2028-02", "29"], ["2026-04", "30"], ["2026-08", "31"]]) {
     const meta = { ...monthEnd, period, documentDate: `${period}-${lastDay}`, asOfDate: `${period}-${lastDay}` };
     assert.equal(tools.reconciliationDateError(meta), null);
-    assert.equal(typeof tools.reconciliationDateError({ ...meta,
-      asOfDate: `${period}-${String(Number(lastDay) - 1).padStart(2, "0")}` }), "string");
+    assert.equal(tools.reconciliationDateError({ ...meta,
+      asOfDate: `${period}-${String(Number(lastDay) - 1).padStart(2, "0")}` }), null);
   }
+});
+
+test("interim reconciliation clips deliveries and downtime and defers the fuel deduction to month end", () => {
+  const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS };
+  const entries = [
+    { entryDate: "2026-09-01", units: 100 },
+    { entryDate: "2026-09-09", units: 200 },
+    { entryDate: "2026-09-15", units: 0 },
+    { entryDate: "2026-09-21", units: 999 },
+  ];
+  const downtimes = [
+    { id: 1, startDate: "2026-09-10", endDate: "2026-09-20", reason: "Простой", note: "" },
+    { id: 2, startDate: "2026-09-23", endDate: "2026-09-25", reason: "Будущий простой", note: "" },
+  ];
+  const input = {
+    settings, entries, downtimes,
+    meta: { ...tools.defaultDocumentMeta("2026-09", 1, "2026-09-15"), asOfDate: "2026-09-15" },
+    calculation: tools.calculateRental("2026-09", entries, downtimes, settings),
+    invoices: [
+      { id: 1, period: "2026-09", invoiceNumber: "EARLY", invoiceDate: "2026-09-05", amountKopecks: 1_000_000 },
+      { id: 2, period: "2026-09", invoiceNumber: "FUTURE", invoiceDate: "2026-09-16", amountKopecks: 777_700 },
+    ],
+    payments: [
+      { invoiceId: 1, paymentDate: "2026-09-06", amountKopecks: 500_000 },
+      { invoiceId: 2, paymentDate: "2026-09-14", amountKopecks: 100_000 },
+      { invoiceId: 1, paymentDate: "2026-09-16", amountKopecks: 700_000 },
+    ],
+    expenses: [
+      { expenseDate: "2026-09-05", category: "fuel", payer: "customer", amountKopecks: 1_250_000 },
+      { expenseDate: "2026-09-20", category: "fuel", payer: "customer", amountKopecks: 111_100 },
+      { expenseDate: "2026-09-03", category: "fuel", payer: "self", amountKopecks: 900_000 },
+    ],
+  };
+  const original = structuredClone(input);
+  const summary = tools.reconciliationSummary(input);
+  assert.equal(summary.isInterim, true);
+  assert.equal(summary.periodEnd, "2026-09-15");
+  assert.equal(summary.calculation.actualUnits, 300);
+  assert.equal(summary.calculation.calendarDays, 30);
+  assert.equal(summary.calculation.ownershipDays, 15);
+  assert.equal(summary.calculation.downtimeDays, 6);
+  assert.equal(summary.calculation.payableDays, 9);
+  assert.equal(summary.calculation.baseKopecks, 2_400_000);
+  assert.equal(summary.netRentKopecks, 2_400_000);
+  assert.equal(summary.customerFuelKopecks, 1_250_000);
+  assert.equal(summary.fuelDeductionKopecks, 0);
+  assert.equal(summary.fuelUnits, 0);
+  assert.equal(summary.roundingKopecks, 0);
+  assert.equal(summary.paidKopecks, 600_000);
+  assert.equal(summary.balance, 1_800_000);
+  const html = tools.buildReconciliationHtml(input);
+  assert.match(html, /01\.09\.2026–15\.09\.2026/);
+  assert.match(html, /EARLY/);
+  assert.doesNotMatch(html, /FUTURE|<td>16\.09\.2026<\/td>|<td>20\.09\.2026<\/td>|<td>21\.09\.2026<\/td>/);
+  assert.match(html, /Аванс до даты выставления счёта/);
+  assert.match(html, /05\.09\.2026<\/td>\s*<td class="value">0<\/td>\s*<td class="value">12[\s ]500,00/);
+  assert.match(html, /Осталось выставить<\/td>\s*<td class="value">14[\s ]000,00/);
+  assert.doesNotMatch(html, /Основание начисления — акт-расчёт/);
+  assert.deepEqual(input, original, "Building an interim act must never rewrite the monthly source data");
+});
+
+test("interim fixed rent uses the actual calendar denominator and the lease start", () => {
+  for (const [period, asOf, days] of [
+    ["2026-04", "2026-04-15", 30],
+    ["2026-08", "2026-08-15", 31],
+    ["2026-02", "2026-02-15", 28],
+    ["2028-02", "2028-02-15", 29],
+  ]) {
+    const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS, rentalStart: `${period}-10`, rentalEnd: "2028-12-31" };
+    const input = { settings, meta: tools.defaultDocumentMeta(period, 1, asOf), entries: [], downtimes: [],
+      invoices: [], payments: [], expenses: [], calculation: tools.calculateRental(period, [], [], settings) };
+    const summary = tools.reconciliationSummary(input);
+    assert.equal(summary.periodEnd, asOf);
+    assert.equal(summary.calculation.calendarDays, days);
+    assert.equal(summary.calculation.ownershipDays, 6);
+    assert.equal(summary.calculation.baseKopecks, Math.round(8_000_000 * 6 / days));
+  }
+});
+
+test("interim reconciliation preserves a valid full fixed-rent supplement on an already issued invoice", () => {
+  const settings = { ...tools.DEFAULT_DOCUMENT_SETTINGS };
+  const input = { settings, meta: tools.defaultDocumentMeta("2026-09", 1, "2026-09-15"), entries: [], downtimes: [],
+    calculation: tools.calculateRental("2026-09", [], [], settings), expenses: [], payments: [],
+    invoices: [{ id: 1, period: "2026-09", kind: "fixed", invoiceNumber: "FIXED", invoiceDate: "2026-09-01",
+      amountKopecks: 8_000_000, allocationMode: "auto", allocationVersion: 1, bottleAllocations: [],
+      rentalSupplementKopecks: 8_000_000 }] };
+  const html = tools.buildReconciliationHtml(input);
+  assert.equal(tools.reconciliationSummary(input).netRentKopecks, 4_000_000);
+  assert.match(html, /FIXED/);
+  assert.doesNotMatch(html, /Привязку суммы к датам нужно проверить/);
+  assert.match(html, /Доплата до постоянной части: 80[\s ]000,00 руб\./);
 });
 
 test("reconciliation excludes invoices issued after a historical date following month end", () => {
