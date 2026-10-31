@@ -115,7 +115,7 @@ test("old net invoices deduct fuel before invoicing and later payments settle th
       if (period === "2026-09") {
         assert.equal(summary.opening, 11200000);
         assert.equal(summary.openingPaidKopecks, 11200000);
-        assert.match(html, /погашение задолженности за предыдущие месяцы/);
+        assert.match(html, /Погашение долга прошлых месяцев/);
         const historical = tools.reconciliationSummary({ ...input, meta: { ...input.meta, asOfDate: "2026-09-16" } });
         assert.equal(historical.openingPaidKopecks, 3500000);
       }

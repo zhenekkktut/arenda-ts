@@ -574,6 +574,7 @@ export function reconciliationSummary(input: OfficialDocumentInput) {
     variableFuelKopecks: 0, fixedFuelKopecks: 0, roundingKopecks: 0,
     fuelDeductionKopecks: 0, calculation: gross } : fuel;
   return { payments, paidKopecks, openingPayments, openingPaidKopecks, ...applied, opening,
+    openingBalanceAfterPaymentsKopecks: opening - openingPaidKopecks,
     netRentKopecks: applied.calculation.totalKopecks,
     balance: opening + applied.calculation.totalKopecks - paidKopecks - openingPaidKopecks,
     asOf, periodEnd, isInterim, grossCalculation: gross };
@@ -618,7 +619,7 @@ function reconciliationPages(input: OfficialDocumentInput) {
   if (dateError) throw new Error(dateError);
   const { settings: s, meta: m } = input;
   const b = periodBounds(m.period);
-  const { payments, paidKopecks, openingPaidKopecks, customerFuelKopecks, fuelUnits,
+  const { payments, paidKopecks, openingPayments, openingPaidKopecks, openingBalanceAfterPaymentsKopecks, customerFuelKopecks, fuelUnits,
     roundingKopecks, fuelDeductionKopecks, netRentKopecks, opening, balance, asOf,
     periodEnd, isInterim, grossCalculation: c } = reconciliationSummary(input);
   const invoices = input.invoices.filter((invoice) => (!invoice.period || invoice.period === m.period) &&
@@ -641,11 +642,15 @@ function reconciliationPages(input: OfficialDocumentInput) {
     entriesByDate.set(entry.entryDate, (entriesByDate.get(entry.entryDate) ?? 0) + entry.units);
   }
   const rows = [
-    ["Задолженность на начало периода", rubles(opening)],
+    [opening < 0 ? "Переплата на начало периода" : "Задолженность на начало периода", rubles(Math.abs(opening))],
+    ...(opening !== 0 ? [
+      [opening < 0 ? "Оплаты по счетам прошлых месяцев" : "Погашение долга прошлых месяцев", `${openingPaidKopecks ? "−" : ""}${rubles(openingPaidKopecks)}`],
+      [openingBalanceAfterPaymentsKopecks < 0 ? "Переплата по прошлым месяцам (остаток)" : "Остаток долга прошлых месяцев", rubles(Math.abs(openingBalanceAfterPaymentsKopecks))],
+    ] : []),
     [isInterim ? `Начислено за ${shortDate(b.start)}–${shortDate(periodEnd)}, ${s.vatLabel === "Без НДС" ? "без НДС" : s.vatLabel}`
       : `Начислено за ${monthNames[Number(m.period.slice(5)) - 1]} до учёта топлива, ${s.vatLabel === "Без НДС" ? "без НДС" : s.vatLabel}`, rubles(c.totalKopecks)],
     [isInterim ? "Вычет топлива (учитывается в конце месяца)" : "Вычет топлива, оплаченного заказчиком", isInterim ? "—" : `−${rubles(fuelDeductionKopecks)}`],
-    ["Поступившие платежи", `−${rubles(paidKopecks + openingPaidKopecks)}`],
+    [opening !== 0 ? "Оплаты за выбранный месяц" : "Поступившие платежи", `${opening !== 0 && !paidKopecks ? "" : "−"}${rubles(paidKopecks)}`],
     [balance < 0 ? `Переплата Арендатора на ${shortDate(asOf)}` : `Задолженность Арендатора на ${shortDate(asOf)}`,
       rubles(Math.abs(balance))],
   ];
@@ -871,7 +876,7 @@ function reconciliationPages(input: OfficialDocumentInput) {
     <tbody>${tableRows.join("")}</tbody></table>`;
   const dailyHeader = `<tr><th>Счёт / период</th><th>Дата</th><th>Бутылей</th><th>Топливо заказчика, руб.</th><th>Итог, руб.</th></tr>`;
   const dailyTable = (tableRows: string[]) => `<table class="reconciliation-daily"><colgroup><col style="width:29%"><col style="width:19%"><col style="width:12%"><col style="width:20%"><col style="width:20%"></colgroup><thead>${dailyHeader}</thead><tbody>${tableRows.join("")}</tbody></table>`;
-  const summaryRows = rows.map(([label, value], i) => `<tr class="${i === 4 ? "total" : ""}"><td>${escapeHtml(label)}</td><td class="value">${escapeHtml(value)}</td></tr>`);
+  const summaryRows = rows.map(([label, value], i) => `<tr class="${i === rows.length - 1 || (opening !== 0 && i === 2) ? "total" : ""}"><td>${escapeHtml(label)}</td><td class="value">${escapeHtml(value)}</td></tr>`);
   const introduction = `<h1>АКТ СВЕРКИ ВЗАИМНЫХ РАСЧЁТОВ</h1>
   <p class="number">№${escapeHtml(m.reconciliationNumber)}　Дата составления: ${shortDate(m.documentDate)}</p>
   <p class="subtitle">по аренде за ${escapeHtml(periodLabel(m.period))}, по состоянию на ${shortDate(asOf)}</p>
@@ -880,7 +885,7 @@ function reconciliationPages(input: OfficialDocumentInput) {
   <p><b>1.</b> Сверка за период ${shortDate(b.start)}–${shortDate(periodEnd)}, по выставленным счетам и платежам, полученным по состоянию на ${shortDate(asOf)}. ${isInterim ? "Промежуточный расчёт по записям и дням простоя на указанную дату. Постоянная часть рассчитана пропорционально оплачиваемым дням; итог месяца и вычет топлива определяются в конце месяца." : `Основание начисления — акт-расчёт № ${escapeHtml(m.actNumber)} за ${escapeHtml(periodLabel(m.period))}.`}</p>
   <table class="reconciliation"><thead><tr><th>Показатель</th><th class="value">Сумма, руб.</th></tr></thead><tbody>
   ${summaryRows.join("")}</tbody></table>
-  ${openingPaidKopecks ? `<p>В поступившие платежи включены ${rubles(openingPaidKopecks)} руб. ${opening < 0 ? "по счетам за предыдущие месяцы" : "в погашение задолженности за предыдущие месяцы"}.</p>` : ""}
+  ${openingPayments.length ? `<p>Оплаты по прошлым месяцам: ${[...openingPayments].sort((a, b) => a.paymentDate.localeCompare(b.paymentDate)).map((payment) => `${shortDate(payment.paymentDate)} — ${rubles(payment.amountKopecks)} руб.`).join("; ")}. Эти оплаты учтены в остатке по прошлым месяцам.</p>` : ""}
   <p><b>2.</b> Расшифровка выставленных счетов.</p>`;
 
   // Pack the invoice and daily tables in reading order. Reserve room for wrapped

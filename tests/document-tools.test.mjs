@@ -473,7 +473,7 @@ test("receipts for previous invoices increase an opening credit without counting
     "Opening credit grows from 24,480 to 34,480 before this month's charge and receipt");
   assert.equal(summary.openingPayments.length, 1);
   const html = tools.buildReconciliationHtml(input);
-  assert.match(html, /10[\s ]000,00 руб\. по счетам за предыдущие месяцы/);
+  assert.match(html, /Оплаты по счетам прошлых месяцев<\/td><td class="value">−10[\s ]000,00/);
   assert.doesNotMatch(html, /в погашение задолженности за предыдущие месяцы/);
   const manualZero = tools.reconciliationSummary({ ...input,
     meta: { ...input.meta, openingBalanceKopecks: 0 } });
@@ -489,6 +489,31 @@ test("user-entered document text is escaped", () => {
   const html = tools.buildRentActHtml({ settings, meta, calculation, downtimes: [], invoices: [], payments: [], expenses: [] });
   assert.match(html, /&lt;Выборг&gt;/);
   assert.doesNotMatch(html, /г\. <Выборг>/);
+});
+
+test("opening debt is visibly settled by dated prior receipts without charging it twice", () => {
+  const input = sampleInput(tools);
+  input.meta.openingBalanceKopecks = 4_180_000;
+  input.openingPayments = [
+    { invoiceId: 90, paymentDate: "2026-09-02", amountKopecks: 1_230_000 },
+    { invoiceId: 91, paymentDate: "2026-09-10", amountKopecks: 2_950_000 },
+    { invoiceId: 92, paymentDate: "2026-09-16", amountKopecks: 999_000 },
+  ];
+  const before = structuredClone(input);
+  const summary = tools.reconciliationSummary(input);
+  assert.equal(summary.openingBalanceAfterPaymentsKopecks, 0);
+  assert.equal(summary.balance, summary.netRentKopecks - summary.paidKopecks);
+  const html = tools.buildReconciliationHtml(input).replaceAll("\u00a0", " ");
+  assert.match(html, /Погашение долга прошлых месяцев<\/td><td class="value">−41 800,00/);
+  assert.match(html, /Остаток долга прошлых месяцев<\/td><td class="value">0,00/);
+  assert.match(html, /02\.09\.2026 — 12 300,00 руб\.; 10\.09\.2026 — 29 500,00 руб\./);
+  assert.doesNotMatch(html, /99[\s ]990,00/);
+  const partial = tools.reconciliationSummary({ ...input, meta: { ...input.meta, asOfDate: "2026-09-05" } });
+  assert.equal(partial.openingBalanceAfterPaymentsKopecks, 2_950_000);
+  const overpaid = { ...input, meta: { ...input.meta, openingBalanceKopecks: 1_000_000 } };
+  assert.match(tools.buildReconciliationHtml(overpaid), /Переплата по прошлым месяцам \(остаток\)/);
+  assert.equal(tools.reconciliationSummary(overpaid).openingBalanceAfterPaymentsKopecks, -3_180_000);
+  assert.deepEqual(input, before);
 });
 
 const dailyDetail = (html) => [...html.matchAll(/<table class="reconciliation-daily">[\s\S]*?<\/table>/g)]

@@ -188,6 +188,7 @@ type DashboardData = {
   downtimes?: Downtime[];
   restDates?: string[];
   documentMeta?: DocumentMeta;
+  documentOpeningBalanceSource?: "saved" | "automatic";
   documentArchive?: ArchivedDocument[];
   auditLog?: AuditEvent[];
 };
@@ -541,6 +542,7 @@ export function offlineDashboard(period: string): DashboardData {
     downtimes,
     restDates: (store.restDates ?? []).filter((date) => date >= from && date <= to),
     documentMeta,
+    documentOpeningBalanceSource: savedMeta && Number.isSafeInteger(savedMeta.openingBalanceKopecks) ? "saved" : "automatic",
     documentArchive: store.documentArchive.filter((document) => document.period === period).sort((a, b) => b.id - a.id),
     auditLog: store.auditLog.filter((event) => event.period === period).slice(0, 100),
   };
@@ -2683,7 +2685,7 @@ export default function RentalApp() {
 
   function documentInputSnapshot(kind: ArchivedDocument["kind"], meta: DocumentMeta) {
     return JSON.stringify({ kind, meta, settings: documentSettings, calculation, fuelCalculation: "whole-bottles-signed-variable-v3",
-      ...(kind === "reconciliation" ? { reconciliationCalculation: "as-of-days-month-end-fuel-v1" } : {}),
+      ...(kind === "reconciliation" ? { reconciliationCalculation: "as-of-days-month-end-fuel-opening-breakdown-v2" } : {}),
       entries: data?.entries ?? [], downtimes: data?.downtimes ?? [],
       ...(kind === "act" ? { expenses: (data?.expenses ?? []).filter((expense) => expense.category === "fuel" && expense.payer === "customer") } : {}),
       ...(kind === "reconciliation" || kind === "ledger"
@@ -3524,6 +3526,16 @@ export default function RentalApp() {
                     <div><span>Начислено для сверки</span><strong>{reconciliationPreview ? money(reconciliationPreview.netRentKopecks) : "Проверьте дату"}</strong></div>
                   </div>
                   <label><FieldLabel>Сверка по состоянию на</FieldLabel><Input type="date" min={monthBounds.start} max={documentDate < today ? documentDate : today} value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} /></label>
+                  {reconciliationPreview && <details className="document-options" open={reconciliationPreview.opening !== 0 || undefined}>
+                    <summary>Долг и оплаты прошлых месяцев</summary>
+                    <div className="calculation-list">
+                      <div><span>{reconciliationPreview.opening < 0 ? "Переплата" : "Долг"} на {dateLabel(monthBounds.start)}</span><strong className="whitespace-nowrap shrink-0">{money(Math.abs(reconciliationPreview.opening))}</strong></div>
+                      <div><span>Оплаты по прошлым месяцам</span><strong className="whitespace-nowrap shrink-0">{money(reconciliationPreview.openingPaidKopecks)}</strong></div>
+                      <div><span>{reconciliationPreview.openingBalanceAfterPaymentsKopecks < 0 ? "Осталась переплата" : "Остался долг прошлых месяцев"}</span><strong className="whitespace-nowrap shrink-0">{money(Math.abs(reconciliationPreview.openingBalanceAfterPaymentsKopecks))}</strong></div>
+                      {reconciliationPreview.openingPayments.map((payment, index) => <div key={`${payment.invoiceId}-${payment.paymentDate}-${index}`}><span>{dateLabel(payment.paymentDate)}</span><strong className="whitespace-nowrap shrink-0">{money(payment.amountKopecks)}</strong></div>)}
+                    </div>
+                    <p className="help-note">{data.documentOpeningBalanceSource === "saved" ? "Начальная сумма сохранена в реквизитах документа. " : data.documentOpeningBalanceSource === "automatic" ? "Начальная сумма рассчитана по истории прошлых месяцев. " : ""}Она относится к первому дню месяца. Если долг уже погашен, он остаётся в истории, а его остаток равен нулю. Оплаты за выбранный месяц: {money(reconciliationPreview.paidKopecks)}. Начислено за выбранный месяц: {money(reconciliationPreview.netRentKopecks)}.</p>
+                  </details>}
                   <p className="help-note">Сверка доступна без закрытия месяца. {reconciliationPreview?.isInterim ? "Дни учитываются по выбранную дату; постоянная часть — пропорционально дням. Топливо пока справочно, вычет — в конце месяца." : "На конец месяца учитывается полный месячный расчёт с вычетом топлива."}</p>
                   <details className="document-options" key={editingArchivedId ?? "new"} open={editingArchivedId !== null || undefined}>
                     <summary>Изменить номер, даты и начальный долг</summary>
@@ -3558,7 +3570,7 @@ export default function RentalApp() {
                     {(data.documentArchive ?? []).filter((item) => item.kind === "act" || item.kind === "reconciliation").map((item) => {
                       const stale = archiveIsStale(item);
                       return <div key={item.id} className="document-archive-row"><div><strong>{item.kind === "act" ? "Акт-расчёт" : item.kind === "reconciliation" ? "Акт сверки" : item.kind === "daily" ? "Ведомость" : "Реестр"} №{item.number} · версия {item.version}</strong>
-                        <small>{new Date(item.generatedAt).toLocaleString("ru-RU")} {stale ? "· Данные изменились после формирования" : "· Актуально"}</small></div>
+                        <small>За {monthLabel(item.period)} · создан {new Date(item.generatedAt).toLocaleString("ru-RU")} {stale ? "· Данные или оформление изменились; для обновления создайте новую версию" : "· Актуально"}</small></div>
                         {item.pdfUri && <Button type="button" variant="outline" onClick={() => window.AndroidApp?.openArchivedPdf?.(item.pdfUri!)}>Открыть PDF</Button>}
                         {item.pdfUri && <Button type="button" variant="ghost" onClick={() => window.AndroidApp?.shareArchivedPdf?.(item.pdfUri!)}>Отправить</Button>}
                         <Button type="button" variant="outline" disabled={pdfSavingId !== null} onClick={() => saveArchivedPdf(item)}>{pdfSavingId === item.id ? "PDF готовится…" : item.pdfUri ? "Повторить PDF" : "Сохранить PDF"}</Button>
