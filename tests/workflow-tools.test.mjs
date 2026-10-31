@@ -1,0 +1,230 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import test from "node:test";
+import ts from "typescript";
+
+const source = fs.readFileSync(new URL("../app/workflow-tools.ts", import.meta.url), "utf8");
+const compiled = ts.transpileModule(source, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText;
+const module = { exports: {} };
+new Function("exports", "module", compiled)(module.exports, module);
+const { nextInvoiceNumber, deriveInvoiceNumberFloor, missingEntryDates, linkedAsOfDate,
+  normalizeRestDates, isRestDate } = module.exports;
+
+const invoices = (...numbers) => numbers.map((invoiceNumber) => ({ invoiceNumber }));
+const fullLease = { rentalStart: "2026-01-01", rentalEnd: "2027-12-31" };
+const missing = (extra = {}) => {
+  const values = { period: "2026-10", today: "2026-10-05", settings: fullLease,
+    entries: [], downtimes: [], restDates: [], ...extra };
+  return missingEntryDates(values.period, values.today, values.settings, values.entries, values.downtimes,
+    values.restDates);
+};
+
+test("invoice numbers use the largest number across history, including padded numbers", () => {
+  const history = invoices("6", " 0031 ", "12", "31", "custom/99");
+  const unchanged = structuredClone(history);
+  assert.equal(nextInvoiceNumber(history), "32");
+  assert.deepEqual(history, unchanged);
+  assert.equal(nextInvoiceNumber(invoices("0", "000")), "1");
+});
+
+test("an empty phone starts at one and nonnumeric numbering stays manual", () => {
+  assert.equal(nextInvoiceNumber([]), "1");
+  assert.equal(nextInvoiceNumber(invoices("С-24", "2026/32", " ")), "");
+  assert.equal(nextInvoiceNumber(invoices("1.5", "-4", "1e3", "Infinity")), "");
+  assert.equal(nextInvoiceNumber(invoices("С-24", "15", "2026/32")), "16");
+});
+
+test("number suggestion stops before unsafe arithmetic and does not choose a colliding number", () => {
+  const safe = String(Number.MAX_SAFE_INTEGER);
+  assert.equal(nextInvoiceNumber(invoices(String(Number.MAX_SAFE_INTEGER - 1))), safe);
+  assert.equal(nextInvoiceNumber(invoices(safe)), "");
+  assert.equal(nextInvoiceNumber(invoices("12", "9007199254740992")), "");
+  assert.equal(nextInvoiceNumber(invoices("9".repeat(400))), "");
+  assert.equal(nextInvoiceNumber(invoices("1", "02", "3", "0004")), "5");
+  for (const malformed of [null, { invoiceNumber: 31 }, { invoiceNumber: null }, { invoiceNumber: {} }]) {
+    const history = [{ invoiceNumber: "12" }, malformed];
+    const unchanged = structuredClone(history);
+    assert.equal(nextInvoiceNumber(history), "");
+    assert.deepEqual(history, unchanged);
+  }
+});
+
+test("invoice number floor includes deleted numeric invoices from audit without changing source records", () => {
+  const history = invoices(" 0028 ", "29", "30А", "2026/31");
+  const audit = [
+    { entity: "invoice", title: "Удалён счёт № 0032" },
+    { entity: "invoice", title: "Изменён счет №31" },
+    { entity: "invoice", title: "Добавлен СЧЁТ №30" },
+    { entity: "invoice", title: "Удалён счёт №35А" },
+    { entity: "payment", title: "Добавлена оплата по счёту №999" },
+    { entity: "document", title: "Счёт №1000" },
+  ];
+  const unchanged = structuredClone({ history, audit });
+  const floor = deriveInvoiceNumberFloor(history, audit);
+  assert.equal(floor, 32);
+  assert.equal(nextInvoiceNumber(history, floor), "33");
+  assert.deepEqual({ history, audit }, unchanged);
+});
+
+test("saved invoice number floor survives deletion, renaming and a pruned audit log", () => {
+  assert.equal(deriveInvoiceNumberFloor(invoices("28", "29"), [], 32), 32);
+  assert.equal(deriveInvoiceNumberFloor(invoices("С-32"), [], 32), 32);
+  assert.equal(deriveInvoiceNumberFloor([], [], 32), 32);
+  assert.equal(nextInvoiceNumber([], 32), "33");
+  assert.equal(nextInvoiceNumber(invoices("28", "29"), 32), "33");
+  assert.equal(nextInvoiceNumber(invoices("35"), 32), "36");
+  assert.equal(deriveInvoiceNumberFloor(invoices("35"), [], 32), 35);
+});
+
+test("invoice floor never reads a numeric prefix from manual numbers or unrelated audit text", () => {
+  const manual = invoices("30A", "30А", "2026/30", "-30", "1.5", "1e3", "0");
+  const audit = [
+    { entity: "invoice", title: "Удалён счёт №30A" },
+    { entity: "invoice", title: "Изменён счёт №2026/30" },
+    { entity: "invoice", title: "Счёт №31 — примечание" },
+    { entity: "invoice", title: "Изменён акт №32" },
+    { entity: "invoice", title: "Счёт №0" },
+    { entity: "invoice", title: null },
+    null,
+  ];
+  assert.equal(deriveInvoiceNumberFloor(manual, audit), undefined);
+  assert.equal(nextInvoiceNumber(manual), "1", "The original zero-number behaviour stays unchanged");
+  assert.equal(nextInvoiceNumber(invoices("30А", "2026/30")), "");
+  assert.equal(nextInvoiceNumber([], deriveInvoiceNumberFloor([], audit)), "1");
+});
+
+test("number floor accepts only safe positive integers and stops before overflowing the next number", () => {
+  assert.equal(deriveInvoiceNumberFloor(invoices(String(Number.MAX_SAFE_INTEGER)), []), Number.MAX_SAFE_INTEGER);
+  assert.equal(nextInvoiceNumber([], Number.MAX_SAFE_INTEGER), "");
+  assert.equal(nextInvoiceNumber(invoices("2"), Number.MAX_SAFE_INTEGER - 1), String(Number.MAX_SAFE_INTEGER));
+  for (const invalid of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, "32"]) {
+    assert.equal(deriveInvoiceNumberFloor([], [], invalid), undefined);
+    assert.equal(nextInvoiceNumber([], invalid), "1");
+  }
+  assert.equal(deriveInvoiceNumberFloor(invoices("0", "9".repeat(400)), [
+    { entity: "invoice", title: `Счёт №${Number.MAX_SAFE_INTEGER + 1}` },
+  ]), undefined);
+  assert.equal(deriveInvoiceNumberFloor(invoices("0031"), [], 30), 31);
+});
+
+test("missing records include today, skip Sundays and accept a saved zero quantity", () => {
+  assert.deepEqual(missing({ entries: [{ entryDate: "2026-10-02", units: 0 }] }),
+    ["2026-10-01", "2026-10-03", "2026-10-05"]);
+  assert.deepEqual(missing({ today: "2026-10-04" }), ["2026-10-01", "2026-10-02", "2026-10-03"]);
+});
+
+test("a selected Saturday is a day off while other Saturdays still need a record", () => {
+  const restDates = ["2026-10-03"];
+  assert.equal(isRestDate("2026-10-03"), false);
+  assert.equal(isRestDate("2026-10-03", restDates), true);
+  assert.equal(isRestDate("2026-10-10", restDates), false);
+  assert.equal(isRestDate("2026-10-04"), true, "Sunday keeps its existing behaviour");
+  assert.deepEqual(missing({ restDates }), ["2026-10-01", "2026-10-02", "2026-10-05"]);
+  assert.equal(missing({ today: "2026-10-10", restDates }).includes("2026-10-10"), true);
+  assert.deepEqual(missing({ restDates: [] }),
+    ["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-05"],
+    "Removing the selection restores the record reminder");
+});
+
+test("a selected Monday is optional without making other Mondays days off", () => {
+  const restDates = ["2026-10-05"];
+  assert.equal(isRestDate("2026-10-05"), false);
+  assert.equal(isRestDate("2026-10-05", restDates), true);
+  assert.equal(isRestDate("2026-10-12", restDates), false);
+  assert.equal(missing({ restDates }).includes("2026-10-05"), false);
+  assert.equal(missing({ restDates, today: "2026-10-12" }).includes("2026-10-12"), true);
+  assert.equal(missing({ restDates: [] }).includes("2026-10-05"), true);
+});
+
+test("calendar days off normalize backup values without mutating saved dates", () => {
+  const dates = ["2026-10-10", "2026-10-03", "2026-10-03", "2026-10-04",
+    "2026-02-30", "2026-2-03", "", null, 20261017, {}, "2028-02-29"];
+  const unchanged = structuredClone(dates);
+  assert.deepEqual(normalizeRestDates(dates),
+    ["2026-10-03", "2026-10-04", "2026-10-10", "2028-02-29"]);
+  assert.deepEqual(dates, unchanged);
+  for (const value of [undefined, null, "2026-10-03", {}, 20261003]) {
+    assert.deepEqual(normalizeRestDates(value), []);
+  }
+  for (const date of ["2026-02-30", "2026-13-03", "2026-2-03", ""]) {
+    assert.equal(isRestDate(date, [date]), false);
+  }
+});
+
+test("selected days off stay separate from recorded deliveries and confirmed rental downtime", () => {
+  const input = { restDates: ["2026-10-03", "2026-11-07", "2026-02-30"],
+    settings: { ...fullLease }, entries: [{ entryDate: "2026-10-02", units: 145 }],
+    downtimes: [{ startDate: "2026-10-05", endDate: "2026-10-05" }] };
+  const unchanged = structuredClone(input);
+  assert.deepEqual(missing(input), ["2026-10-01"]);
+  assert.deepEqual(input, unchanged, "A day off never writes or changes a delivery or rental downtime");
+  assert.deepEqual(missing({ ...input, settings: {
+    rentalStart: "2026-10-02", rentalEnd: "2026-10-03",
+  } }), [], "The lease bounds still apply");
+  assert.deepEqual(missingEntryDates("2026-10", "2026-10-05", fullLease, [], []),
+    ["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-05"],
+    "Old callers and old backups retain the default schedule");
+});
+
+test("missing records are clipped to the rental dates and confirmed overlapping downtime", () => {
+  const settings = { rentalStart: "2026-10-02", rentalEnd: "2026-10-07" };
+  const downtimes = [
+    { startDate: "2026-09-30", endDate: "2026-10-02" },
+    { startDate: "2026-10-05", endDate: "2026-10-06" },
+    { startDate: "2026-10-06", endDate: "2026-10-20" },
+  ];
+  assert.deepEqual(missing({ today: "2026-10-31", settings, downtimes }), ["2026-10-03"]);
+  assert.deepEqual(missing({ settings: { ...settings, rentalStart: "2026-11-01", rentalEnd: "2027-01-31" } }), []);
+});
+
+test("a future month and a month after the lease have no missing records", () => {
+  assert.deepEqual(missing({ period: "2026-11" }), []);
+  assert.deepEqual(missing({ settings: { rentalStart: "2026-08-01", rentalEnd: "2026-09-30" } }), []);
+});
+
+test("calendar bounds work across December and January without spilling into a neighboring month", () => {
+  const settings = { rentalStart: "2026-12-30", rentalEnd: "2027-01-02" };
+  assert.deepEqual(missing({ period: "2026-12", today: "2027-01-02", settings }),
+    ["2026-12-30", "2026-12-31"]);
+  assert.deepEqual(missing({ period: "2027-01", today: "2027-01-02", settings }),
+    ["2027-01-01", "2027-01-02"]);
+});
+
+test("February includes leap day only in a leap year", () => {
+  assert.deepEqual(missing({ period: "2028-02", today: "2028-03-03",
+    settings: { rentalStart: "2028-02-28", rentalEnd: "2028-03-03" } }),
+    ["2028-02-28", "2028-02-29"]);
+  assert.deepEqual(missing({ period: "2027-02", today: "2027-03-03",
+    settings: { rentalStart: "2027-02-27", rentalEnd: "2027-03-03" } }), ["2027-02-27"]);
+});
+
+test("malformed dates do not produce invented missing days", () => {
+  for (const extra of [{ period: "2026-13" }, { period: "2026-2" }, { today: "2026-02-30" },
+    { settings: { ...fullLease, rentalStart: "" } },
+    { settings: { rentalStart: "2026-11-01", rentalEnd: "2026-10-01" } }]) {
+    assert.deepEqual(missing(extra), []);
+  }
+  assert.deepEqual(missing({ downtimes: [
+    { startDate: "2026-10-07", endDate: "2026-10-01" },
+    { startDate: "2026-02-30", endDate: "2026-10-31" },
+  ] }), ["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-05"]);
+});
+
+test("workflow helpers leave saved records and rental dates untouched", () => {
+  const input = { settings: { ...fullLease }, entries: [{ entryDate: "2026-10-01" }],
+    downtimes: [{ startDate: "2026-10-02", endDate: "2026-10-03" }] };
+  const unchanged = structuredClone(input);
+  assert.deepEqual(missing(input), ["2026-10-05"]);
+  assert.deepEqual(input, unchanged);
+});
+
+test("reconciliation date follows document date while the dates are linked", () => {
+  assert.equal(linkedAsOfDate("2026-10-05", "2026-10-03", "2026-10-03"), "2026-10-05");
+});
+
+test("changing document date preserves a separately selected reconciliation date", () => {
+  assert.equal(linkedAsOfDate("2026-10-05", "2026-10-03", "2026-10-04"), "2026-10-04");
+  assert.equal(linkedAsOfDate("2026-10-05", "2026-10-03", ""), "");
+});

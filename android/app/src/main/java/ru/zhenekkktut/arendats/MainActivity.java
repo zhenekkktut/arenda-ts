@@ -14,6 +14,8 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.MediaStore;
 import android.util.Base64;
 import android.view.View;
@@ -22,12 +24,15 @@ import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceError;
+import android.webkit.RenderProcessGoneDetail;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.Toast;
+import org.json.JSONObject;
 
 import java.io.OutputStream;
 
@@ -46,13 +51,34 @@ public class MainActivity extends Activity {
     private FrameLayout rootView;
     private WebViewAssetLoader assetLoader;
     private ValueCallback<Uri[]> fileChooserCallback;
-    private byte[] pendingFileBytes;
-    private String pendingFileName;
-    private String pendingMimeType;
+    private final Object fileExportLock = new Object();
+    private FileExportRequest pendingFileExport;
     private String pendingPdfHtml;
     private String pendingPdfFileName;
     private WebView pdfWebView;
+    private final Handler pdfHandler = new Handler(Looper.getMainLooper());
+    private Runnable pdfTimeout;
+    private Uri pdfDestination;
+    private boolean pdfMediaStoreDestination;
     private boolean pdfInProgress;
+    private String activeArchiveId;
+    private boolean backDecisionPending;
+    private long backDecisionSerial;
+    private Runnable backDecisionTimeout;
+
+    private static final class FileExportRequest {
+        final byte[] bytes;
+        final String fileName;
+        final String mimeType;
+        final String requestId;
+
+        FileExportRequest(byte[] bytes, String fileName, String mimeType, String requestId) {
+            this.bytes = bytes;
+            this.fileName = fileName;
+            this.mimeType = mimeType;
+            this.requestId = requestId;
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -64,6 +90,7 @@ public class MainActivity extends Activity {
             View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
         );
 
+        WebView.enableSlowWholeDocumentDraw();
         webView = new WebView(this);
         webView.setBackgroundColor(Color.rgb(244, 246, 249));
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
@@ -210,19 +237,23 @@ public class MainActivity extends Activity {
         }
 
         if (requestCode == REQUEST_SAVE_FILE) {
-            if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null && pendingFileBytes != null) {
+            FileExportRequest request;
+            synchronized (fileExportLock) { request = pendingFileExport; }
+            if (request == null) return;
+            String status = resultCode == Activity.RESULT_CANCELED ? "cancelled" : "error";
+            if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
                 try (OutputStream output = getContentResolver().openOutputStream(data.getData(), "w")) {
                     if (output == null) throw new IllegalStateException("Файл недоступен");
-                    output.write(pendingFileBytes);
+                    output.write(request.bytes);
                     output.flush();
-                    Toast.makeText(this, R.string.file_saved, Toast.LENGTH_SHORT).show();
                 } catch (Exception error) {
-                    Toast.makeText(this, R.string.file_save_error, Toast.LENGTH_LONG).show();
+                    finishFileExport(request, "error");
+                    return;
                 }
+                // The try-with-resources close has completed before success is reported.
+                status = "saved";
             }
-            pendingFileBytes = null;
-            pendingFileName = null;
-            pendingMimeType = null;
+            finishFileExport(request, status);
             return;
         }
 
@@ -232,18 +263,72 @@ public class MainActivity extends Activity {
                 String fileName = pendingPdfFileName == null ? "document.pdf" : pendingPdfFileName;
                 pendingPdfHtml = null;
                 pendingPdfFileName = null;
-                renderHtmlToPdf(html, fileName, data.getData(), false);
+                Uri destination = data.getData();
+                persistPdfUriPermission(destination, data.getFlags());
+                try {
+                    renderHtmlToPdf(html, fileName, destination, false);
+                } catch (Exception error) {
+                    finishPdfSave(destination, fileName, false, false);
+                }
             } else {
-                pendingPdfHtml = null;
-                pendingPdfFileName = null;
-                pdfInProgress = false;
+                finishPendingPdfSave(resultCode == Activity.RESULT_CANCELED ? "cancelled" : "error");
             }
             return;
         }
     }
 
+    private void persistPdfUriPermission(Uri uri, int resultFlags) {
+        // Request only grants returned by the document provider. Keeping read
+        // access lets archived PDFs reopen after a device restart on Android 8–9.
+        int grantFlags = resultFlags & (Intent.FLAG_GRANT_READ_URI_PERMISSION
+            | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        boolean persistentReadAccess = false;
+        if (grantFlags != 0) {
+            try {
+                getContentResolver().takePersistableUriPermission(uri, grantFlags);
+                persistentReadAccess = (grantFlags & Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0;
+            } catch (RuntimeException error) {
+                android.util.Log.w("ArendaPdf", "Could not persist the PDF document grant", error);
+            }
+        }
+        if (!persistentReadAccess) {
+            Toast.makeText(this,
+                "Не удалось закрепить доступ к PDF для архива. Файл можно открыть из выбранной папки.",
+                Toast.LENGTH_LONG).show();
+        }
+    }
+
     @Override
     public void onBackPressed() {
+        if (backDecisionPending) return;
+        if (webView == null) {
+            super.onBackPressed();
+            return;
+        }
+        backDecisionPending = true;
+        final long decision = ++backDecisionSerial;
+        backDecisionTimeout = () -> {
+            if (!backDecisionPending || decision != backDecisionSerial) return;
+            backDecisionPending = false;
+            backDecisionTimeout = null;
+            if (!isFinishing() && !isDestroyed()) performDefaultBack();
+        };
+        pdfHandler.postDelayed(backDecisionTimeout, 1000);
+        webView.evaluateJavascript(
+            "(function(){const open=document.querySelector('[role=\"listbox\"][data-state=\"open\"],"
+                + "[role=\"dialog\"][data-state=\"open\"],[role=\"alertdialog\"][data-state=\"open\"]');"
+                + "if(!open)return false;document.dispatchEvent(new KeyboardEvent('keydown',"
+                + "{key:'Escape',code:'Escape',bubbles:true,cancelable:true}));return true;})()",
+            consumed -> {
+                if (!backDecisionPending || decision != backDecisionSerial) return;
+                backDecisionPending = false;
+                if (backDecisionTimeout != null) pdfHandler.removeCallbacks(backDecisionTimeout);
+                backDecisionTimeout = null;
+                if (!"true".equals(consumed) && !isFinishing() && !isDestroyed()) performDefaultBack();
+            });
+    }
+
+    private void performDefaultBack() {
         if (webView != null && webView.canGoBack()) {
             webView.goBack();
         } else {
@@ -253,9 +338,18 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        backDecisionPending = false;
+        if (backDecisionTimeout != null) pdfHandler.removeCallbacks(backDecisionTimeout);
+        backDecisionTimeout = null;
+        FileExportRequest fileRequest;
+        synchronized (fileExportLock) { fileRequest = pendingFileExport; }
+        if (fileRequest != null) finishFileExport(fileRequest, "cancelled");
+        if (pdfDestination != null) finishPdfSave(pdfDestination, "", pdfMediaStoreDestination, false);
+        else if (pdfInProgress) finishPendingPdfSave("cancelled");
         if (webView != null) {
             webView.removeJavascriptInterface("AndroidApp");
             webView.destroy();
+            webView = null;
         }
         if (pdfWebView != null) {
             pdfWebView.destroy();
@@ -283,34 +377,34 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void copyText(String text) {
-            ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-            clipboard.setPrimaryClip(ClipData.newPlainText("Текст", text));
+            copyTextChecked(text);
+        }
+
+        @JavascriptInterface
+        public boolean copyTextChecked(String text) {
+            if (text == null || text.trim().isEmpty() || isFinishing() || isDestroyed()) return false;
+            try {
+                ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                if (clipboard == null) return false;
+                clipboard.setPrimaryClip(ClipData.newPlainText("Текст", text));
+                return true;
+            } catch (RuntimeException error) {
+                android.util.Log.w("ArendaCopy", "Could not write to the clipboard", error);
+                return false;
+            }
         }
 
         @JavascriptInterface
         public void saveBase64File(String base64, String fileName, String mimeType) {
-            try {
-                pendingFileBytes = Base64.decode(base64, Base64.DEFAULT);
-                pendingFileName = safeFileName(fileName);
-                pendingMimeType = mimeType == null || mimeType.isEmpty()
-                    ? "application/octet-stream"
-                    : mimeType;
-                runOnUiThread(() -> {
-                    Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
-                    intent.addCategory(Intent.CATEGORY_OPENABLE);
-                    intent.setType(pendingMimeType);
-                    intent.putExtra(Intent.EXTRA_TITLE, pendingFileName);
-                    try {
-                        startActivityForResult(intent, REQUEST_SAVE_FILE);
-                    } catch (Exception error) {
-                        pendingFileBytes = null;
-                        Toast.makeText(MainActivity.this, R.string.file_save_error, Toast.LENGTH_LONG).show();
-                    }
-                });
-            } catch (Exception error) {
-                pendingFileBytes = null;
+            if (!beginFileExport(base64, fileName, mimeType, null)) {
                 runOnUiThread(() -> Toast.makeText(MainActivity.this, R.string.file_save_error, Toast.LENGTH_LONG).show());
             }
+        }
+
+        @JavascriptInterface
+        public boolean saveBase64FileWithResult(String base64, String fileName, String mimeType, String requestId) {
+            if (requestId == null || requestId.trim().isEmpty() || requestId.length() > 128) return false;
+            return beginFileExport(base64, fileName, mimeType, requestId);
         }
 
         @JavascriptInterface
@@ -322,16 +416,95 @@ public class MainActivity extends Activity {
             String pdfFileName = safeFileName(fileName == null ? "document.pdf" : fileName);
             if (!pdfFileName.toLowerCase().endsWith(".pdf")) pdfFileName += ".pdf";
             final String finalPdfFileName = pdfFileName;
-            runOnUiThread(() -> beginPdfSave(html, finalPdfFileName));
+            runOnUiThread(() -> beginPdfSave(html, finalPdfFileName, null));
+        }
+
+        @JavascriptInterface
+        public void saveArchivedHtmlAsPdf(String html, String fileName, String archiveId) {
+            if (html == null || html.trim().isEmpty()) {
+                runOnUiThread(() -> {
+                    notifyArchivePdfSaveEnded(archiveId, "error");
+                    Toast.makeText(MainActivity.this, R.string.file_save_error, Toast.LENGTH_LONG).show();
+                });
+                return;
+            }
+            final String safeName = safeFileName(fileName);
+            runOnUiThread(() -> beginPdfSave(html, safeName, archiveId));
+        }
+
+        @JavascriptInterface
+        public void openArchivedPdf(String uri) {
+            runOnUiThread(() -> { if (isLocalDocumentUri(uri)) openPdf(Uri.parse(uri)); });
+        }
+
+        @JavascriptInterface
+        public void shareArchivedPdf(String uri) {
+            runOnUiThread(() -> { if (isLocalDocumentUri(uri)) sharePdf(Uri.parse(uri)); });
         }
     }
 
-    private void beginPdfSave(String html, String pdfFileName) {
+    private FileExportRequest reserveFileExport(String base64, String fileName, String mimeType, String requestId) {
+        if (base64 == null || base64.trim().isEmpty() || !base64.matches("[A-Za-z0-9+/=\\r\\n\\t ]+")) return null;
+        final byte[] bytes;
+        try { bytes = Base64.decode(base64, Base64.DEFAULT); }
+        catch (IllegalArgumentException error) { return null; }
+        if (bytes.length == 0) return null;
+        FileExportRequest request = new FileExportRequest(bytes, safeFileName(fileName),
+            mimeType == null || mimeType.trim().isEmpty() ? "application/octet-stream" : mimeType, requestId);
+        synchronized (fileExportLock) {
+            if (pendingFileExport != null || isFinishing() || isDestroyed()) return null;
+            pendingFileExport = request;
+        }
+        return request;
+    }
+
+    private boolean beginFileExport(String base64, String fileName, String mimeType, String requestId) {
+        FileExportRequest request = reserveFileExport(base64, fileName, mimeType, requestId);
+        if (request == null) return false;
+        runOnUiThread(() -> {
+            synchronized (fileExportLock) { if (pendingFileExport != request) return; }
+            try {
+                Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType(request.mimeType);
+                intent.putExtra(Intent.EXTRA_TITLE, request.fileName);
+                startActivityForResult(intent, REQUEST_SAVE_FILE);
+            } catch (Exception error) {
+                finishFileExport(request, "error");
+            }
+        });
+        return true;
+    }
+
+    private void finishFileExport(FileExportRequest request, String status) {
+        synchronized (fileExportLock) {
+            if (pendingFileExport != request) return;
+            pendingFileExport = null;
+        }
+        // Release the slot before notifying JavaScript, so an immediate retry is safe.
+        if (request.requestId != null) {
+            if (webView != null && !isDestroyed()) {
+                webView.evaluateJavascript("if(typeof window.onFileExportEnded==='function'){window.onFileExportEnded("
+                    + JSONObject.quote(request.requestId) + "," + JSONObject.quote(status) + ");}", null);
+            }
+        } else if (!isFinishing() && !isDestroyed() && !"cancelled".equals(status)) {
+            Toast.makeText(this, "saved".equals(status) ? R.string.file_saved : R.string.file_save_error,
+                "saved".equals(status) ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private boolean isLocalDocumentUri(String uri) {
+        return uri != null && uri.startsWith("content://") && !uri.contains("\n");
+    }
+
+    private void beginPdfSave(String html, String pdfFileName, String archiveId) {
         if (pdfInProgress) {
+            notifyArchivePdfSaveEnded(archiveId, "error");
             Toast.makeText(this, R.string.pdf_in_progress, Toast.LENGTH_SHORT).show();
             return;
         }
         pdfInProgress = true;
+        activeArchiveId = archiveId;
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
@@ -344,7 +517,11 @@ public class MainActivity extends Activity {
                 if (destination == null) throw new IllegalStateException("Не удалось создать PDF");
                 renderHtmlToPdf(html, pdfFileName, destination, true);
             } catch (Exception error) {
-                pdfInProgress = false;
+                if (pdfDestination != null) {
+                    finishPdfSave(pdfDestination, pdfFileName, true, false);
+                    return;
+                }
+                finishPendingPdfSave("error");
                 Toast.makeText(this, R.string.file_save_error, Toast.LENGTH_LONG).show();
             }
             return;
@@ -359,21 +536,36 @@ public class MainActivity extends Activity {
         try {
             startActivityForResult(intent, REQUEST_SAVE_PDF);
         } catch (Exception error) {
-            pendingPdfHtml = null;
-            pendingPdfFileName = null;
-            pdfInProgress = false;
+            finishPendingPdfSave("error");
             Toast.makeText(this, R.string.file_save_error, Toast.LENGTH_LONG).show();
         }
     }
 
+    private void notifyArchivePdfSaveEnded(String archiveId, String status) {
+        if (archiveId == null || webView == null || isDestroyed()) return;
+        webView.evaluateJavascript(
+            "if(typeof window.onArchivePdfSaveEnded==='function'){window.onArchivePdfSaveEnded("
+                + JSONObject.quote(archiveId) + "," + JSONObject.quote(status) + ");}", null
+        );
+    }
+
+    private void finishPendingPdfSave(String status) {
+        pendingPdfHtml = null;
+        pendingPdfFileName = null;
+        pdfInProgress = false;
+        String archiveId = activeArchiveId;
+        activeArchiveId = null;
+        notifyArchivePdfSaveEnded(archiveId, status);
+    }
+
     private void renderHtmlToPdf(String html, String pdfFileName, Uri destination, boolean mediaStoreDestination) {
-        if (pdfWebView != null) {
-            pdfWebView.destroy();
-            pdfWebView = null;
-        }
+        pdfDestination = destination;
+        pdfMediaStoreDestination = mediaStoreDestination;
         pdfWebView = new WebView(this);
         pdfWebView.setBackgroundColor(Color.WHITE);
         pdfWebView.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
+        pdfWebView.setFocusable(false);
+        pdfWebView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         pdfWebView.setHorizontalScrollBarEnabled(false);
         pdfWebView.setVerticalScrollBarEnabled(false);
         pdfWebView.getSettings().setJavaScriptEnabled(false);
@@ -383,50 +575,77 @@ public class MainActivity extends Activity {
         pdfWebView.getSettings().setLoadWithOverviewMode(false);
         pdfWebView.getSettings().setTextZoom(100);
         pdfWebView.setInitialScale(100);
+        final WebView source = pdfWebView;
         final int pageCount = countPdfPages(html);
+        final float density = getResources().getDisplayMetrics().density;
+        final int renderWidth = Math.round(PDF_PAGE_WIDTH * density);
+        final int renderHeight = Math.round(PDF_PAGE_HEIGHT * pageCount * density);
+        // The renderer must be attached for visual callbacks and deferred work.
+        // Put it behind the opaque app WebView, with an A4 viewport in CSS pixels.
+        rootView.addView(source, 0, new FrameLayout.LayoutParams(renderWidth, renderHeight));
+        pdfTimeout = () -> {
+            if (pdfWebView == source) finishPdfSave(destination, pdfFileName, mediaStoreDestination, false);
+        };
+        pdfHandler.postDelayed(pdfTimeout, 30_000);
         pdfWebView.setWebViewClient(new WebViewClient() {
             private boolean renderStarted;
-
             @Override
             public void onPageFinished(WebView view, String url) {
-                if (renderStarted) return;
+                if (renderStarted || pdfWebView != view) return;
                 renderStarted = true;
-                view.postDelayed(
-                    () -> writeWebViewPdf(view, pageCount, pdfFileName, destination, mediaStoreDestination),
-                    350
-                );
+                pdfHandler.post(() -> {
+                    if (pdfWebView != view) return;
+                    try {
+                        view.measure(View.MeasureSpec.makeMeasureSpec(renderWidth, View.MeasureSpec.EXACTLY),
+                            View.MeasureSpec.makeMeasureSpec(renderHeight, View.MeasureSpec.EXACTLY));
+                        view.layout(0, 0, renderWidth, renderHeight);
+                        view.scrollTo(0, 0);
+                        view.postVisualStateCallback(0, new WebView.VisualStateCallback() {
+                            @Override
+                            public void onComplete(long requestId) {
+                                if (pdfWebView != view) return;
+                                try {
+                                    writeWebViewPdf(view, pageCount, density, pdfFileName, destination, mediaStoreDestination);
+                                } catch (Exception error) {
+                                    finishPdfSave(destination, pdfFileName, mediaStoreDestination, false);
+                                }
+                            }
+                        });
+                    } catch (Exception error) {
+                        finishPdfSave(destination, pdfFileName, mediaStoreDestination, false);
+                    }
+                });
+            }
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                if (request.isForMainFrame() && pdfWebView == view) finishPdfSave(destination, pdfFileName, mediaStoreDestination, false);
+            }
+            @Override
+            public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                if (pdfWebView == view) finishPdfSave(destination, pdfFileName, mediaStoreDestination, false);
+                return true;
             }
         });
-        pdfWebView.loadDataWithBaseURL(
-            "https://" + WebViewAssetLoader.DEFAULT_DOMAIN + "/assets/",
-            html,
-            "text/html",
-            "UTF-8",
-            null
-        );
+        pdfWebView.loadDataWithBaseURL("https://" + WebViewAssetLoader.DEFAULT_DOMAIN + "/assets/", html, "text/html", "UTF-8", null);
     }
 
     private void writeWebViewPdf(
         WebView source,
         int pageCount,
+        float density,
         String pdfFileName,
         Uri destination,
         boolean mediaStoreDestination
     ) {
+        if (source != pdfWebView) return;
         PdfDocument document = new PdfDocument();
         boolean success = false;
         try {
-            int totalHeight = PDF_PAGE_HEIGHT * pageCount;
-            source.measure(
-                View.MeasureSpec.makeMeasureSpec(PDF_PAGE_WIDTH, View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.makeMeasureSpec(totalHeight, View.MeasureSpec.EXACTLY)
-            );
-            source.layout(0, 0, PDF_PAGE_WIDTH, totalHeight);
-            source.scrollTo(0, 0);
-
+            android.util.Log.i("ArendaPdf", "PDF viewport=" + source.getWidth() + "x" + source.getHeight() +
+                " contentHeight=" + source.getContentHeight() + " density=" + density + " pages=" + pageCount);
             float scale = Math.min(
-                PDF_OUTPUT_WIDTH / (float) PDF_PAGE_WIDTH,
-                PDF_OUTPUT_HEIGHT / (float) PDF_PAGE_HEIGHT
+                PDF_OUTPUT_WIDTH / (PDF_PAGE_WIDTH * density),
+                PDF_OUTPUT_HEIGHT / (PDF_PAGE_HEIGHT * density)
             );
             for (int index = 0; index < pageCount; index++) {
                 PdfDocument.PageInfo pageInfo = new PdfDocument.PageInfo.Builder(
@@ -439,7 +658,7 @@ public class MainActivity extends Activity {
                 canvas.drawColor(Color.WHITE);
                 int checkpoint = canvas.save();
                 canvas.scale(scale, scale);
-                canvas.translate(0, -index * PDF_PAGE_HEIGHT);
+                canvas.translate(0, -index * PDF_PAGE_HEIGHT * density);
                 source.draw(canvas);
                 canvas.restoreToCount(checkpoint);
                 document.finishPage(page);
@@ -454,23 +673,46 @@ public class MainActivity extends Activity {
         } catch (Exception error) {
             success = false;
         } finally {
-            document.close();
+            try {
+                document.close();
+            } catch (Exception error) {
+                success = false;
+            }
             finishPdfSave(destination, pdfFileName, mediaStoreDestination, success);
         }
     }
 
     private void finishPdfSave(Uri destination, String pdfFileName, boolean mediaStoreDestination, boolean success) {
+        if (!pdfInProgress || !destination.equals(pdfDestination)) return;
+        WebView source = pdfWebView;
+        pdfWebView = null;
+        if (pdfTimeout != null) pdfHandler.removeCallbacks(pdfTimeout);
+        pdfTimeout = null;
+        if (source != null) {
+            try {
+                rootView.removeView(source);
+                source.destroy();
+            } catch (Exception error) {
+                android.util.Log.w("ArendaPdf", "Could not release the PDF renderer", error);
+            }
+        }
+        pdfDestination = null;
         if (mediaStoreDestination && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
                 if (success) {
                     ContentValues values = new ContentValues();
                     values.put(MediaStore.MediaColumns.IS_PENDING, 0);
-                    getContentResolver().update(destination, values, null, null);
-                } else {
-                    getContentResolver().delete(destination, null, null);
+                    success = getContentResolver().update(destination, values, null, null) > 0;
                 }
             } catch (Exception ignored) {
                 success = false;
+            }
+            if (!success) {
+                try {
+                    getContentResolver().delete(destination, null, null);
+                } catch (Exception error) {
+                    android.util.Log.w("ArendaPdf", "Could not remove an unfinished PDF", error);
+                }
             }
         }
 
@@ -479,6 +721,17 @@ public class MainActivity extends Activity {
             pdfWebView = null;
         }
         pdfInProgress = false;
+        String archiveId = activeArchiveId;
+        activeArchiveId = null;
+
+        if (success && archiveId != null && webView != null && !isDestroyed()) {
+            webView.evaluateJavascript(
+                "if(typeof window.onArchivePdfSaved==='function'){window.onArchivePdfSaved("
+                    + JSONObject.quote(archiveId) + "," + JSONObject.quote(destination.toString()) + ");}", null
+            );
+        }
+        notifyArchivePdfSaveEnded(archiveId, success ? "saved" : "error");
+        if (isFinishing() || isDestroyed()) return;
 
         if (!success) {
             Toast.makeText(this, R.string.file_save_error, Toast.LENGTH_LONG).show();

@@ -1,0 +1,48 @@
+/* These fallbacks are used only by older installed Android System WebView.
+   Modern browsers retain the existing design and responsive rules. */
+@supports not (color: color-mix(in srgb, red, blue)) {
+  html, body, .app-root { min-height: 100vh; }
+  body { color: #172033; }
+  html[data-theme="dark"] body { color: #f1f4fa; }
+  .app-shell { width: calc(100% - 2rem); max-width: 62rem; }
+  .app-header h1 { font-size: 1.65rem; }
+  .settlement-hero-result strong { font-size: 2.65rem; }
+  .app-tabs, html[data-theme="dark"] .app-tabs { width: calc(100% - 1.5rem) !important; max-width: 35rem; }
+  [data-slot="dialog-overlay"], [data-slot="alert-dialog-overlay"] { position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 50; background: rgba(10, 21, 45, .4); }
+  [data-slot="dialog-content"], [data-slot="alert-dialog-content"] {
+    position: fixed;
+    z-index: 50;
+    left: 50%;
+    top: 50%;
+    width: calc(100% - 2rem);
+    max-width: 36rem;
+    max-height: calc(100vh - 1.5rem);
+    overflow-y: auto;
+    transform: translate(-50%, -50%);
+    color: var(--foreground);
+    background: var(--card);
+  }
+  .document-preview-dialog { width: calc(100% - 1rem) !important; max-height: 94vh !important; }
+  .document-preview-frame { max-height: 64vh; }
+  .document-preview-frame iframe { max-width: none; }
+  .copy-dialog-stack { max-height: none; }
+  .copy-block-text { color: var(--foreground); background: var(--control-bg); }
+  [data-slot="select-content"] { max-height: 70vh; color: var(--foreground); background: var(--popover); }
+  [data-slot="select-item"][data-highlighted] { background: var(--muted); }
+  [data-slot="button"]:focus, [data-slot="select-trigger"]:focus, input:focus, textarea:focus { outline: 2px solid var(--ring); outline-offset: 2px; }
+  .motion-settings-row input.ios-switch { background: #cfd4de; }
+  .motion-settings-row input.ios-switch:checked { background: #30c774; }
+  .glass-range::-webkit-slider-runnable-track { background: linear-gradient(to right, #007aff 0%, #007aff var(--range-fill, 60%), #dce3ed var(--range-fill, 60%), #dce3ed 100%); }
+  .glass-range::-webkit-slider-thumb { background: #fff; }
+  .week-day-chart i { background: #168bff; }
+  .month-calendar-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+  @media (max-width: 639px) {
+    [data-slot="dialog-content"], [data-slot="alert-dialog-content"] { top: auto !important; right: 0 !important; bottom: 0 !important; left: 0 !important; width: 100% !important; max-height: calc(100vh - .75rem); transform: none !important; }
+    [data-slot="dialog-content"].quick-entry-dialog { bottom: var(--app-keyboard-offset, 0px) !important; max-height: calc(var(--app-visible-height, 100vh) - .5rem); }
+    .document-preview-frame { height: 64vh; }
+  }
+  @media (max-width: 359px) {
+    .app-shell { width: calc(100% - 1.25rem); }
+    .app-header h1 { font-size: 1.35rem; }
+  }
+}

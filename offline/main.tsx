@@ -1,7 +1,8 @@
+import "./compat";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import RentalApp from "@/app/rental-app";
-import "@/app/globals.css";
+import "./app.css";
 
 const root = document.getElementById("root");
 
